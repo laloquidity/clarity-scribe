@@ -14,7 +14,7 @@ Built with Electron, React, and whisper.cpp for fully offline, GPU-accelerated s
 - **Guided First-Run Setup** — Model download progress bar followed by permission requests (microphone + accessibility) so everything works on first use
 - **Tray Icon** — Lives in the system tray/menu bar for quick access
 - **Launch on Login** — Optional toggle to start automatically when you log in
-- **Multi-Language** — Supports 12+ languages including auto-detect and translate-to-English mode
+- **Multi-Language** — Supports 100+ languages via Whisper, with auto-detect and translate-to-English mode
 - **Auto-Stop** — Configurable silence detection to automatically stop recording (2s, 3s, 5s, or 10s)
 
 ## Requirements
@@ -29,7 +29,7 @@ Built with Electron, React, and whisper.cpp for fully offline, GPU-accelerated s
 ### From Source
 
 ```bash
-git clone https://github.com/your-org/clarity-scribe.git
+git clone <repo-url>
 cd clarity-scribe
 npm install
 npm run dev
@@ -85,7 +85,7 @@ clarity-scribe/
 
 ## Transcription Engine
 
-Uses [`@napi-rs/whisper`](https://github.com/pxlit-projects/napi-rs-whisper) — a Rust/NAPI binding around [whisper.cpp](https://github.com/ggerganov/whisper.cpp). The model file (`ggml-large-v3-turbo.bin`) is downloaded from Hugging Face on first launch and cached locally in the app's user data directory.
+Uses [`@napi-rs/whisper`](https://www.npmjs.com/package/@napi-rs/whisper) — a Rust/NAPI binding around [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by Georgi Gerganov. The model file (`ggml-large-v3-turbo.bin`) is downloaded from Hugging Face on first launch and stored locally in the app's user data directory. Large V3 Turbo is a distilled version of Large V3 — 4 decoder layers instead of 32 — delivering comparable accuracy at significantly faster inference.
 
 | Model | Parameters | WER | Size | Speed |
 |-------|-----------|-----|------|-------|
