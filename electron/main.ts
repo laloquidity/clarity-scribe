@@ -525,7 +525,7 @@ function setupIpcHandlers(): void {
 }
 
 // --- App Lifecycle ---
-app.dock?.hide();
+// app.dock?.hide() — removed: show in Dock like a normal app
 
 app.whenReady().then(async () => {
     createWindow();
