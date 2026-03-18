@@ -506,12 +506,18 @@ function setupIpcHandlers(): void {
         return 'granted';
     });
 
-    // Setup complete — start polling now that permissions are granted
-    ipcMain.handle('setup-complete', () => {
-        if (!pollingInterval) {
+    // Setup complete — only start polling if accessibility was granted
+    ipcMain.handle('setup-complete', (_, opts?: { accessibilityGranted?: boolean }) => {
+        store.set('setupDone', true);
+        if (opts?.accessibilityGranted && !pollingInterval) {
             startActiveAppPolling();
         }
         return true;
+    });
+
+    // Check if setup was already completed on a previous launch
+    ipcMain.handle('is-setup-done', () => {
+        return !!store.get('setupDone');
     });
 
     // Launch on Login
@@ -550,8 +556,18 @@ app.whenReady().then(async () => {
     }
 
     registerHotkey((store.get('hotkey') as string) || 'Alt+Space');
-    // NOTE: startActiveAppPolling() is deferred to 'setup-complete' IPC
-    // so permissions are requested during setup first
+    // If setup was already completed on a prior launch, start polling
+    // (only if accessibility was previously granted)
+    if (store.get('setupDone') && !pollingInterval) {
+        // Test if accessibility is available before starting polling
+        try {
+            execSync(`osascript -e 'tell application "System Events" to return name of first application process whose frontmost is true'`,
+                { encoding: 'utf-8', timeout: 2000 });
+            startActiveAppPolling();
+        } catch {
+            // Accessibility not granted — clipboard-only mode
+        }
+    }
 
     powerMonitor.on('suspend', () => { lastKnownFrontApp = null; });
     powerMonitor.on('resume', () => {

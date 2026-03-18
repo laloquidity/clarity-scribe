@@ -23,13 +23,13 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
         }
     }, [progress, phase]);
 
-    // When permissions are both granted, complete setup
+    // When mic is granted, auto-complete after a brief delay
+    // (accessibility is optional — paste-to-target vs clipboard-only)
     useEffect(() => {
-        if (micGranted && accessGranted && !permissionsDone) {
+        if (micGranted && !permissionsDone) {
             setPermissionsDone(true);
-            // Brief delay to show the checkmarks, then signal completion
             setTimeout(() => {
-                window.electronAPI?.setupComplete();
+                window.electronAPI?.setupComplete({ accessibilityGranted: accessGranted });
                 onSetupComplete();
             }, 800);
         }
@@ -46,7 +46,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
     };
 
     const skipPermissions = () => {
-        window.electronAPI?.setupComplete();
+        window.electronAPI?.setupComplete({ accessibilityGranted: false });
         onSetupComplete();
     };
 
