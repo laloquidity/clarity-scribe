@@ -1,0 +1,31 @@
+appId: com.clarity-scribe.app
+productName: Clarity Scribe
+directories:
+  output: release
+files:
+  - dist/**/*
+  - dist-electron/**/*
+asar: true
+asarUnpack:
+  - "node_modules/@napi-rs/**"
+  - "node_modules/whisper-node/**"
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  icon: resources/icon.icns
+  hardenedRuntime: true
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.ico
+nsis:
+  oneClick: true
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true

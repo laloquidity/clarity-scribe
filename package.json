@@ -1,0 +1,35 @@
+{
+    "name": "clarity-scribe",
+    "version": "1.0.0",
+    "description": "Lightweight standalone dictation app powered by Whisper AI",
+    "main": "dist-electron/main.js",
+    "scripts": {
+        "dev": "concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
+        "dev:vite": "vite",
+        "dev:electron": "tsc -p tsconfig.electron.json && wait-on http://localhost:5198 && electron .",
+        "build": "tsc -p tsconfig.electron.json && vite build",
+        "build:mac": "npm run build && electron-builder -c electron-builder.yml --mac",
+        "build:win": "npm run build && electron-builder -c electron-builder.yml --win",
+        "postinstall": "electron-builder install-app-deps"
+    },
+    "dependencies": {
+        "@napi-rs/whisper": "^0.0.4",
+        "electron-store": "^6.0.1",
+        "framer-motion": "^11.18.2",
+        "lucide-react": "^0.344.0",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0"
+    },
+    "devDependencies": {
+        "@electron/rebuild": "^4.0.2",
+        "@types/react": "^18.2.64",
+        "@types/react-dom": "^18.2.21",
+        "@vitejs/plugin-react": "^4.2.1",
+        "concurrently": "^8.2.2",
+        "electron": "^39.2.7",
+        "electron-builder": "^24.13.3",
+        "typescript": "^5.4.2",
+        "vite": "^7.2.7",
+        "wait-on": "^7.2.0"
+    }
+}
