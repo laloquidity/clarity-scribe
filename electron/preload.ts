@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     requestMicPermission: () => ipcRenderer.invoke('request-mic-permission'),
     requestAccessibilityPermission: () => ipcRenderer.invoke('request-accessibility-permission'),
     setupComplete: () => ipcRenderer.invoke('setup-complete'),
+    isSetupDone: () => ipcRenderer.invoke('is-setup-done'),
 
     // Launch on Login
     getLaunchOnLogin: () => ipcRenderer.invoke('get-launch-on-login'),

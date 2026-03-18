@@ -77,7 +77,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
                             {micGranted ? <Check size={14} /> : <Mic size={14} />}
                             <span>{micGranted ? 'Microphone ✓' : 'Allow Microphone'}</span>
                         </button>
-                        <p className="setup-perm-hint">Required to capture your voice</p>
+                        <p className="setup-perm-hint">Required to hear your voice for transcription</p>
 
                         <button
                             className={`setup-perm-btn ${accessGranted ? 'granted' : ''}`}
@@ -87,7 +87,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
                             {accessGranted ? <Check size={14} /> : <Shield size={14} />}
                             <span>{accessGranted ? 'Accessibility ✓' : 'Allow Paste Access'}</span>
                         </button>
-                        <p className="setup-perm-hint">Lets Clarity Scribe paste into your active app</p>
+                        <p className="setup-perm-hint">Required to auto-paste text into your active app</p>
                     </div>
 
                     <button className="setup-skip-btn" onClick={skipPermissions}>

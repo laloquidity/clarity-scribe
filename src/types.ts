@@ -53,6 +53,7 @@ export interface ElectronAPI {
     requestMicPermission: () => Promise<string>;
     requestAccessibilityPermission: () => Promise<string>;
     setupComplete: () => Promise<boolean>;
+    isSetupDone: () => Promise<boolean>;
 
     // Launch on Login
     getLaunchOnLogin: () => Promise<boolean>;

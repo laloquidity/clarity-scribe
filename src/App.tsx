@@ -61,9 +61,12 @@ const App: React.FC = () => {
         }
     }, [startRecording, stopRecording, isRecordingRef]);
 
-    // Load history on mount
+    // Load history on mount + check if setup was already completed
     useEffect(() => {
         window.electronAPI?.getHistory().then(h => setHistory(h || []));
+        window.electronAPI?.isSetupDone().then(done => {
+            if (done) setSetupDone(true);
+        });
     }, []);
 
     // Listen for hotkey toggle

@@ -506,12 +506,18 @@ function setupIpcHandlers(): void {
         return 'granted';
     });
 
-    // Setup complete — start polling now that permissions are granted
+    // Setup complete — persist and start polling
     ipcMain.handle('setup-complete', () => {
+        store.set('setupDone', true);
         if (!pollingInterval) {
             startActiveAppPolling();
         }
         return true;
+    });
+
+    // Check if setup was already completed on a previous launch
+    ipcMain.handle('is-setup-done', () => {
+        return !!store.get('setupDone');
     });
 
     // Launch on Login
@@ -550,8 +556,10 @@ app.whenReady().then(async () => {
     }
 
     registerHotkey((store.get('hotkey') as string) || 'Alt+Space');
-    // NOTE: startActiveAppPolling() is deferred to 'setup-complete' IPC
-    // so permissions are requested during setup first
+    // If setup was already completed on a prior launch, start polling immediately
+    if (store.get('setupDone') && !pollingInterval) {
+        startActiveAppPolling();
+    }
 
     powerMonitor.on('suspend', () => { lastKnownFrontApp = null; });
     powerMonitor.on('resume', () => {

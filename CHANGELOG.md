@@ -2,11 +2,17 @@
 
 All notable changes to Clarity Scribe are documented here.
 
-## [1.1.1] - 2026-03-18
+## [1.2.0] - 2026-03-18
+
+### Fixed
+- **Recording in Production Builds** — AudioWorklet processor was not bundled by Vite for production. Inlined via Blob URL so recording works in both dev and packaged builds.
+- **Recording Toggle State** — Fixed desync between App and hook `isRecordingRef` that caused recordings to get stuck and require a force-quit to stop.
 
 ### Changed
-- **App Icon** — Redesigned to full-bleed 1024x1024 per Apple HIG specs. No manual borders or rounded corners — macOS applies the squircle mask automatically. Icon now fills the Dock slot like native apps.
-- **Dock Visibility** — App now appears in the macOS Dock like a standard application. Previously hidden via `app.dock.hide()`.
+- **App Icon** — Redesigned to full-bleed dark navy with white mic-pen symbol. Squircle mask with transparent corners applied for proper Dock appearance on unsigned builds.
+- **Dock Visibility** — App now appears in the macOS Dock like a standard application.
+- **Setup Persistence** — Setup completion is saved so returning users skip the setup screen entirely.
+- **Permission Hints** — Clearer rationale text for mic ("Required to hear your voice for transcription") and accessibility ("Required to auto-paste text into your active app") permissions during setup.
 
 ## [1.1.0] - 2026-03-18
 
