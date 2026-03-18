@@ -13,9 +13,15 @@ export default defineConfig({
     build: {
         outDir: 'dist',
         emptyOutDir: true,
+        sourcemap: false,
+        minify: 'esbuild',
         rollupOptions: {
             external: ['electron'],
         },
+    },
+    esbuild: {
+        drop: ['console', 'debugger'],
+        legalComments: 'none',
     },
     server: {
         port: 5198,
