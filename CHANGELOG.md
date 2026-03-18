@@ -2,6 +2,12 @@
 
 All notable changes to Clarity Scribe are documented here.
 
+## [1.1.1] - 2026-03-18
+
+### Changed
+- **App Icon** — Redesigned to full-bleed 1024x1024 per Apple HIG specs. No manual borders or rounded corners — macOS applies the squircle mask automatically. Icon now fills the Dock slot like native apps.
+- **Dock Visibility** — App now appears in the macOS Dock like a standard application. Previously hidden via `app.dock.hide()`.
+
 ## [1.1.0] - 2026-03-18
 
 ### Added
