@@ -506,10 +506,10 @@ function setupIpcHandlers(): void {
         return 'granted';
     });
 
-    // Setup complete — only start polling if accessibility was granted
-    ipcMain.handle('setup-complete', (_, opts?: { accessibilityGranted?: boolean }) => {
+    // Setup complete — always start polling for auto-paste
+    ipcMain.handle('setup-complete', (_: any, _opts?: any) => {
         store.set('setupDone', true);
-        if (opts?.accessibilityGranted && !pollingInterval) {
+        if (!pollingInterval) {
             startActiveAppPolling();
         }
         return true;
@@ -556,17 +556,9 @@ app.whenReady().then(async () => {
     }
 
     registerHotkey((store.get('hotkey') as string) || 'Alt+Space');
-    // If setup was already completed on a prior launch, start polling
-    // (only if accessibility was previously granted)
+    // If setup was already completed, start polling immediately
     if (store.get('setupDone') && !pollingInterval) {
-        // Test if accessibility is available before starting polling
-        try {
-            execSync(`osascript -e 'tell application "System Events" to return name of first application process whose frontmost is true'`,
-                { encoding: 'utf-8', timeout: 2000 });
-            startActiveAppPolling();
-        } catch {
-            // Accessibility not granted — clipboard-only mode
-        }
+        startActiveAppPolling();
     }
 
     powerMonitor.on('suspend', () => { lastKnownFrontApp = null; });

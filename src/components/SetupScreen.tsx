@@ -23,13 +23,12 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
         }
     }, [progress, phase]);
 
-    // When mic is granted, auto-complete after a brief delay
-    // (accessibility is optional — paste-to-target vs clipboard-only)
+    // When both permissions are granted, complete setup
     useEffect(() => {
-        if (micGranted && !permissionsDone) {
+        if (micGranted && accessGranted && !permissionsDone) {
             setPermissionsDone(true);
             setTimeout(() => {
-                window.electronAPI?.setupComplete({ accessibilityGranted: accessGranted });
+                window.electronAPI?.setupComplete();
                 onSetupComplete();
             }, 800);
         }
@@ -46,7 +45,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
     };
 
     const skipPermissions = () => {
-        window.electronAPI?.setupComplete({ accessibilityGranted: false });
+        window.electronAPI?.setupComplete();
         onSetupComplete();
     };
 
@@ -77,7 +76,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
                             {micGranted ? <Check size={14} /> : <Mic size={14} />}
                             <span>{micGranted ? 'Microphone ✓' : 'Allow Microphone'}</span>
                         </button>
-                        <p className="setup-perm-hint">Required to capture your voice</p>
+                        <p className="setup-perm-hint">Required to hear your voice</p>
 
                         <button
                             className={`setup-perm-btn ${accessGranted ? 'granted' : ''}`}
@@ -87,7 +86,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
                             {accessGranted ? <Check size={14} /> : <Shield size={14} />}
                             <span>{accessGranted ? 'Accessibility ✓' : 'Allow Paste Access'}</span>
                         </button>
-                        <p className="setup-perm-hint">Lets Clarity Scribe paste into your active app</p>
+                        <p className="setup-perm-hint">Required to auto-paste transcriptions into your apps</p>
                     </div>
 
                     <button className="setup-skip-btn" onClick={skipPermissions}>
