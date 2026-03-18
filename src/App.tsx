@@ -32,10 +32,9 @@ const App: React.FC = () => {
     const [setupDone, setSetupDone] = useState(false);
 
     const { settings, updateSetting, isLoaded } = useSettings();
-    const isRecordingRef = useRef(false);
 
     // Audio recording
-    const { startRecording, stopRecording } = useAudioRecording({
+    const { startRecording, stopRecording, isRecordingRef } = useAudioRecording({
         settings,
         onStateChange: setAppState,
         onError: (msg) => {
@@ -55,14 +54,12 @@ const App: React.FC = () => {
     // The actual start/stop logic — called when main process sends toggle-recording
     const handleToggle = useCallback(() => {
         if (isRecordingRef.current) {
-            isRecordingRef.current = false;
             stopRecording();
         } else {
-            isRecordingRef.current = true;
             setStatusMessage(undefined);
             startRecording();
         }
-    }, [startRecording, stopRecording]);
+    }, [startRecording, stopRecording, isRecordingRef]);
 
     // Load history on mount
     useEffect(() => {
