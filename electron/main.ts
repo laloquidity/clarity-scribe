@@ -4,7 +4,7 @@
  * Lightweight dictation app: global hotkey, Whisper transcription,
  * paste-to-target with clipboard restore, transcription history.
  */
-import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, screen, powerMonitor } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, screen, powerMonitor, systemPreferences } from 'electron';
 import { exec, execSync } from 'child_process';
 import * as path from 'path';
 import Store from 'electron-store';
@@ -330,15 +330,27 @@ function createWindow(): void {
 // --- Tray ---
 function createTray(): void {
     try {
-        const icon = nativeImage.createEmpty();
+        // Create a small circle as tray icon (template image for macOS menu bar)
+        const size = 18;
+        const canvas = `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
+<circle cx="9" cy="9" r="6" fill="black"/>
+<circle cx="9" cy="5" r="2.5" fill="white"/>
+<path d="M6,7 Q6,10.5 9,10.5 Q12,10.5 12,7" fill="none" stroke="white" stroke-width="1.2"/>
+<line x1="9" y1="11" x2="9" y2="13.5" stroke="white" stroke-width="1"/>
+<line x1="7" y1="13.5" x2="11" y2="13.5" stroke="white" stroke-width="1"/>
+</svg>`;
+        const icon = nativeImage.createFromBuffer(Buffer.from(canvas));
+        icon.setTemplateImage(true);
         tray = new Tray(icon);
         tray.setToolTip('Clarity Scribe');
         tray.setContextMenu(Menu.buildFromTemplate([
             { label: 'Show', click: () => mainWindow?.show() },
+            { type: 'separator' },
             { label: 'Quit', click: () => { (app as any).isQuitting = true; app.quit(); } },
         ]));
-    } catch {
-        console.log('[Main] Tray icon not available');
+    } catch (e) {
+        console.log('[Main] Tray icon not available:', e);
     }
 }
 
@@ -468,6 +480,48 @@ function setupIpcHandlers(): void {
     ipcMain.handle('set-window-size', (_, { width, height }: { width: number; height: number }) => {
         mainWindow?.setSize(width, height, true);
     });
+
+    // Permissions
+    ipcMain.handle('request-mic-permission', async () => {
+        if (process.platform === 'darwin') {
+            const status = systemPreferences.getMediaAccessStatus('microphone');
+            if (status === 'granted') return 'granted';
+            const granted = await systemPreferences.askForMediaAccess('microphone');
+            return granted ? 'granted' : 'denied';
+        }
+        return 'granted'; // Windows doesn't require explicit permission
+    });
+
+    ipcMain.handle('request-accessibility-permission', async () => {
+        if (process.platform === 'darwin') {
+            // Trigger System Events permission by running a quick AppleScript
+            try {
+                execSync(`osascript -e 'tell application "System Events" to return name of first application process whose frontmost is true'`,
+                    { encoding: 'utf-8', timeout: 5000 });
+                return 'granted';
+            } catch {
+                return 'denied';
+            }
+        }
+        return 'granted';
+    });
+
+    // Setup complete — start polling now that permissions are granted
+    ipcMain.handle('setup-complete', () => {
+        if (!pollingInterval) {
+            startActiveAppPolling();
+        }
+        return true;
+    });
+
+    // Launch on Login
+    ipcMain.handle('get-launch-on-login', () => {
+        return app.getLoginItemSettings().openAtLogin;
+    });
+    ipcMain.handle('set-launch-on-login', (_, enabled: boolean) => {
+        app.setLoginItemSettings({ openAtLogin: enabled });
+        return true;
+    });
 }
 
 // --- App Lifecycle ---
@@ -496,7 +550,8 @@ app.whenReady().then(async () => {
     }
 
     registerHotkey((store.get('hotkey') as string) || 'Alt+Space');
-    startActiveAppPolling();
+    // NOTE: startActiveAppPolling() is deferred to 'setup-complete' IPC
+    // so permissions are requested during setup first
 
     powerMonitor.on('suspend', () => { lastKnownFrontApp = null; });
     powerMonitor.on('resume', () => {

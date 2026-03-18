@@ -51,4 +51,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Window
     quitApp: () => ipcRenderer.invoke('quit-app'),
     setWindowSize: (dims: { width: number; height: number }) => ipcRenderer.invoke('set-window-size', dims),
+
+    // Permissions & Setup
+    requestMicPermission: () => ipcRenderer.invoke('request-mic-permission'),
+    requestAccessibilityPermission: () => ipcRenderer.invoke('request-accessibility-permission'),
+    setupComplete: () => ipcRenderer.invoke('setup-complete'),
+
+    // Launch on Login
+    getLaunchOnLogin: () => ipcRenderer.invoke('get-launch-on-login'),
+    setLaunchOnLogin: (enabled: boolean) => ipcRenderer.invoke('set-launch-on-login', enabled),
 });

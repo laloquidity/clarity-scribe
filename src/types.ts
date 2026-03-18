@@ -48,6 +48,15 @@ export interface ElectronAPI {
 
     quitApp: () => Promise<void>;
     setWindowSize: (dims: { width: number; height: number }) => Promise<void>;
+
+    // Permissions & Setup
+    requestMicPermission: () => Promise<string>;
+    requestAccessibilityPermission: () => Promise<string>;
+    setupComplete: () => Promise<boolean>;
+
+    // Launch on Login
+    getLaunchOnLogin: () => Promise<boolean>;
+    setLaunchOnLogin: (enabled: boolean) => Promise<boolean>;
 }
 
 declare global {

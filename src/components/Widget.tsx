@@ -10,6 +10,7 @@ interface WidgetProps {
     whisperReady: boolean;
     whisperProgress: number;
     whisperStatus: string;
+    hotkey?: string;
 }
 
 const Waveform = () => (
@@ -26,6 +27,15 @@ const Waveform = () => (
     </div>
 );
 
+// Simple hotkey display formatter
+function formatHotkeyShort(hotkey: string): string {
+    if (!hotkey) return '';
+    const map: Record<string, string> = {
+        'Alt': '⌥', 'Command': '⌘', 'Control': 'Ctrl', 'Shift': '⇧', 'Space': 'Space',
+    };
+    return hotkey.split('+').map(p => map[p] || p).join('+');
+}
+
 const Widget: React.FC<WidgetProps> = ({
     appState,
     onToggleRecording,
@@ -33,6 +43,7 @@ const Widget: React.FC<WidgetProps> = ({
     whisperReady,
     whisperProgress,
     whisperStatus,
+    hotkey,
 }) => {
     const isRecording = appState === 'RECORDING';
     const isProcessing = appState === 'PROCESSING';
@@ -43,6 +54,7 @@ const Widget: React.FC<WidgetProps> = ({
         if (statusMessage) return statusMessage;
         if (isRecording) return 'Recording';
         if (isProcessing) return 'Processing';
+        if (hotkey) return `Press ${formatHotkeyShort(hotkey)} to record`;
         return 'Ready';
     };
 

@@ -42,8 +42,32 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
     useEffect(() => {
         navigator.mediaDevices.enumerateDevices().then(devices => {
             setMicDevices(devices.filter(d => d.kind === 'audioinput'));
-        }).catch(console.error);
+        }).catch(() => {});
     }, []);
+
+// Launch on Login sub-component
+function LaunchOnLogin() {
+    const [enabled, setEnabled] = React.useState(false);
+    React.useEffect(() => {
+        window.electronAPI?.getLaunchOnLogin().then(setEnabled).catch(() => {});
+    }, []);
+    return (
+        <div className="settings-group">
+            <span className="settings-label">Launch on Login</span>
+            <label className="settings-toggle">
+                <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={e => {
+                        setEnabled(e.target.checked);
+                        window.electronAPI?.setLaunchOnLogin(e.target.checked);
+                    }}
+                />
+                <span className="toggle-slider" />
+            </label>
+        </div>
+    );
+}
 
     // Hotkey capture
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -162,6 +186,9 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                         <option value={10000}>10 seconds</option>
                     </select>
                 </div>
+
+                {/* Launch on Login */}
+                <LaunchOnLogin />
             </div>
         </div>
     );

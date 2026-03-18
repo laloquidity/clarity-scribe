@@ -29,6 +29,7 @@ const App: React.FC = () => {
     const [whisperProgress, setWhisperProgress] = useState(0);
     const [whisperStatus, setWhisperStatus] = useState('Initializing...');
     const [copiedToast, setCopiedToast] = useState(false);
+    const [setupDone, setSetupDone] = useState(false);
 
     const { settings, updateSetting, isLoaded } = useSettings();
     const isRecordingRef = useRef(false);
@@ -143,14 +144,14 @@ const App: React.FC = () => {
         if (!api) return;
 
         let height = COLLAPSED_HEIGHT;
-        if (!whisperReady && whisperProgress < 100) {
+        if (!setupDone) {
             height = SETUP_HEIGHT;
         } else if (expanded) {
             height = EXPANDED_HEIGHT;
         }
 
         api.setWindowSize({ width: 340, height });
-    }, [expanded, whisperReady, whisperProgress]);
+    }, [expanded, setupDone]);
 
     // Copy entry to clipboard
     const handleCopyEntry = useCallback((text: string) => {
@@ -175,11 +176,15 @@ const App: React.FC = () => {
         return <div className="widget-shell" />;
     }
 
-    // First-run setup screen
-    if (!whisperReady && whisperProgress < 100) {
+    // First-run setup screen (model download + permissions)
+    if (!setupDone) {
         return (
             <div className="widget-shell">
-                <SetupScreen progress={whisperProgress} status={whisperStatus} />
+                <SetupScreen
+                    progress={whisperProgress}
+                    status={whisperStatus}
+                    onSetupComplete={() => setSetupDone(true)}
+                />
             </div>
         );
     }
@@ -196,6 +201,7 @@ const App: React.FC = () => {
                         whisperReady={whisperReady}
                         whisperProgress={whisperProgress}
                         whisperStatus={whisperStatus}
+                        hotkey={settings.hotkey}
                     />
                 </div>
                 <div className="no-drag" style={{ display: 'flex', gap: 4, paddingRight: 12 }}>
