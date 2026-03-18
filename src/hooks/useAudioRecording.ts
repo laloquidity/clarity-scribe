@@ -195,10 +195,39 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
             const audioCtx = retainAudioContext();
             audioContextRef.current = audioCtx;
 
+            // Register AudioWorklet processor via inline Blob URL
+            // (Vite doesn't bundle AudioWorklet modules for production builds)
+            const processorCode = `
+class AudioRecorderProcessor extends AudioWorkletProcessor {
+    constructor() {
+        super();
+        this._isRecording = true;
+        this.port.onmessage = (event) => {
+            if (event.data.command === 'stop') this._isRecording = false;
+            else if (event.data.command === 'start') this._isRecording = true;
+        };
+    }
+    process(inputs) {
+        if (!this._isRecording) return true;
+        const input = inputs[0];
+        if (input && input.length > 0) {
+            const channelData = input[0];
+            if (channelData && channelData.length > 0) {
+                const buffer = new Float32Array(channelData.length);
+                buffer.set(channelData);
+                this.port.postMessage({ type: 'audio', buffer }, [buffer.buffer]);
+            }
+        }
+        return true;
+    }
+}
+registerProcessor('audio-recorder-processor', AudioRecorderProcessor);
+`;
             try {
-                await audioCtx.audioWorklet.addModule(
-                    new URL('../workers/audioRecorderProcessor.ts', import.meta.url)
-                );
+                const blob = new Blob([processorCode], { type: 'application/javascript' });
+                const url = URL.createObjectURL(blob);
+                await audioCtx.audioWorklet.addModule(url);
+                URL.revokeObjectURL(url);
             } catch { /* may already be registered */ }
 
             const source = audioCtx.createMediaStreamSource(stream);
