@@ -78,8 +78,13 @@ const App: React.FC = () => {
             handleToggle();
         });
 
-        return () => { unsubToggle?.(); };
-    }, [handleToggle]);
+        // If main process falls back to a different hotkey, sync the UI
+        const unsubHotkey = api.onHotkeyChanged?.((key: string) => {
+            updateSetting('hotkey', key);
+        });
+
+        return () => { unsubToggle?.(); unsubHotkey?.(); };
+    }, [handleToggle, updateSetting]);
 
     // Listen for Whisper events
     useEffect(() => {

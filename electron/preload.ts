@@ -41,6 +41,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveSettings: (settings: any) => ipcRenderer.invoke('save-settings', settings),
     getHotkey: () => ipcRenderer.invoke('get-hotkey'),
     setHotkey: (key: string) => ipcRenderer.invoke('set-hotkey', key),
+    onHotkeyChanged: (cb: (key: string) => void) => {
+        const handler = (_: any, key: string) => cb(key);
+        ipcRenderer.on('hotkey-changed', handler);
+        return () => { ipcRenderer.removeListener('hotkey-changed', handler); };
+    },
 
     // History
     getHistory: () => ipcRenderer.invoke('get-history'),
@@ -61,4 +66,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Launch on Login
     getLaunchOnLogin: () => ipcRenderer.invoke('get-launch-on-login'),
     setLaunchOnLogin: (enabled: boolean) => ipcRenderer.invoke('set-launch-on-login', enabled),
+
+    // Platform
+    getPlatform: () => ipcRenderer.invoke('get-platform'),
 });

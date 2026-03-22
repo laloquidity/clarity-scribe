@@ -9,10 +9,21 @@ interface SettingsPanelProps {
 }
 
 // Map Electron accelerator parts to display-friendly symbols
-function formatHotkey(hotkey: string): string {
+function formatHotkey(hotkey: string, platform: string = 'darwin'): string {
     if (!hotkey) return '—';
 
-    const MAP: Record<string, string> = {
+    const isWin = platform === 'win32';
+
+    const MAP: Record<string, string> = isWin ? {
+        'CommandOrControl': 'Ctrl',
+        'Command': 'Win',
+        'Control': 'Ctrl',
+        'Alt': 'Alt',
+        'Shift': 'Shift',
+        'Space': 'Space',
+        ' ': 'Space',
+        '\u00A0': 'Space',
+    } : {
         'CommandOrControl': '⌘/Ctrl',
         'Command': '⌘',
         'Control': 'Ctrl',
@@ -36,7 +47,13 @@ function formatHotkey(hotkey: string): string {
 const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting, onClose }) => {
     const [listening, setListening] = useState(false);
     const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
+    const [platform, setPlatform] = useState('darwin');
     const listeningRef = useRef(false);
+
+    // Detect platform
+    useEffect(() => {
+        window.electronAPI?.getPlatform?.().then(p => setPlatform(p));
+    }, []);
 
     // Load mic devices
     useEffect(() => {
@@ -53,7 +70,7 @@ function LaunchOnLogin() {
     }, []);
     return (
         <div className="settings-group">
-            <span className="settings-label">Launch on Login</span>
+            <span className="settings-label">Launch at Startup</span>
             <label className="settings-toggle">
                 <input
                     type="checkbox"
@@ -121,12 +138,29 @@ function LaunchOnLogin() {
                 {/* Hotkey */}
                 <div className="settings-group">
                     <span className="settings-label">Global Hotkey</span>
-                    <div
-                        className={`hotkey-capture no-drag ${listening ? 'listening' : ''}`}
-                        onClick={() => setListening(!listening)}
-                    >
-                        {listening ? 'Press a key combination...' : formatHotkey(settings.hotkey)}
-                    </div>
+                    {platform === 'win32' ? (
+                        <select
+                            className="settings-value"
+                            value={settings.hotkey}
+                            onChange={e => {
+                                const newKey = e.target.value;
+                                window.electronAPI?.setHotkey(newKey);
+                                onUpdateSetting('hotkey', newKey);
+                            }}
+                        >
+                            <option value="Alt+Space">Alt + Space</option>
+                            <option value="Control+Shift+R">Ctrl + Shift + R</option>
+                            <option value="Control+Shift+M">Ctrl + Shift + M</option>
+                            <option value="Control+`">Ctrl + `</option>
+                        </select>
+                    ) : (
+                        <div
+                            className={`hotkey-capture no-drag ${listening ? 'listening' : ''}`}
+                            onClick={() => setListening(!listening)}
+                        >
+                            {listening ? 'Press a key combination...' : formatHotkey(settings.hotkey, platform)}
+                        </div>
+                    )}
                 </div>
 
                 {/* Microphone */}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Mic, Square, Check, GripVertical } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { AppState } from '../types';
@@ -27,10 +27,13 @@ const Waveform = () => (
     </div>
 );
 
-// Simple hotkey display formatter
-function formatHotkeyShort(hotkey: string): string {
+// Simple hotkey display formatter — platform-aware
+function formatHotkeyShort(hotkey: string, platform: string = 'darwin'): string {
     if (!hotkey) return '';
-    const map: Record<string, string> = {
+    const isWin = platform === 'win32';
+    const map: Record<string, string> = isWin ? {
+        'Alt': 'Alt', 'Command': 'Ctrl', 'Control': 'Ctrl', 'Shift': 'Shift', 'Space': 'Space',
+    } : {
         'Alt': '⌥', 'Command': '⌘', 'Control': 'Ctrl', 'Shift': '⇧', 'Space': 'Space',
     };
     return hotkey.split('+').map(p => map[p] || p).join('+');
@@ -48,13 +51,18 @@ const Widget: React.FC<WidgetProps> = ({
     const isRecording = appState === 'RECORDING';
     const isProcessing = appState === 'PROCESSING';
     const isCopied = statusMessage?.includes('✓');
+    const [platform, setPlatform] = useState('darwin');
+
+    useEffect(() => {
+        window.electronAPI?.getPlatform?.().then((p: string) => setPlatform(p));
+    }, []);
 
     const getStatusText = () => {
         if (!whisperReady && whisperProgress < 100) return whisperStatus || 'Loading...';
         if (statusMessage) return statusMessage;
         if (isRecording) return 'Recording';
         if (isProcessing) return 'Processing';
-        if (hotkey) return `Press ${formatHotkeyShort(hotkey)} to record`;
+        if (hotkey) return `Press ${formatHotkeyShort(hotkey, platform)} to record`;
         return 'Ready';
     };
 

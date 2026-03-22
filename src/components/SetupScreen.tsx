@@ -15,15 +15,29 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ progress, status, onSetupComp
     const [micGranted, setMicGranted] = useState(false);
     const [accessGranted, setAccessGranted] = useState(false);
     const [permissionsDone, setPermissionsDone] = useState(false);
+    const [isWindows, setIsWindows] = useState(false);
 
-    // When model is ready (progress >= 100), move to permissions phase
+    // Detect platform
+    useEffect(() => {
+        window.electronAPI?.getPlatform?.().then((p: string) => {
+            setIsWindows(p === 'win32');
+        });
+    }, []);
+
+    // When model is ready (progress >= 100), move to permissions phase (or skip on Windows)
     useEffect(() => {
         if (progress >= 100 && phase === 'downloading') {
-            setPhase('permissions');
+            if (isWindows) {
+                // Windows: permissions are auto-granted, skip straight to done
+                window.electronAPI?.setupComplete();
+                onSetupComplete();
+            } else {
+                setPhase('permissions');
+            }
         }
-    }, [progress, phase]);
+    }, [progress, phase, isWindows, onSetupComplete]);
 
-    // When permissions are both granted, complete setup
+    // When permissions are both granted (macOS), complete setup
     useEffect(() => {
         if (micGranted && accessGranted && !permissionsDone) {
             setPermissionsDone(true);

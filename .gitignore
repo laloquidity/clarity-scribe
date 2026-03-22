@@ -4,3 +4,6 @@ dist-electron/
 release/
 .DS_Store
 *.log
+# GPU backend DLLs (built locally, too large for git)
+resources/win-gpu/cuda/*.dll
+resources/win-gpu/vulkan/*.dll

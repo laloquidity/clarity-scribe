@@ -40,6 +40,7 @@ export interface ElectronAPI {
     saveSettings: (settings: Settings) => Promise<void>;
     getHotkey: () => Promise<string>;
     setHotkey: (key: string) => Promise<boolean>;
+    onHotkeyChanged: (cb: (key: string) => void) => () => void;
 
     getHistory: () => Promise<HistoryEntry[]>;
     addHistory: (entry: HistoryEntry) => Promise<void>;
@@ -58,6 +59,9 @@ export interface ElectronAPI {
     // Launch on Login
     getLaunchOnLogin: () => Promise<boolean>;
     setLaunchOnLogin: (enabled: boolean) => Promise<boolean>;
+
+    // Platform
+    getPlatform: () => Promise<string>;
 }
 
 declare global {

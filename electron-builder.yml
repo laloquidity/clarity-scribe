@@ -5,10 +5,12 @@ directories:
 files:
   - dist/**/*
   - dist-electron/**/*
+npmRebuild: false
 asar: true
 asarUnpack:
   - "node_modules/@napi-rs/**"
   - "node_modules/whisper-node/**"
+  - "node_modules/smart-whisper/**"
 mac:
   target:
     - dmg
@@ -23,6 +25,10 @@ win:
       arch:
         - x64
   icon: resources/icon.ico
+  extraResources:
+    - from: "resources/win-gpu/"
+      to: "win-gpu/"
+      filter: ["**/*.dll"]
 nsis:
   oneClick: true
   allowToChangeInstallationDirectory: false

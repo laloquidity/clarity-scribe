@@ -10,7 +10,8 @@
         "build": "tsc -p tsconfig.electron.json && vite build",
         "build:mac": "npm run build && electron-builder -c electron-builder.yml --mac",
         "build:win": "npm run build && electron-builder -c electron-builder.yml --win",
-        "postinstall": "electron-builder install-app-deps"
+        "postinstall": "electron-builder install-app-deps && node scripts/patch-smart-whisper.js",
+        "rebuild:gpu": "node scripts/patch-smart-whisper.js && npx node-gyp rebuild --directory=node_modules/smart-whisper --nodedir=%USERPROFILE%/.electron-gyp/39.8.3 --arch=x64"
     },
     "dependencies": {
         "@napi-rs/whisper": "^0.0.4",
@@ -18,7 +19,8 @@
         "framer-motion": "^11.18.2",
         "lucide-react": "^0.344.0",
         "react": "^18.2.0",
-        "react-dom": "^18.2.0"
+        "react-dom": "^18.2.0",
+        "smart-whisper": "^0.8.1"
     },
     "devDependencies": {
         "@electron/rebuild": "^4.0.2",

@@ -103,27 +103,10 @@ function detectActiveAppMac(): { name: string; pid: number } | null {
 // Windows: PowerShell-based active app detection
 function detectActiveAppWindows(): { name: string; pid: number } | null {
     try {
-        const script = `
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public class Win32 {
-    [DllImport("user32.dll")]
-    public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")]
-    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-}
-'@
-$hwnd = [Win32]::GetForegroundWindow()
-$pid = 0
-[Win32]::GetWindowThreadProcessId($hwnd, [ref]$pid) | Out-Null
-$proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-if ($proc) { Write-Output "$($proc.ProcessName)|$pid" }
-`;
-        const result = execSync(`powershell -NoProfile -Command "${script.replace(/\n/g, ';').replace(/"/g, '\\"')}"`, {
-            encoding: 'utf-8',
-            timeout: 3000
-        }).trim();
+        const result = execSync(
+            'powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\\\"user32.dll\\\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);\' -Name Win32 -Namespace Temp -ErrorAction SilentlyContinue; $h=[Temp.Win32]::GetForegroundWindow(); $p=0; [Temp.Win32]::GetWindowThreadProcessId($h,[ref]$p)|Out-Null; $pr=Get-Process -Id $p -ErrorAction SilentlyContinue; if($pr){Write-Output($pr.ProcessName+\'|\'+$p)}"',
+            { encoding: 'utf-8', timeout: 3000, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }
+        ).trim();
         const [name, pidStr] = result.split('|');
         const pid = parseInt(pidStr, 10);
         if (!name || isNaN(pid)) return null;
@@ -168,16 +151,27 @@ function startActiveAppPolling(): void {
             });
         }, 500);
     } else {
+        // Windows: async polling using exec (never block the main thread)
+        const PS_COMMAND = 'powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\\\"user32.dll\\\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);\' -Name Win32 -Namespace Temp -ErrorAction SilentlyContinue; $h=[Temp.Win32]::GetForegroundWindow(); $p=0; [Temp.Win32]::GetWindowThreadProcessId($h,[ref]$p)|Out-Null; $pr=Get-Process -Id $p -ErrorAction SilentlyContinue; if($pr){Write-Output($pr.ProcessName+\'|\'+$p)}"';
+
         pollingInterval = setInterval(() => {
             if (isPolling) return;
             isPolling = true;
-            const detected = detectActiveAppWindows();
-            isPolling = false;
-            if (detected && detected.pid !== ourPid && detected.name !== 'Clarity Scribe') {
-                lastKnownFrontApp = { ...detected, timestamp: Date.now() };
-                lastSuccessfulPollTimestamp = Date.now();
-            }
-        }, 1000);
+
+            exec(PS_COMMAND, { encoding: 'utf-8', timeout: 3000, windowsHide: true }, (error, stdout) => {
+                isPolling = false;
+                if (error) return;
+                try {
+                    const result = stdout.trim();
+                    const [name, pidStr] = result.split('|');
+                    const pid = parseInt(pidStr, 10);
+                    if (name && !isNaN(pid) && pid !== ourPid && name !== 'Clarity Scribe') {
+                        lastKnownFrontApp = { name, pid, timestamp: Date.now() };
+                        lastSuccessfulPollTimestamp = Date.now();
+                    }
+                } catch { /* ignore */ }
+            });
+        }, 1500);
     }
 }
 
@@ -215,51 +209,35 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
         clipboard.writeText(text);
 
         if (process.platform === 'darwin') {
-            const activateScript = `tell application "System Events"
-                set targetProcess to first application process whose unix id is ${targetApp.pid}
-                set frontmost of targetProcess to true
-            end tell`;
-            await execPromise(`osascript -e '${activateScript}'`);
+            // macOS: AppleScript to focus and paste
+            const activateScript = 'tell application "System Events" to set frontmost of (first application process whose unix id is ' + targetApp.pid + ') to true';
+            await execPromise("osascript -e '" + activateScript + "'");
             await delay(100);
 
-            // Verify focus
-            const verifyScript = `tell application "System Events" to return (unix id of first application process whose frontmost is true)`;
             try {
-                const currentPidStr = (await execPromise(`osascript -e '${verifyScript}'`)).trim();
+                const verifyScript = 'tell application "System Events" to return (unix id of first application process whose frontmost is true)';
+                const currentPidStr = (await execPromise("osascript -e '" + verifyScript + "'")).trim();
                 const currentPid = parseInt(currentPidStr, 10);
                 if (currentPid !== targetApp.pid) {
-                    console.log(`[Main] Focus verification failed, clipboard fallback`);
-                    // Text is already in clipboard from above
+                    console.log('[Main] Focus verification failed, clipboard fallback');
                     targetAppBeforeRecording = null;
-                    if (hadOriginalContent) {
-                        // Don't restore — the user needs the transcription
-                    }
                     return { success: false, fallback: 'clipboard', reason: 'focus-failed' };
                 }
             } catch { /* continue anyway */ }
 
-            const pasteScript = `tell application "System Events" to keystroke "v" using command down`;
-            await execPromise(`osascript -e '${pasteScript}'`);
+            await execPromise('osascript -e \'tell application "System Events" to keystroke "v" using command down\'');
         } else {
-            // Windows
-            const winScript = `
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public class Win32Focus {
-    [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-'@
-$proc = Get-Process -Id ${targetApp.pid} -ErrorAction SilentlyContinue
-if ($proc -and $proc.MainWindowHandle) {
-    [Win32Focus]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
-    Start-Sleep -Milliseconds 100
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.SendKeys]::SendWait("^v")
-}
-`;
-            await execPromise(`powershell -NoProfile -Command "${winScript.replace(/\n/g, ';').replace(/"/g, '\\"')}"`);
+            // Windows: inline PowerShell to focus and paste
+            try {
+                const focusCmd = 'powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\' -Name WF -Namespace Temp -ErrorAction SilentlyContinue; $p=Get-Process -Id ' + targetApp.pid + ' -ErrorAction SilentlyContinue; if($p -and $p.MainWindowHandle){[Temp.WF]::SetForegroundWindow($p.MainWindowHandle)|Out-Null}"';
+                await execPromise(focusCmd);
+                await delay(150);
+
+                const pasteCmd = 'powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')"';
+                await execPromise(pasteCmd);
+            } catch (e) {
+                console.error('[Main] Windows paste failed:', e);
+            }
         }
 
         await delay(300);
@@ -267,7 +245,7 @@ if ($proc -and $proc.MainWindowHandle) {
         // Restore original clipboard
         if (hadOriginalContent) {
             clipboard.writeText(originalClipboard);
-            console.log(`[Main] Pasted to ${targetApp.name}, clipboard restored`);
+            console.log('[Main] Pasted to ' + targetApp.name + ', clipboard restored');
         } else {
             clipboard.clear();
         }
@@ -283,6 +261,7 @@ if ($proc -and $proc.MainWindowHandle) {
 
 // --- Window ---
 function createWindow(): void {
+    const isWin = process.platform === 'win32';
     mainWindow = new BrowserWindow({
         width: 340,
         height: 64,
@@ -291,8 +270,9 @@ function createWindow(): void {
         alwaysOnTop: true,
         resizable: false,
         movable: true,
-        skipTaskbar: true,
+        skipTaskbar: isWin ? false : true,
         hasShadow: false,
+        ...(isWin ? { icon: path.join(__dirname, '../resources/icon.png') } : {}),
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
@@ -304,10 +284,8 @@ function createWindow(): void {
     const saved = store.get('windowBounds') as { x: number; y: number } | undefined;
 
     if (saved && saved.x >= 0 && saved.x < screenWidth - 50 && saved.y >= 0 && saved.y < screenHeight - 50) {
-        // Use saved position only if it's still on-screen
         mainWindow.setPosition(saved.x, saved.y);
     } else {
-        // Center horizontally, upper third vertically
         const x = Math.round((screenWidth - 340) / 2);
         const y = Math.round(screenHeight * 0.3);
         mainWindow.setPosition(x, y);
@@ -328,20 +306,39 @@ function createWindow(): void {
 }
 
 // --- Tray ---
-function createTray(): void {
-    try {
-        // Create a small circle as tray icon (template image for macOS menu bar)
-        const size = 18;
+function createTrayIcon(): Electron.NativeImage {
+    const size = 16;
+    if (process.platform === 'win32') {
+        // Windows: Generate a proper 16x16 RGBA PNG for the system tray
+        // Simple microphone icon in white on transparent background
+        const img = nativeImage.createEmpty();
+        // Use a base64-encoded 16x16 PNG microphone icon
+        const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA' +
+            'mklEQVQ4y2NgGAWkAEYo/R8KGCkxgJGBgYGFgYHhPxD/h2IWKA0D' +
+            'LFANYIayQRgEQGwWqAYQzcy4DGCBagBhkCQLLgNYoGx0AxgpMYCF' +
+            'Eg1gga0eBv4jNJBkACMKG90ARgYI+I+kgRFdA5BmhjqHBSTDDCAH' +
+            'sECdw4JLAwuaH1gI+QGfBuwaWIgJJFwaWAgZQJIGfBoYKdGADwAA' +
+            'GmwZEWhKgZkAAAAASUVORK5CYII=';
+        return nativeImage.createFromBuffer(Buffer.from(pngBase64, 'base64'), { width: size, height: size });
+    } else {
+        // macOS: SVG template image for menu bar
         const canvas = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
-<circle cx="9" cy="9" r="6" fill="black"/>
-<circle cx="9" cy="5" r="2.5" fill="white"/>
-<path d="M6,7 Q6,10.5 9,10.5 Q12,10.5 12,7" fill="none" stroke="white" stroke-width="1.2"/>
-<line x1="9" y1="11" x2="9" y2="13.5" stroke="white" stroke-width="1"/>
-<line x1="7" y1="13.5" x2="11" y2="13.5" stroke="white" stroke-width="1"/>
+<circle cx="8" cy="8" r="6" fill="black"/>
+<circle cx="8" cy="5" r="2.5" fill="white"/>
+<path d="M5.5,6.5 Q5.5,10 8,10 Q10.5,10 10.5,6.5" fill="none" stroke="white" stroke-width="1.2"/>
+<line x1="8" y1="10.5" x2="8" y2="12.5" stroke="white" stroke-width="1"/>
+<line x1="6" y1="12.5" x2="10" y2="12.5" stroke="white" stroke-width="1"/>
 </svg>`;
         const icon = nativeImage.createFromBuffer(Buffer.from(canvas));
         icon.setTemplateImage(true);
+        return icon;
+    }
+}
+
+function createTray(): void {
+    try {
+        const icon = createTrayIcon();
         tray = new Tray(icon);
         tray.setToolTip('Clarity Scribe');
         tray.setContextMenu(Menu.buildFromTemplate([
@@ -357,7 +354,35 @@ function createTray(): void {
 // --- Global Hotkey ---
 function registerHotkey(key: string): boolean {
     globalShortcut.unregisterAll();
+    const originalKey = key;
     if (!key || key.trim() === '' || key === '=') key = 'Alt+Space';
+
+    // On Windows, convert macOS-specific modifiers
+    if (process.platform === 'win32') {
+        key = key.replace(/Command/g, 'Control').replace(/⌘/g, 'Control');
+    }
+
+    // Validate: hotkey must have at least one non-modifier key
+    const modifiers = ['Control', 'Alt', 'Shift', 'Command', 'Meta', 'Super'];
+    const parts = key.split('+').map(p => p.trim());
+    const hasNonModifier = parts.some(p => !modifiers.includes(p));
+    if (!hasNonModifier) {
+        console.log(`[Main] Invalid hotkey "${key}" (modifiers only), defaulting to Alt+Space`);
+        key = 'Alt+Space';
+    }
+
+    // If the key was corrected, update the store so UI stays in sync
+    if (key !== originalKey) {
+        store.set('hotkey', key);
+        // Also update settings.hotkey if settings exist
+        const settings = store.get('settings') as any;
+        if (settings) {
+            settings.hotkey = key;
+            store.set('settings', settings);
+        }
+        // Notify renderer of the actual hotkey
+        mainWindow?.webContents.send('hotkey-changed', key);
+    }
 
     try {
         const success = globalShortcut.register(key, () => {
@@ -387,6 +412,11 @@ function registerHotkey(key: string): boolean {
         return success;
     } catch (err) {
         console.error(`[Main] Hotkey error:`, err);
+        // If registration failed and we weren't already trying Alt+Space, try fallback
+        if (key !== 'Alt+Space') {
+            console.log('[Main] Falling back to Alt+Space');
+            return registerHotkey('Alt+Space');
+        }
         return false;
     }
 }
@@ -478,7 +508,12 @@ function setupIpcHandlers(): void {
     // Window
     ipcMain.handle('quit-app', () => { (app as any).isQuitting = true; app.quit(); });
     ipcMain.handle('set-window-size', (_, { width, height }: { width: number; height: number }) => {
-        mainWindow?.setSize(width, height, true);
+        if (mainWindow) {
+            // Use setBounds to resize, preserving current position
+            // This is more reliable than setSize on Windows with transparent windows
+            const [x, y] = mainWindow.getPosition();
+            mainWindow.setBounds({ x, y, width, height }, true);
+        }
     });
 
     // Permissions
@@ -520,6 +555,9 @@ function setupIpcHandlers(): void {
         return !!store.get('setupDone');
     });
 
+    // Platform detection for renderer
+    ipcMain.handle('get-platform', () => process.platform);
+
     // Launch on Login
     ipcMain.handle('get-launch-on-login', () => {
         return app.getLoginItemSettings().openAtLogin;
@@ -532,6 +570,9 @@ function setupIpcHandlers(): void {
 
 // --- App Lifecycle ---
 // app.dock?.hide() — removed: show in Dock like a normal app
+
+// Set app name for dev mode (in production, electron-builder sets this)
+app.setName('Clarity Scribe');
 
 app.whenReady().then(async () => {
     createWindow();
