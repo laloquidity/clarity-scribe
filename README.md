@@ -4,9 +4,18 @@ A lightweight, standalone desktop dictation app powered by OpenAI's Whisper Larg
 
 Built with Electron, React, and whisper.cpp for fully offline, GPU-accelerated speech-to-text.
 
+## ⬇️ Download
+
+| Platform | Download | Size |
+|----------|----------|------|
+| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~472 MB |
+| **macOS** (Universal) | [**Clarity Scribe (macOS)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | Coming soon |
+
+> On first launch, the app downloads the Whisper AI model (~1.5 GB). This only happens once — after that everything runs fully offline.
+
 ## Features
 
-- **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows) to toggle recording from any app
+- **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Win+Space` on Windows) to toggle recording from any app
 - **GPU-Accelerated Transcription** — Metal on macOS, CUDA (NVIDIA) or Vulkan (Intel/AMD) on Windows, with automatic CPU fallback
 - **Whisper Large V3 Turbo** — 809M parameter model with ~7.7% WER, runs fully locally. ~1.5 GB one-time download
 - **Paste-to-Target** — Transcriptions are automatically pasted into the app you were using when you started recording. Falls back to clipboard copy when paste isn't possible
