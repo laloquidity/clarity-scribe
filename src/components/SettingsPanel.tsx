@@ -87,11 +87,17 @@ function LaunchOnLogin() {
     );
 }
 
-    // Hotkey capture
+    // Hotkey capture — waits for modifier(s) + a non-modifier key
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
         if (!listeningRef.current) return;
         e.preventDefault();
         e.stopPropagation();
+
+        const modifierKeys = ['Meta', 'Control', 'Alt', 'Shift'];
+        const key = e.key;
+
+        // Only register when a non-modifier key is pressed
+        if (modifierKeys.includes(key)) return;
 
         const parts: string[] = [];
         if (e.metaKey) parts.push('Command');
@@ -99,13 +105,10 @@ function LaunchOnLogin() {
         if (e.altKey) parts.push('Alt');
         if (e.shiftKey) parts.push('Shift');
 
-        const key = e.key;
-        if (!['Meta', 'Control', 'Alt', 'Shift'].includes(key)) {
-            // Space, non-breaking space (Mac Option+Space), or any whitespace
-            if (key === ' ' || key === '\u00A0' || key === 'Spacebar') parts.push('Space');
-            else if (key.length === 1) parts.push(key.toUpperCase());
-            else parts.push(key);
-        }
+        // Add the actual key
+        if (key === ' ' || key === '\u00A0' || key === 'Spacebar') parts.push('Space');
+        else if (key.length === 1) parts.push(key.toUpperCase());
+        else parts.push(key);
 
         if (parts.length >= 2) {
             const accelerator = parts.join('+');
@@ -139,49 +142,12 @@ function LaunchOnLogin() {
                 {/* Hotkey */}
                 <div className="settings-group">
                     <span className="settings-label">Global Hotkey</span>
-                    {platform === 'win32' ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                            <select
-                                className="settings-value"
-                                value={listening ? '__custom__' : (['Alt+Space','Control+Shift+Space','Control+Shift+R','Control+Shift+D','F8'].includes(settings.hotkey) ? settings.hotkey : '__custom__')}
-                                onChange={e => {
-                                    const val = e.target.value;
-                                    if (val === '__custom__') {
-                                        setListening(true);
-                                        listeningRef.current = true;
-                                    } else {
-                                        setListening(false);
-                                        listeningRef.current = false;
-                                        window.electronAPI?.setHotkey(val);
-                                        onUpdateSetting('hotkey', val);
-                                    }
-                                }}
-                            >
-                                <option value="Alt+Space">Alt + Space</option>
-                                <option value="Control+Shift+Space">Ctrl + Shift + Space</option>
-                                <option value="Control+Shift+R">Ctrl + Shift + R</option>
-                                <option value="Control+Shift+D">Ctrl + Shift + D</option>
-                                <option value="F8">F8</option>
-                                <option value="__custom__">Custom...</option>
-                            </select>
-                            {listening && (
-                                <div
-                                    className="hotkey-capture no-drag listening"
-                                    onClick={() => { setListening(false); listeningRef.current = false; }}
-                                    style={{ fontSize: 11, textAlign: 'center', marginTop: 2 }}
-                                >
-                                    Press a key combination...
-                                </div>
-                            )}
-                        </div>
-                    ) : (
-                        <div
-                            className={`hotkey-capture no-drag ${listening ? 'listening' : ''}`}
-                            onClick={() => setListening(!listening)}
-                        >
-                            {listening ? 'Press a key combination...' : formatHotkey(settings.hotkey, platform)}
-                        </div>
-                    )}
+                    <div
+                        className={`hotkey-capture no-drag ${listening ? 'listening' : ''}`}
+                        onClick={() => setListening(!listening)}
+                    >
+                        {listening ? 'Press keys...' : formatHotkey(settings.hotkey, platform)}
+                    </div>
                 </div>
 
                 {/* Microphone */}
