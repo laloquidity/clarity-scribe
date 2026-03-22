@@ -32,7 +32,7 @@ function formatHotkeyShort(hotkey: string, platform: string = 'darwin'): string 
     if (!hotkey) return '';
     const isWin = platform === 'win32';
     const map: Record<string, string> = isWin ? {
-        'Alt': 'Alt', 'Command': 'Ctrl', 'Control': 'Ctrl', 'Shift': 'Shift', 'Space': 'Space',
+        'Alt': 'Alt', 'Command': 'Ctrl', 'Control': 'Ctrl', 'Super': 'Win', 'Shift': 'Shift', 'Space': 'Space',
     } : {
         'Alt': '⌥', 'Command': '⌘', 'Control': 'Ctrl', 'Shift': '⇧', 'Space': 'Space',
     };

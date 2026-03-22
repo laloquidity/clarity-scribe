@@ -355,7 +355,7 @@ function createTray(): void {
 function registerHotkey(key: string): boolean {
     globalShortcut.unregisterAll();
     const originalKey = key;
-    if (!key || key.trim() === '' || key === '=') key = 'Alt+Space';
+    if (!key || key.trim() === '' || key === '=') key = 'Super+Space';
 
     // On Windows, convert macOS-specific modifiers
     if (process.platform === 'win32') {
@@ -367,8 +367,8 @@ function registerHotkey(key: string): boolean {
     const parts = key.split('+').map(p => p.trim());
     const hasNonModifier = parts.some(p => !modifiers.includes(p));
     if (!hasNonModifier) {
-        console.log(`[Main] Invalid hotkey "${key}" (modifiers only), defaulting to Alt+Space`);
-        key = 'Alt+Space';
+        console.log(`[Main] Invalid hotkey "${key}" (modifiers only), defaulting to Super+Space`);
+        key = 'Super+Space';
     }
 
     // If the key was corrected, update the store so UI stays in sync
@@ -412,10 +412,10 @@ function registerHotkey(key: string): boolean {
         return success;
     } catch (err) {
         console.error(`[Main] Hotkey error:`, err);
-        // If registration failed and we weren't already trying Alt+Space, try fallback
-        if (key !== 'Alt+Space') {
-            console.log('[Main] Falling back to Alt+Space');
-            return registerHotkey('Alt+Space');
+        // If registration failed and we weren't already trying Super+Space, try fallback
+        if (key !== 'Super+Space') {
+            console.log('[Main] Falling back to Super+Space');
+            return registerHotkey('Super+Space');
         }
         return false;
     }
@@ -496,7 +496,7 @@ function setupIpcHandlers(): void {
         store.set('settings', settings);
         if (settings.hotkey) registerHotkey(settings.hotkey);
     });
-    ipcMain.handle('get-hotkey', () => store.get('hotkey') || 'Alt+Space');
+    ipcMain.handle('get-hotkey', () => store.get('hotkey') || 'Super+Space');
     ipcMain.handle('set-hotkey', (_, key) => { store.set('hotkey', key); return registerHotkey(key); });
 
     // History
@@ -596,7 +596,7 @@ app.whenReady().then(async () => {
         console.error('[Main] Whisper init error:', error);
     }
 
-    registerHotkey((store.get('hotkey') as string) || 'Alt+Space');
+    registerHotkey((store.get('hotkey') as string) || 'Super+Space');
     // If setup was already completed on a prior launch, start polling immediately
     if (store.get('setupDone') && !pollingInterval) {
         startActiveAppPolling();
