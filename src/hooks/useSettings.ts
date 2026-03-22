@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback } from 'react';
 import type { Settings } from '../types';
 
 const DEFAULT_SETTINGS: Settings = {
-    hotkey: 'Super+Space',
+    hotkey: 'Alt+Space',
     selectedMicId: 'default',
     whisperLanguage: 'en',
     silenceDuration: 0,

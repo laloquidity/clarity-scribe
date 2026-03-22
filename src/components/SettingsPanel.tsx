@@ -143,7 +143,7 @@ function LaunchOnLogin() {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             <select
                                 className="settings-value"
-                                value={listening ? '__custom__' : (['Super+Space','Alt+Space','Control+Shift+Space','Control+Shift+R','Control+Shift+D','F8'].includes(settings.hotkey) ? settings.hotkey : '__custom__')}
+                                value={listening ? '__custom__' : (['Alt+Space','Control+Shift+Space','Control+Shift+R','Control+Shift+D','F8'].includes(settings.hotkey) ? settings.hotkey : '__custom__')}
                                 onChange={e => {
                                     const val = e.target.value;
                                     if (val === '__custom__') {
@@ -157,7 +157,6 @@ function LaunchOnLogin() {
                                     }
                                 }}
                             >
-                                <option value="Super+Space">⊞ Win + Space</option>
                                 <option value="Alt+Space">Alt + Space</option>
                                 <option value="Control+Shift+Space">Ctrl + Shift + Space</option>
                                 <option value="Control+Shift+R">Ctrl + Shift + R</option>
