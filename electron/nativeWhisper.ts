@@ -412,6 +412,48 @@ function chunkAudio(audioData: Float32Array): Float32Array[] {
     return chunks;
 }
 
+// --- Phase 1A: Hallucination Detection ---
+// Detect when Whisper repeats a phrase (4+ words) 3+ times consecutively
+function detectHallucination(text: string): boolean {
+    if (!text || text.length < 50) return false;
+    // Match 4+ word phrase repeated 3+ times
+    return /(\b[\w']+(?:\s+[\w']+){3,})\s*(?:\1\s*){2,}/i.test(text);
+}
+
+function cleanHallucination(text: string): string {
+    // Remove all but the first occurrence of the repeated phrase
+    return text.replace(/(\b[\w']+(?:\s+[\w']+){3,})\s*(?:\1\s*){2,}/gi, '$1').trim();
+}
+
+// --- Phase 1C: Overlap Deduplication ---
+// Remove duplicate words at chunk boundaries from 1s audio overlap
+function deduplicateOverlap(prevText: string, currText: string): string {
+    if (!prevText || !currText) return currText;
+    const prevWords = prevText.split(/\s+/).slice(-15); // last 15 words
+    const currWords = currText.split(/\s+/);
+    // Find longest matching suffix of prev / prefix of curr (min 3 words)
+    for (let len = Math.min(prevWords.length, currWords.length); len >= 3; len--) {
+        const suffix = prevWords.slice(-len).join(' ').toLowerCase();
+        const prefix = currWords.slice(0, len).join(' ').toLowerCase();
+        if (suffix === prefix) {
+            console.log(`[Whisper] Dedup: removed ${len} overlapping words at chunk boundary`);
+            return currWords.slice(len).join(' ');
+        }
+    }
+    return currText;
+}
+
+// --- Phase 1B: Context Prompting ---
+// Extract the last sentence from a transcription to use as prompt for the next chunk
+function extractContextPrompt(text: string): string {
+    if (!text) return '';
+    // Try to get the last complete sentence
+    const lastSentence = text.match(/[^.!?]*[.!?]\s*$/)?.[0]?.trim();
+    if (lastSentence && lastSentence.length > 10) return lastSentence.slice(0, 224);
+    // Fallback: last ~100 chars
+    return text.slice(-200).trim();
+}
+
 // --- Windows: smart-whisper transcription ---
 async function transcribeSmartWhisper(
     audioData: Float32Array,
@@ -424,22 +466,57 @@ async function transcribeSmartWhisper(
 
     const chunks = chunkAudio(audioData);
     const transcriptions: string[] = [];
+    let contextPrompt = '';
 
     for (let i = 0; i < chunks.length; i++) {
         const chunkDuration = chunks[i].length / SAMPLE_RATE;
         console.log(`[Whisper] Transcribing chunk ${i + 1}/${chunks.length} (${chunkDuration.toFixed(1)}s)...`);
 
-        const task = await whisperInstance.transcribe(chunks[i], {
+        const transcribeOpts: any = {
             language,
             translate: isTranslateMode,
             print_progress: false,
             single_segment: chunkDuration < 25,
             format: 'simple' as const,
-        });
+        };
+        // Phase 1B: context prompting
+        if (contextPrompt && i > 0) {
+            transcribeOpts.initial_prompt = contextPrompt;
+        }
 
-        const results = await task.result;
-        const text = results.map((r: any) => r.text).join(' ').trim();
-        if (text) transcriptions.push(text);
+        let task = await whisperInstance.transcribe(chunks[i], transcribeOpts);
+        let results = await task.result;
+        let text = results.map((r: any) => r.text).join(' ').trim();
+
+        // Phase 1A: hallucination detection & retry
+        if (text && detectHallucination(text)) {
+            console.log(`[Whisper] ⚠ Hallucination detected in chunk ${i + 1}/${chunks.length}, retrying with temperature=0.2...`);
+            const retryOpts = { ...transcribeOpts, temperature: 0.2, no_speech_threshold: 0.4 };
+            task = await whisperInstance.transcribe(chunks[i], retryOpts);
+            results = await task.result;
+            const retryText = results.map((r: any) => r.text).join(' ').trim();
+
+            if (retryText && !detectHallucination(retryText)) {
+                text = retryText;
+                console.log(`[Whisper] ✓ Retry succeeded for chunk ${i + 1}`);
+            } else {
+                // Both attempts hallucinated — clean the shorter one
+                const cleaned = cleanHallucination(text);
+                const retryCleaned = retryText ? cleanHallucination(retryText) : '';
+                text = (retryCleaned.length > cleaned.length) ? retryCleaned : cleaned;
+                console.log(`[Whisper] Retry also hallucinated for chunk ${i + 1}, using cleaned text`);
+            }
+        }
+
+        if (text) {
+            // Phase 1C: overlap dedup (skip first chunk)
+            if (transcriptions.length > 0) {
+                text = deduplicateOverlap(transcriptions[transcriptions.length - 1], text);
+            }
+            transcriptions.push(text);
+            // Phase 1B: extract context for next chunk
+            contextPrompt = extractContextPrompt(text);
+        }
 
         if (options.onProgress) {
             options.onProgress(Math.round(((i + 1) / chunks.length) * 100));
@@ -462,6 +539,7 @@ async function transcribeNapi(
     const isTranslateMode = options.language === 'en-translate';
     const chunks = chunkAudio(audioData);
     const transcriptions: string[] = [];
+    let contextPrompt = '';
 
     for (let i = 0; i < chunks.length; i++) {
         const chunkDuration = chunks[i].length / SAMPLE_RATE;
@@ -472,9 +550,47 @@ async function transcribeNapi(
         params.printProgress = false;
         params.singleSegment = chunkDuration < 25;
         params.printRealtime = false;
+        // Phase 1B: context prompting
+        if (contextPrompt && i > 0) {
+            params.initialPrompt = contextPrompt;
+        }
 
-        const result = whisperInstance.full(params, chunks[i]);
-        if (result) transcriptions.push(result);
+        let text = whisperInstance.full(params, chunks[i]) || '';
+
+        // Phase 1A: hallucination detection & retry
+        if (text && detectHallucination(text)) {
+            console.log(`[Whisper] ⚠ Hallucination detected in chunk ${i + 1}/${chunks.length}, retrying...`);
+            const retryParams = new NapiWhisperModule.WhisperFullParams(NapiWhisperModule.WhisperSamplingStrategy.Greedy);
+            retryParams.language = params.language;
+            retryParams.translate = params.translate;
+            retryParams.printProgress = false;
+            retryParams.singleSegment = chunkDuration < 25;
+            retryParams.printRealtime = false;
+            retryParams.temperature = 0.2;
+            if (contextPrompt) retryParams.initialPrompt = contextPrompt;
+
+            const retryText = whisperInstance.full(retryParams, chunks[i]) || '';
+
+            if (retryText && !detectHallucination(retryText)) {
+                text = retryText;
+                console.log(`[Whisper] ✓ Retry succeeded for chunk ${i + 1}`);
+            } else {
+                const cleaned = cleanHallucination(text);
+                const retryCleaned = retryText ? cleanHallucination(retryText) : '';
+                text = (retryCleaned.length > cleaned.length) ? retryCleaned : cleaned;
+                console.log(`[Whisper] Retry also hallucinated for chunk ${i + 1}, using cleaned text`);
+            }
+        }
+
+        if (text) {
+            // Phase 1C: overlap dedup (skip first chunk)
+            if (transcriptions.length > 0) {
+                text = deduplicateOverlap(transcriptions[transcriptions.length - 1], text);
+            }
+            transcriptions.push(text);
+            // Phase 1B: extract context for next chunk
+            contextPrompt = extractContextPrompt(text);
+        }
 
         if (options.onProgress) {
             options.onProgress(Math.round(((i + 1) / chunks.length) * 100));
