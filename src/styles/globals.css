@@ -538,6 +538,16 @@ body,
 select.settings-value {
     appearance: none;
     cursor: pointer;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.5)' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+}
+
+select.settings-value option {
+    background: #1e1e2e;
+    color: #e4e4e7;
+    padding: 8px;
 }
 
 .hotkey-capture {
@@ -562,6 +572,22 @@ select.settings-value {
 
 .hotkey-capture.listening {
     animation: hotkey-pulse 1.5s infinite;
+}
+
+.hotkey-capture-input {
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(124, 91, 245, 0.08);
+    border: 1px solid var(--primary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: var(--font);
+    text-align: center;
+    outline: none;
+    cursor: default;
+    animation: hotkey-pulse 1.5s infinite;
+    -webkit-app-region: no-drag;
 }
 
 @keyframes hotkey-pulse {

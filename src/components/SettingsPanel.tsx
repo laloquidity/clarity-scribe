@@ -88,6 +88,9 @@ function LaunchOnLogin() {
 }
 
     // Hotkey capture — waits for modifier(s) + a non-modifier key
+    const captureRef = useRef<HTMLInputElement>(null);
+    const prevHotkeyRef = useRef(settings.hotkey);
+
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
         if (!listeningRef.current) return;
         e.preventDefault();
@@ -95,6 +98,13 @@ function LaunchOnLogin() {
 
         const modifierKeys = ['Meta', 'Control', 'Alt', 'Shift'];
         const key = e.key;
+
+        // Escape cancels capture
+        if (key === 'Escape') {
+            setListening(false);
+            listeningRef.current = false;
+            return;
+        }
 
         // Only register when a non-modifier key is pressed
         if (modifierKeys.includes(key)) return;
@@ -110,6 +120,7 @@ function LaunchOnLogin() {
         else if (key.length === 1) parts.push(key.toUpperCase());
         else parts.push(key);
 
+        // Require at least modifier+key
         if (parts.length >= 2) {
             const accelerator = parts.join('+');
             window.electronAPI?.setHotkey(accelerator);
@@ -123,12 +134,35 @@ function LaunchOnLogin() {
         if (listening) {
             listeningRef.current = true;
             window.addEventListener('keydown', handleKeyDown, true);
+            // Focus the capture input so the user knows it's active
+            setTimeout(() => captureRef.current?.focus(), 50);
             return () => {
                 window.removeEventListener('keydown', handleKeyDown, true);
                 listeningRef.current = false;
             };
         }
     }, [listening, handleKeyDown]);
+
+    const startCustomCapture = () => {
+        prevHotkeyRef.current = settings.hotkey;
+        setListening(true);
+    };
+
+    const handleDropdownChange = (value: string) => {
+        if (value === '__custom__') {
+            startCustomCapture();
+        } else {
+            setListening(false);
+            listeningRef.current = false;
+            window.electronAPI?.setHotkey(value);
+            onUpdateSetting('hotkey', value);
+        }
+    };
+
+    // Determine dropdown value — if current hotkey is a preset, show it; otherwise show Custom
+    const PRESETS = ['Alt+Space', 'Control+Shift+Space', 'Control+Shift+R', 'F8'];
+    const isPreset = PRESETS.includes(settings.hotkey);
+    const dropdownValue = listening ? '__custom__' : (isPreset ? settings.hotkey : '__custom__');
 
     return (
         <div className="settings-overlay">
@@ -142,11 +176,38 @@ function LaunchOnLogin() {
                 {/* Hotkey */}
                 <div className="settings-group">
                     <span className="settings-label">Global Hotkey</span>
-                    <div
-                        className={`hotkey-capture no-drag ${listening ? 'listening' : ''}`}
-                        onClick={() => setListening(!listening)}
-                    >
-                        {listening ? 'Press keys...' : formatHotkey(settings.hotkey, platform)}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <select
+                            className="settings-value"
+                            value={dropdownValue}
+                            onChange={e => handleDropdownChange(e.target.value)}
+                        >
+                            <option value="Alt+Space">Alt + Space</option>
+                            <option value="Control+Shift+Space">Ctrl + Shift + Space</option>
+                            <option value="Control+Shift+R">Ctrl + Shift + R</option>
+                            <option value="F8">F8</option>
+                            <option value="__custom__">
+                                {!isPreset && !listening ? formatHotkey(settings.hotkey, platform) + ' (Custom)' : 'Custom...'}
+                            </option>
+                        </select>
+                        {listening && (
+                            <input
+                                ref={captureRef}
+                                className="hotkey-capture-input"
+                                type="text"
+                                readOnly
+                                value="Press your key combination..."
+                                onBlur={() => {
+                                    // Brief delay to allow click events to process
+                                    setTimeout(() => {
+                                        if (listeningRef.current) {
+                                            setListening(false);
+                                            listeningRef.current = false;
+                                        }
+                                    }, 200);
+                                }}
+                            />
+                        )}
                     </div>
                 </div>
 
