@@ -9,7 +9,7 @@ Built with Electron, React, and whisper.cpp for fully offline, GPU-accelerated s
 | Platform | Download | Size |
 |----------|----------|------|
 | **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~472 MB |
-| **macOS** (Universal) | [**Clarity Scribe (macOS)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | Coming soon |
+| **macOS** (Apple Silicon) | [**Clarity Scribe.dmg (macOS)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~119 MB |
 
 > On first launch, the app downloads the Whisper AI model (~1.5 GB). This only happens once — after that everything runs fully offline.
 
