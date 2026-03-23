@@ -611,6 +611,19 @@ app.whenReady().then(async () => {
             console.log(`[Main] ✓ Whisper ready`);
             // Initialize VAD for intelligent audio segmentation
             await nativeWhisper.initAudioSegmentation();
+
+            // Set engine based on saved language (English → Parakeet, else → Whisper)
+            const settings = store.get('settings') as any || {};
+            const savedLang = settings?.whisperLanguage || 'en';
+            if (savedLang === 'en') {
+                nativeWhisper.setTranscriptionEngine('parakeet' as any);
+                // Init Parakeet in background (non-blocking)
+                nativeWhisper.initParakeetEngine((percent, status) => {
+                    mainWindow?.webContents.send('whisper-progress', percent, status);
+                }).catch(e => console.warn('[Main] Parakeet init failed:', e));
+            } else {
+                nativeWhisper.setTranscriptionEngine('whisper' as any);
+            }
         } else {
             console.error('[Main] Whisper failed to initialize');
         }

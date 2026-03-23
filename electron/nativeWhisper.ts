@@ -398,12 +398,10 @@ export async function transcribe(
     const startTime = Date.now();
 
     // Determine whether to use Parakeet
-    const language = options.language || 'auto';
+    // The UI sets currentEngine='parakeet' for English, 'whisper' for everything else
     const useParakeet = (
-        currentEngine !== 'whisper' &&
-        parakeetService.isParakeetAvailable() &&
-        parakeetService.isLanguageSupported(language) &&
-        language !== 'en-translate' // Parakeet doesn't do translation
+        currentEngine === 'parakeet' &&
+        parakeetService.isParakeetAvailable()
     );
 
     if (useParakeet) {

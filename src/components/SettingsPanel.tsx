@@ -168,55 +168,10 @@ function LaunchOnLogin() {
                 </button>
             </div>
             <div className="settings-body">
-                {/* Hotkey */}
+                {/* Shortcut */}
                 <div className="settings-group">
-                    <span className="settings-label">Global Hotkey</span>
+                    <span className="settings-label">Shortcut</span>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        {/* Current hotkey display */}
-                        <div style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            padding: '8px 12px',
-                            borderRadius: 'var(--radius-sm)',
-                            background: 'rgba(255, 255, 255, 0.04)',
-                            border: '1px solid var(--border)',
-                        }}>
-                            <span style={{
-                                flex: 1,
-                                fontFamily: 'monospace',
-                                fontSize: 13,
-                                fontWeight: 600,
-                                color: 'var(--text-primary)',
-                            }}>
-                                {formatHotkey(settings.hotkey, platform)}
-                            </span>
-                            {!isPreset && (
-                                <span style={{
-                                    fontSize: 9,
-                                    color: 'var(--text-muted)',
-                                    textTransform: 'uppercase',
-                                    letterSpacing: '0.08em',
-                                }}>Custom</span>
-                            )}
-                        </div>
-
-                        {/* Preset selector */}
-                        <select
-                            className="settings-value"
-                            value={isPreset ? settings.hotkey : ''}
-                            onChange={e => {
-                                if (e.target.value) handleDropdownChange(e.target.value);
-                            }}
-                        >
-                            {!isPreset && <option value="" disabled>— Select preset —</option>}
-                            <option value="Alt+Space">Alt + Space</option>
-                            <option value="Control+Shift+Space">Ctrl + Shift + Space</option>
-                            <option value="Control+Shift+R">Ctrl + Shift + R</option>
-                            <option value="F8">F8</option>
-                        </select>
-
-                        {/* Customize button / capture area */}
                         {listening ? (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                 <input
@@ -224,7 +179,7 @@ function LaunchOnLogin() {
                                     className="hotkey-capture-input"
                                     type="text"
                                     readOnly
-                                    value="Hold modifier(s) + press a key..."
+                                    value="Press shortcut..."
                                     onBlur={() => {
                                         setTimeout(() => {
                                             if (listeningRef.current) {
@@ -239,48 +194,45 @@ function LaunchOnLogin() {
                                     color: 'var(--text-muted)',
                                     textAlign: 'center',
                                 }}>
-                                    e.g. Ctrl+Shift+Space · Press Escape to cancel
+                                    Hold modifier(s) + press a key · Escape to cancel
                                 </span>
                             </div>
                         ) : (
-                            <button
-                                className="hotkey-customize-btn no-drag"
-                                onClick={startCustomCapture}
+                            <select
+                                className="settings-value"
+                                value={isPreset ? settings.hotkey : '__custom__'}
+                                onChange={e => {
+                                    const val = e.target.value;
+                                    if (val === '__custom__') {
+                                        startCustomCapture();
+                                    } else {
+                                        handleDropdownChange(val);
+                                    }
+                                }}
                             >
-                                Customize...
-                            </button>
+                                {platform === 'win32' ? (
+                                    <>
+                                        <option value="Alt+Space">Alt + Space</option>
+                                        <option value="Control+Shift+Space">Ctrl + Shift + Space</option>
+                                        <option value="Control+Shift+R">Ctrl + Shift + R</option>
+                                        <option value="F8">F8</option>
+                                    </>
+                                ) : (
+                                    <>
+                                        <option value="Alt+Space">⌥ Space</option>
+                                        <option value="Control+Shift+Space">Ctrl ⇧ Space</option>
+                                        <option value="Control+Shift+R">Ctrl ⇧ R</option>
+                                        <option value="F8">F8</option>
+                                    </>
+                                )}
+                                {!isPreset && (
+                                    <option value="__custom__" disabled>
+                                        {formatHotkey(settings.hotkey, platform)}
+                                    </option>
+                                )}
+                                <option value="__custom__">Custom…</option>
+                            </select>
                         )}
-                    </div>
-                </div>
-
-                {/* Transcription Engine */}
-                <div className="settings-group">
-                    <span className="settings-label">Engine</span>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        <select
-                            className="settings-value"
-                            value={settings.transcriptionEngine || 'auto'}
-                            onChange={async e => {
-                                const engine = e.target.value;
-                                onUpdateSetting('transcriptionEngine', engine as any);
-                                window.electronAPI?.setTranscriptionEngine?.(engine);
-                                if (engine === 'parakeet' || engine === 'auto') {
-                                    // Trigger Parakeet init if needed
-                                    window.electronAPI?.initParakeet?.();
-                                }
-                            }}
-                        >
-                            <option value="auto">Auto (Best for language)</option>
-                            <option value="whisper">Whisper Only</option>
-                            <option value="parakeet">Parakeet TDT Only</option>
-                        </select>
-                        <span style={{
-                            fontSize: 9,
-                            color: 'var(--text-muted)',
-                            lineHeight: 1.4,
-                        }}>
-                            Auto: Parakeet for English/European, Whisper for all others
-                        </span>
                     </div>
                 </div>
 
@@ -301,27 +253,126 @@ function LaunchOnLogin() {
                     </select>
                 </div>
 
-                {/* Language */}
+                {/* Language — drives engine selection under the hood */}
                 <div className="settings-group">
                     <span className="settings-label">Language</span>
                     <select
                         className="settings-value"
                         value={settings.whisperLanguage}
-                        onChange={e => onUpdateSetting('whisperLanguage', e.target.value)}
+                        onChange={e => {
+                            const lang = e.target.value;
+                            onUpdateSetting('whisperLanguage', lang);
+                            // Engine routing: English → Parakeet, everything else → Whisper
+                            if (lang === 'en') {
+                                window.electronAPI?.setTranscriptionEngine?.('parakeet');
+                                window.electronAPI?.initParakeet?.();
+                            } else {
+                                window.electronAPI?.setTranscriptionEngine?.('whisper');
+                            }
+                        }}
                     >
                         <option value="en">English</option>
                         <option value="auto">Auto-detect</option>
-                        <option value="es">Spanish</option>
-                        <option value="fr">French</option>
-                        <option value="de">German</option>
-                        <option value="it">Italian</option>
-                        <option value="pt">Portuguese</option>
-                        <option value="nl">Dutch</option>
+                        <option disabled>──────────</option>
+                        <option value="af">Afrikaans</option>
+                        <option value="sq">Albanian</option>
+                        <option value="am">Amharic</option>
                         <option value="ar">Arabic</option>
+                        <option value="hy">Armenian</option>
+                        <option value="as">Assamese</option>
+                        <option value="az">Azerbaijani</option>
+                        <option value="ba">Bashkir</option>
+                        <option value="eu">Basque</option>
+                        <option value="be">Belarusian</option>
+                        <option value="bn">Bengali</option>
+                        <option value="bs">Bosnian</option>
+                        <option value="br">Breton</option>
+                        <option value="bg">Bulgarian</option>
+                        <option value="my">Burmese</option>
+                        <option value="ca">Catalan</option>
                         <option value="zh">Chinese</option>
+                        <option value="hr">Croatian</option>
+                        <option value="cs">Czech</option>
+                        <option value="da">Danish</option>
+                        <option value="nl">Dutch</option>
+                        <option value="et">Estonian</option>
+                        <option value="fo">Faroese</option>
+                        <option value="fi">Finnish</option>
+                        <option value="fr">French</option>
+                        <option value="gl">Galician</option>
+                        <option value="ka">Georgian</option>
+                        <option value="de">German</option>
+                        <option value="el">Greek</option>
+                        <option value="gu">Gujarati</option>
+                        <option value="ht">Haitian Creole</option>
+                        <option value="ha">Hausa</option>
+                        <option value="haw">Hawaiian</option>
+                        <option value="he">Hebrew</option>
+                        <option value="hi">Hindi</option>
+                        <option value="hu">Hungarian</option>
+                        <option value="is">Icelandic</option>
+                        <option value="id">Indonesian</option>
+                        <option value="it">Italian</option>
                         <option value="ja">Japanese</option>
+                        <option value="jw">Javanese</option>
+                        <option value="kn">Kannada</option>
+                        <option value="kk">Kazakh</option>
+                        <option value="km">Khmer</option>
                         <option value="ko">Korean</option>
+                        <option value="lo">Lao</option>
+                        <option value="la">Latin</option>
+                        <option value="lv">Latvian</option>
+                        <option value="ln">Lingala</option>
+                        <option value="lt">Lithuanian</option>
+                        <option value="lb">Luxembourgish</option>
+                        <option value="mk">Macedonian</option>
+                        <option value="mg">Malagasy</option>
+                        <option value="ms">Malay</option>
+                        <option value="ml">Malayalam</option>
+                        <option value="mt">Maltese</option>
+                        <option value="mi">Maori</option>
+                        <option value="mr">Marathi</option>
+                        <option value="mn">Mongolian</option>
+                        <option value="ne">Nepali</option>
+                        <option value="no">Norwegian</option>
+                        <option value="nn">Nynorsk</option>
+                        <option value="oc">Occitan</option>
+                        <option value="ps">Pashto</option>
+                        <option value="fa">Persian</option>
+                        <option value="pl">Polish</option>
+                        <option value="pt">Portuguese</option>
+                        <option value="pa">Punjabi</option>
+                        <option value="ro">Romanian</option>
                         <option value="ru">Russian</option>
+                        <option value="sa">Sanskrit</option>
+                        <option value="sr">Serbian</option>
+                        <option value="sn">Shona</option>
+                        <option value="sd">Sindhi</option>
+                        <option value="si">Sinhala</option>
+                        <option value="sk">Slovak</option>
+                        <option value="sl">Slovenian</option>
+                        <option value="so">Somali</option>
+                        <option value="es">Spanish</option>
+                        <option value="su">Sundanese</option>
+                        <option value="sw">Swahili</option>
+                        <option value="sv">Swedish</option>
+                        <option value="tl">Tagalog</option>
+                        <option value="tg">Tajik</option>
+                        <option value="ta">Tamil</option>
+                        <option value="tt">Tatar</option>
+                        <option value="te">Telugu</option>
+                        <option value="th">Thai</option>
+                        <option value="bo">Tibetan</option>
+                        <option value="tr">Turkish</option>
+                        <option value="tk">Turkmen</option>
+                        <option value="uk">Ukrainian</option>
+                        <option value="ur">Urdu</option>
+                        <option value="uz">Uzbek</option>
+                        <option value="vi">Vietnamese</option>
+                        <option value="cy">Welsh</option>
+                        <option value="yi">Yiddish</option>
+                        <option value="yo">Yoruba</option>
+                        <option disabled>──────────</option>
                         <option value="en-translate">Translate to English</option>
                     </select>
                 </div>
