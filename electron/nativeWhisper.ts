@@ -374,6 +374,44 @@ export async function transcribe(
     }
 }
 
+// --- Audio Chunking ---
+// Whisper has a 30-second context window. Long audio causes repetition/hallucination.
+// Split into ~28s chunks with 1s overlap, transcribe each, concatenate results.
+const CHUNK_DURATION_SECONDS = 28;
+const CHUNK_OVERLAP_SECONDS = 1;
+const SAMPLE_RATE = 16000;
+
+function chunkAudio(audioData: Float32Array): Float32Array[] {
+    const chunkSamples = CHUNK_DURATION_SECONDS * SAMPLE_RATE;
+    const overlapSamples = CHUNK_OVERLAP_SECONDS * SAMPLE_RATE;
+    const totalSamples = audioData.length;
+
+    // Short audio doesn't need chunking
+    if (totalSamples <= chunkSamples) {
+        return [audioData];
+    }
+
+    const chunks: Float32Array[] = [];
+    let offset = 0;
+
+    while (offset < totalSamples) {
+        const end = Math.min(offset + chunkSamples, totalSamples);
+        chunks.push(audioData.slice(offset, end));
+        // Advance by chunk size minus overlap
+        offset += chunkSamples - overlapSamples;
+        // If the remaining audio is very short, just include it in the last chunk
+        if (totalSamples - offset < SAMPLE_RATE * 2) {
+            if (offset < totalSamples) {
+                chunks.push(audioData.slice(offset));
+            }
+            break;
+        }
+    }
+
+    console.log(`[Whisper] Split ${(totalSamples / SAMPLE_RATE).toFixed(1)}s audio into ${chunks.length} chunks`);
+    return chunks;
+}
+
 // --- Windows: smart-whisper transcription ---
 async function transcribeSmartWhisper(
     audioData: Float32Array,
@@ -384,20 +422,34 @@ async function transcribeSmartWhisper(
     const isTranslateMode = options.language === 'en-translate';
     const language = isTranslateMode ? 'auto' : (options.language || 'auto');
 
-    const task = await whisperInstance.transcribe(audioData, {
-        language,
-        translate: isTranslateMode,
-        print_progress: false,
-        single_segment: durationSeconds < 25,
-        format: 'simple' as const,
-    });
+    const chunks = chunkAudio(audioData);
+    const transcriptions: string[] = [];
 
-    const results = await task.result;
-    const text = results.map((r: any) => r.text).join(' ').trim();
+    for (let i = 0; i < chunks.length; i++) {
+        const chunkDuration = chunks[i].length / SAMPLE_RATE;
+        console.log(`[Whisper] Transcribing chunk ${i + 1}/${chunks.length} (${chunkDuration.toFixed(1)}s)...`);
 
+        const task = await whisperInstance.transcribe(chunks[i], {
+            language,
+            translate: isTranslateMode,
+            print_progress: false,
+            single_segment: chunkDuration < 25,
+            format: 'simple' as const,
+        });
+
+        const results = await task.result;
+        const text = results.map((r: any) => r.text).join(' ').trim();
+        if (text) transcriptions.push(text);
+
+        if (options.onProgress) {
+            options.onProgress(Math.round(((i + 1) / chunks.length) * 100));
+        }
+    }
+
+    const fullText = transcriptions.join(' ').trim();
     const duration = Date.now() - startTime;
-    console.log(`[Whisper] Done in ${duration}ms: "${text?.substring(0, 60) || ''}"`);
-    return text || '';
+    console.log(`[Whisper] Done in ${duration}ms (${chunks.length} chunks): "${fullText?.substring(0, 80) || ''}"`);
+    return fullText || '';
 }
 
 // --- macOS: @napi-rs/whisper transcription ---
@@ -407,22 +459,32 @@ async function transcribeNapi(
     durationSeconds: number,
     startTime: number
 ): Promise<string> {
-    const params = new NapiWhisperModule.WhisperFullParams(NapiWhisperModule.WhisperSamplingStrategy.Greedy);
-
     const isTranslateMode = options.language === 'en-translate';
-    params.language = isTranslateMode ? 'auto' : (options.language || 'auto');
-    params.translate = isTranslateMode;
-    params.printProgress = false;
-    params.singleSegment = durationSeconds < 25;
-    params.printRealtime = false;
+    const chunks = chunkAudio(audioData);
+    const transcriptions: string[] = [];
 
-    if (options.onProgress) params.onProgress = options.onProgress;
+    for (let i = 0; i < chunks.length; i++) {
+        const chunkDuration = chunks[i].length / SAMPLE_RATE;
+        const params = new NapiWhisperModule.WhisperFullParams(NapiWhisperModule.WhisperSamplingStrategy.Greedy);
 
-    const result = whisperInstance.full(params, audioData);
+        params.language = isTranslateMode ? 'auto' : (options.language || 'auto');
+        params.translate = isTranslateMode;
+        params.printProgress = false;
+        params.singleSegment = chunkDuration < 25;
+        params.printRealtime = false;
+
+        const result = whisperInstance.full(params, chunks[i]);
+        if (result) transcriptions.push(result);
+
+        if (options.onProgress) {
+            options.onProgress(Math.round(((i + 1) / chunks.length) * 100));
+        }
+    }
+
+    const fullText = transcriptions.join(' ').trim();
     const duration = Date.now() - startTime;
-    console.log(`[Whisper] Done in ${duration}ms: "${result?.substring(0, 60) || ''}"`);
-
-    return result || '';
+    console.log(`[Whisper] Done in ${duration}ms (${chunks.length} chunks): "${fullText?.substring(0, 80) || ''}"`);
+    return fullText || '';
 }
 
 export function getAccelerationInfo(): { type: string; available: boolean } {

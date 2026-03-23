@@ -149,20 +149,15 @@ function LaunchOnLogin() {
     };
 
     const handleDropdownChange = (value: string) => {
-        if (value === '__custom__') {
-            startCustomCapture();
-        } else {
-            setListening(false);
-            listeningRef.current = false;
-            window.electronAPI?.setHotkey(value);
-            onUpdateSetting('hotkey', value);
-        }
+        setListening(false);
+        listeningRef.current = false;
+        window.electronAPI?.setHotkey(value);
+        onUpdateSetting('hotkey', value);
     };
 
-    // Determine dropdown value — if current hotkey is a preset, show it; otherwise show Custom
+    // Determine dropdown value — if current hotkey is a preset, show it; otherwise blank
     const PRESETS = ['Alt+Space', 'Control+Shift+Space', 'Control+Shift+R', 'F8'];
     const isPreset = PRESETS.includes(settings.hotkey);
-    const dropdownValue = listening ? '__custom__' : (isPreset ? settings.hotkey : '__custom__');
 
     return (
         <div className="settings-overlay">
@@ -177,36 +172,83 @@ function LaunchOnLogin() {
                 <div className="settings-group">
                     <span className="settings-label">Global Hotkey</span>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {/* Current hotkey display */}
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '8px 12px',
+                            borderRadius: 'var(--radius-sm)',
+                            background: 'rgba(255, 255, 255, 0.04)',
+                            border: '1px solid var(--border)',
+                        }}>
+                            <span style={{
+                                flex: 1,
+                                fontFamily: 'monospace',
+                                fontSize: 13,
+                                fontWeight: 600,
+                                color: 'var(--text-primary)',
+                            }}>
+                                {formatHotkey(settings.hotkey, platform)}
+                            </span>
+                            {!isPreset && (
+                                <span style={{
+                                    fontSize: 9,
+                                    color: 'var(--text-muted)',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.08em',
+                                }}>Custom</span>
+                            )}
+                        </div>
+
+                        {/* Preset selector */}
                         <select
                             className="settings-value"
-                            value={dropdownValue}
-                            onChange={e => handleDropdownChange(e.target.value)}
+                            value={isPreset ? settings.hotkey : ''}
+                            onChange={e => {
+                                if (e.target.value) handleDropdownChange(e.target.value);
+                            }}
                         >
+                            {!isPreset && <option value="" disabled>— Select preset —</option>}
                             <option value="Alt+Space">Alt + Space</option>
                             <option value="Control+Shift+Space">Ctrl + Shift + Space</option>
                             <option value="Control+Shift+R">Ctrl + Shift + R</option>
                             <option value="F8">F8</option>
-                            <option value="__custom__">
-                                {!isPreset && !listening ? formatHotkey(settings.hotkey, platform) + ' (Custom)' : 'Custom...'}
-                            </option>
                         </select>
-                        {listening && (
-                            <input
-                                ref={captureRef}
-                                className="hotkey-capture-input"
-                                type="text"
-                                readOnly
-                                value="Press your key combination..."
-                                onBlur={() => {
-                                    // Brief delay to allow click events to process
-                                    setTimeout(() => {
-                                        if (listeningRef.current) {
-                                            setListening(false);
-                                            listeningRef.current = false;
-                                        }
-                                    }, 200);
-                                }}
-                            />
+
+                        {/* Customize button / capture area */}
+                        {listening ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <input
+                                    ref={captureRef}
+                                    className="hotkey-capture-input"
+                                    type="text"
+                                    readOnly
+                                    value="Hold modifier(s) + press a key..."
+                                    onBlur={() => {
+                                        setTimeout(() => {
+                                            if (listeningRef.current) {
+                                                setListening(false);
+                                                listeningRef.current = false;
+                                            }
+                                        }, 200);
+                                    }}
+                                />
+                                <span style={{
+                                    fontSize: 9,
+                                    color: 'var(--text-muted)',
+                                    textAlign: 'center',
+                                }}>
+                                    e.g. Ctrl+Shift+Space · Press Escape to cancel
+                                </span>
+                            </div>
+                        ) : (
+                            <button
+                                className="hotkey-customize-btn no-drag"
+                                onClick={startCustomCapture}
+                            >
+                                Customize...
+                            </button>
                         )}
                     </div>
                 </div>
