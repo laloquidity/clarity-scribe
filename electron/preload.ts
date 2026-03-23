@@ -22,6 +22,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('transcription-result', handler);
         return () => { ipcRenderer.removeListener('transcription-result', handler); };
     },
+    onTranscriptionProgress: (cb: (percent: number) => void) => {
+        const handler = (_: any, percent: number) => cb(percent);
+        ipcRenderer.on('transcription-progress', handler);
+        return () => { ipcRenderer.removeListener('transcription-progress', handler); };
+    },
     onToggleRecording: (cb: () => void) => {
         const handler = () => cb();
         ipcRenderer.on('toggle-recording', handler);
@@ -46,6 +51,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('hotkey-changed', handler);
         return () => { ipcRenderer.removeListener('hotkey-changed', handler); };
     },
+
+    // Engine management
+    getEngineInfo: () => ipcRenderer.invoke('get-engine-info'),
+    setTranscriptionEngine: (engine: string) => ipcRenderer.invoke('set-transcription-engine', engine),
+    initParakeet: () => ipcRenderer.invoke('init-parakeet'),
 
     // History
     getHistory: () => ipcRenderer.invoke('get-history'),

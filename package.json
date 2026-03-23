@@ -1,6 +1,6 @@
 {
     "name": "clarity-scribe",
-    "version": "1.4.0",
+    "version": "2.0.0",
     "description": "Lightweight standalone dictation app powered by Whisper AI",
     "main": "dist-electron/main.js",
     "scripts": {
@@ -18,6 +18,7 @@
         "electron-store": "^6.0.1",
         "framer-motion": "^11.18.2",
         "lucide-react": "^0.344.0",
+        "onnxruntime-node": "^1.24.3",
         "react": "^18.2.0",
         "react-dom": "^18.2.0",
         "smart-whisper": "^0.8.1"

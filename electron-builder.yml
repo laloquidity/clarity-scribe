@@ -11,6 +11,7 @@ asarUnpack:
   - "node_modules/@napi-rs/**"
   - "node_modules/whisper-node/**"
   - "node_modules/smart-whisper/**"
+  - "node_modules/onnxruntime-node/**"
 mac:
   target:
     - dmg

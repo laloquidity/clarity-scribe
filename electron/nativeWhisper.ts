@@ -2,6 +2,7 @@
  * Native Whisper Service — Cross-platform transcription
  * macOS: Uses @napi-rs/whisper for GPU-accelerated transcription (Metal)
  * Windows: Uses smart-whisper with GPU acceleration (CUDA → Vulkan → CPU)
+ * Audio segmentation: Silero VAD for intelligent speech boundary detection
  */
 
 import { readFile } from 'fs/promises';
@@ -9,6 +10,8 @@ import { join, dirname } from 'path';
 import https from 'https';
 import { createWriteStream, mkdirSync, statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
+import { initVAD, detectSpeechSegments, isVADReady } from './vadService';
+import * as parakeetService from './parakeetService';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -350,17 +353,74 @@ async function initNapiWhisper(
     return true;
 }
 
+// --- Engine Selection ---
+type TranscriptionEngine = 'auto' | 'whisper' | 'parakeet';
+let currentEngine: TranscriptionEngine = 'auto';
+
+export function setTranscriptionEngine(engine: TranscriptionEngine): void {
+    currentEngine = engine;
+    console.log(`[Engine] Transcription engine set to: ${engine}`);
+}
+
+export function getTranscriptionEngine(): TranscriptionEngine {
+    return currentEngine;
+}
+
+export async function initParakeetEngine(
+    onProgress?: (percent: number, status: string) => void
+): Promise<boolean> {
+    try {
+        const ok = await parakeetService.initParakeet(onProgress);
+        if (ok) {
+            console.log('[Engine] Parakeet TDT engine initialized');
+        }
+        return ok;
+    } catch (e) {
+        console.error('[Engine] Parakeet init failed:', e);
+        return false;
+    }
+}
+
+export function getEngineInfo(): { whisper: string; parakeet: boolean; currentEngine: string } {
+    return {
+        whisper: getAccelerationInfo().type,
+        parakeet: parakeetService.isParakeetAvailable(),
+        currentEngine,
+    };
+}
+
 export async function transcribe(
     audioData: Float32Array,
     options: { language?: string; onProgress?: (progress: number) => void } = {}
 ): Promise<string> {
+    const durationSeconds = audioData.length / 16000;
+    console.log(`[Engine] Transcribing ${durationSeconds.toFixed(1)}s (engine=${currentEngine}, lang=${options.language || 'auto'})...`);
+    const startTime = Date.now();
+
+    // Determine whether to use Parakeet
+    const language = options.language || 'auto';
+    const useParakeet = (
+        currentEngine !== 'whisper' &&
+        parakeetService.isParakeetAvailable() &&
+        parakeetService.isLanguageSupported(language) &&
+        language !== 'en-translate' // Parakeet doesn't do translation
+    );
+
+    if (useParakeet) {
+        try {
+            console.log('[Engine] Using Parakeet TDT');
+            const text = await parakeetService.transcribeParakeet(audioData, options);
+            if (text) return text;
+            console.warn('[Engine] Parakeet returned empty, falling back to Whisper');
+        } catch (error) {
+            console.warn('[Engine] Parakeet failed, falling back to Whisper:', error);
+        }
+    }
+
+    // Whisper path
     if (!whisperInstance) {
         throw new Error('Whisper not initialized');
     }
-
-    const durationSeconds = audioData.length / 16000;
-    console.log(`[Whisper] Transcribing ${durationSeconds.toFixed(1)}s...`);
-    const startTime = Date.now();
 
     try {
         if (IS_WINDOWS) {
@@ -374,19 +434,32 @@ export async function transcribe(
     }
 }
 
-// --- Audio Chunking ---
-// Whisper has a 30-second context window. Long audio causes repetition/hallucination.
-// Split into ~28s chunks with 1s overlap, transcribe each, concatenate results.
+// --- Audio Segmentation ---
+// Primary: Silero VAD detects speech boundaries, splits on natural pauses
+// Fallback: Fixed 28s chunks with 1s overlap if VAD unavailable
 const CHUNK_DURATION_SECONDS = 28;
 const CHUNK_OVERLAP_SECONDS = 1;
 const SAMPLE_RATE = 16000;
 
-function chunkAudio(audioData: Float32Array): Float32Array[] {
+// Initialize VAD (called during app startup)
+export async function initAudioSegmentation(): Promise<void> {
+    try {
+        const ok = await initVAD();
+        if (ok) {
+            console.log('[Whisper] VAD-based segmentation enabled');
+        } else {
+            console.warn('[Whisper] VAD init failed, using fixed chunking fallback');
+        }
+    } catch (e) {
+        console.warn('[Whisper] VAD init error, using fixed chunking fallback:', e);
+    }
+}
+
+function chunkAudioFixed(audioData: Float32Array): Float32Array[] {
     const chunkSamples = CHUNK_DURATION_SECONDS * SAMPLE_RATE;
     const overlapSamples = CHUNK_OVERLAP_SECONDS * SAMPLE_RATE;
     const totalSamples = audioData.length;
 
-    // Short audio doesn't need chunking
     if (totalSamples <= chunkSamples) {
         return [audioData];
     }
@@ -397,9 +470,7 @@ function chunkAudio(audioData: Float32Array): Float32Array[] {
     while (offset < totalSamples) {
         const end = Math.min(offset + chunkSamples, totalSamples);
         chunks.push(audioData.slice(offset, end));
-        // Advance by chunk size minus overlap
         offset += chunkSamples - overlapSamples;
-        // If the remaining audio is very short, just include it in the last chunk
         if (totalSamples - offset < SAMPLE_RATE * 2) {
             if (offset < totalSamples) {
                 chunks.push(audioData.slice(offset));
@@ -408,8 +479,32 @@ function chunkAudio(audioData: Float32Array): Float32Array[] {
         }
     }
 
-    console.log(`[Whisper] Split ${(totalSamples / SAMPLE_RATE).toFixed(1)}s audio into ${chunks.length} chunks`);
+    console.log(`[Whisper] Fixed chunking: ${(totalSamples / SAMPLE_RATE).toFixed(1)}s → ${chunks.length} chunks`);
     return chunks;
+}
+
+async function segmentAudio(audioData: Float32Array): Promise<Float32Array[]> {
+    const durationSeconds = audioData.length / SAMPLE_RATE;
+
+    // Short audio doesn't need segmentation
+    if (durationSeconds <= CHUNK_DURATION_SECONDS) {
+        return [audioData];
+    }
+
+    // Try VAD-based segmentation
+    if (isVADReady()) {
+        try {
+            const segments = await detectSpeechSegments(audioData, SAMPLE_RATE);
+            if (segments.length > 0) {
+                return segments.map(seg => audioData.slice(seg.startSample, seg.endSample));
+            }
+        } catch (e) {
+            console.warn('[Whisper] VAD segmentation failed, falling back to fixed chunking:', e);
+        }
+    }
+
+    // Fallback: fixed chunking
+    return chunkAudioFixed(audioData);
 }
 
 // --- Phase 1A: Hallucination Detection ---
@@ -464,7 +559,7 @@ async function transcribeSmartWhisper(
     const isTranslateMode = options.language === 'en-translate';
     const language = isTranslateMode ? 'auto' : (options.language || 'auto');
 
-    const chunks = chunkAudio(audioData);
+    const chunks = await segmentAudio(audioData);
     const transcriptions: string[] = [];
     let contextPrompt = '';
 
@@ -537,7 +632,7 @@ async function transcribeNapi(
     startTime: number
 ): Promise<string> {
     const isTranslateMode = options.language === 'en-translate';
-    const chunks = chunkAudio(audioData);
+    const chunks = await segmentAudio(audioData);
     const transcriptions: string[] = [];
     let contextPrompt = '';
 

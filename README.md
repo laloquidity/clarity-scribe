@@ -1,8 +1,8 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by OpenAI's Whisper Large V3 Turbo. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using.
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using.
 
-Built with Electron, React, and whisper.cpp for fully offline, GPU-accelerated speech-to-text.
+Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated speech-to-text.
 
 ## ⬇️ Download
 
@@ -11,27 +11,73 @@ Built with Electron, React, and whisper.cpp for fully offline, GPU-accelerated s
 | **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~472 MB |
 | **macOS** (Apple Silicon) | [**Clarity Scribe.dmg (macOS)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~119 MB |
 
-> On first launch, the app downloads the Whisper AI model (~1.5 GB). This only happens once — after that everything runs fully offline.
+> On first launch, the app downloads the Whisper AI model (~1.5 GB). Parakeet TDT (~890 MB) is downloaded on first use when engine is set to Auto or Parakeet. Fully offline after model downloads.
 
 ## Features
 
-- **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows) to toggle recording from any app
+- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (20x real-time on CPU), Whisper for all others. Manual override available in settings.
+- **Silero VAD Segmentation** — Intelligent voice activity detection splits audio at natural speech boundaries instead of arbitrary time intervals
+- **Hallucination Detection** — Detects and corrects Whisper's looping/repetition artifacts with automatic retry
+- **Context Prompting** — Maintains coherent transcription across long recordings by passing context between chunks
+- **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
+- **Transcription Progress** — Real-time progress percentage shown during long recordings
+- **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows)
 - **GPU-Accelerated Transcription** — Metal on macOS, CUDA (NVIDIA) or Vulkan (Intel/AMD) on Windows, with automatic CPU fallback
-- **Whisper Large V3 Turbo** — 809M parameter model with ~7.7% WER, runs fully locally. ~1.5 GB one-time download
-- **Paste-to-Target** — Transcriptions are automatically pasted into the app you were using when you started recording. Falls back to clipboard copy when paste isn't possible
+- **Paste-to-Target** — Transcriptions are automatically pasted into the app you were using when you started recording
 - **Transcription History** — Timestamped log of all dictations with click-to-copy, individual delete, and clear all
 - **Always-on-Top Widget** — Minimal floating bar with mic button, waveform visualization, and expandable history panel
-- **Guided First-Run Setup** — Model download progress bar followed by permission requests (microphone + accessibility) so everything works on first use
+- **Guided First-Run Setup** — Model download progress bar followed by permission requests
 - **Tray Icon** — Lives in the system tray/menu bar for quick access
 - **Launch on Login** — Optional toggle to start automatically when you log in
-- **Multi-Language** — Supports 100+ languages via Whisper, with auto-detect and translate-to-English mode
-- **Auto-Stop** — Configurable silence detection to automatically stop recording (2s, 3s, 5s, or 10s)
+- **Multi-Language** — 25 European languages via Parakeet, 100+ via Whisper, with auto-detect and translate-to-English mode
+- **Auto-Stop** — Configurable silence detection to automatically stop recording
+
+## Transcription Engines
+
+### Engine Selection
+
+| Setting | Behavior |
+|---------|----------|
+| **Auto** (default) | Parakeet for English + 24 European languages, Whisper for all others |
+| **Whisper Only** | Always use Whisper Large V3 Turbo |
+| **Parakeet TDT Only** | Always use Parakeet (falls back to Whisper for unsupported languages) |
+
+### Parakeet TDT 0.6B-v3
+
+| Spec | Value |
+|------|-------|
+| Parameters | 600M |
+| WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
+| Languages | 25 European |
+| Speed | ~20x real-time on CPU, faster with CUDA |
+| Model Size | ~890 MB (INT8 quantized ONNX) |
+
+### Whisper Large V3 Turbo
+
+| Spec | Value |
+|------|-------|
+| Parameters | 809M |
+| WER | ~7.7% |
+| Languages | 100+ |
+| Speed | GPU-accelerated via Metal/CUDA/Vulkan |
+| Model Size | ~1.5 GB |
+
+### Transcription Pipeline
+
+Long recordings are processed through a hardened pipeline:
+
+1. **Silero VAD** — Detects speech segments, splits on natural pauses (~2MB ONNX model)
+2. **Chunked Transcription** — Each segment processed independently (≤28s each)
+3. **Context Prompting** — Last sentence of chunk N feeds into chunk N+1 for coherent flow
+4. **Hallucination Detection** — If looping detected, retries with adjusted temperature
+5. **Overlap Dedup** — Removes repeated words at segment boundaries
+6. **Result Assembly** — Clean, continuous transcription output
 
 ## Requirements
 
 - **macOS** 10.12+ (Apple Silicon or Intel)
 - **Windows** 10/11 x64 (NVIDIA GPU recommended for best performance)
-- ~1.5 GB disk space for the Whisper model (downloaded on first launch)
+- ~2.5 GB disk space for both models (downloaded on first launch/use)
 - ~2 GB RAM during transcription
 
 ## Getting Started
@@ -63,18 +109,11 @@ To enable GPU acceleration on Windows, the `smart-whisper` native addon must be 
    ```
    Also copy CUDA runtime DLLs from the CUDA Toolkit (`cublas64_*.dll`, `cublasLt64_*.dll`, `cudart64_*.dll`).
 
-3. **Cache Electron headers** (if behind a VPN/firewall):
-   ```powershell
-   # Download headers manually and place in ~/.electron-gyp/39.8.3/
-   ```
-
-4. **Rebuild smart-whisper**:
+3. **Rebuild smart-whisper**:
    ```powershell
    $env:BYOL = "C:/whisper-build/build-cuda/src/Release/whisper.lib"
    npx node-gyp rebuild --directory=node_modules/smart-whisper --nodedir=$env:USERPROFILE/.electron-gyp/39.8.3 --arch=x64
    ```
-
-The `postinstall` script automatically patches smart-whisper for ABI compatibility with the CUDA build.
 
 ### Build Installers
 
@@ -88,37 +127,28 @@ npm run build:win
 
 Build output goes to the `release/` directory.
 
-## How It Works
-
-1. **Press your hotkey** (or click the mic icon) — Clarity Scribe captures which app you're in
-2. **Speak** — Audio is recorded via the Web Audio API and processed through an AudioWorklet
-3. **Release** (or let silence auto-stop) — Audio is sent to the local Whisper model
-4. **Done** — Transcription is pasted into your original app, or copied to clipboard
-
-The app runs a background poller to track the active/frontmost application, so it always knows where to paste. On macOS this uses AppleScript via System Events; on Windows it uses PowerShell with the Win32 API.
-
 ## Architecture
 
 ```
 clarity-scribe/
 ├── electron/              # Main process
 │   ├── main.ts            # Window, tray, IPC, hotkey, paste logic
-│   ├── nativeWhisper.ts   # Whisper init, GPU detection, transcription
+│   ├── nativeWhisper.ts   # Engine router, Whisper, GPU detection, chunking
+│   ├── vadService.ts      # Silero VAD speech detection (ONNX Runtime)
+│   ├── parakeetService.ts # Parakeet TDT 0.6B-v3 engine (ONNX Runtime)
+│   ├── tdtDecoder.ts      # Token-and-Duration Transducer beam search
 │   └── preload.ts         # Context bridge (IPC API)
 ├── src/                   # Renderer (React)
 │   ├── App.tsx            # Main shell with setup/widget/history/settings
 │   ├── components/
-│   │   ├── Widget.tsx         # Floating bar with mic, waveform, status
+│   │   ├── Widget.tsx         # Floating bar with mic, waveform, progress
 │   │   ├── HistoryPanel.tsx   # Transcription history with delete
-│   │   ├── SettingsPanel.tsx  # Hotkey, mic, language, auto-stop, login
+│   │   ├── SettingsPanel.tsx  # Engine, hotkey, mic, language, auto-stop
 │   │   └── SetupScreen.tsx    # First-run download + permissions
 │   ├── hooks/
 │   │   ├── useAudioRecording.ts  # AudioWorklet recording pipeline
 │   │   └── useSettings.ts       # Settings state management
 │   └── styles/globals.css        # Dark glassmorphic theme
-├── scripts/
-│   ├── patch-smart-whisper.js    # Postinstall: patches smart-whisper for GPU ABI
-│   └── whisper-headers/          # CUDA-build-compatible whisper.cpp headers
 ├── resources/
 │   ├── win-gpu/
 │   │   ├── cuda/          # CUDA backend DLLs (NVIDIA)
@@ -141,23 +171,10 @@ The app auto-detects the best available GPU backend at startup:
 
 Detection happens in `nativeWhisper.ts` → `detectGpuBackend()`. The corresponding DLLs are loaded from `resources/win-gpu/{cuda,vulkan}/` and injected into `PATH` before the whisper module loads.
 
-## Transcription Engine
-
-- **macOS**: [`@napi-rs/whisper`](https://www.npmjs.com/package/@napi-rs/whisper) — Rust/NAPI binding with Metal acceleration
-- **Windows**: [`smart-whisper`](https://www.npmjs.com/package/smart-whisper) — C++/NAPI binding with BYOL (Bring Your Own Library) support for CUDA/Vulkan
-
-Both use [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by Georgi Gerganov under the hood. The model file (`ggml-large-v3-turbo.bin`) is downloaded from Hugging Face on first launch and stored locally. Large V3 Turbo is a distilled version of Large V3 — 4 decoder layers instead of 32 — delivering comparable accuracy at significantly faster inference.
-
-| Model | Parameters | WER | Size | Speed |
-|-------|-----------|-----|------|-------|
-| Whisper Small | 244M | ~10.5% | 460 MB | Fast |
-| **Large V3 Turbo** (default) | **809M** | **~7.7%** | **1.5 GB** | **Nearly as fast (distilled)** |
-| Large V3 | 1.54B | ~6.8% | 3+ GB | Slowest |
-
 ## Privacy
 
 - **Fully offline** — No audio or text ever leaves your machine
-- **No telemetry** — Zero analytics, tracking, or network calls (except the one-time model download from Hugging Face)
+- **No telemetry** — Zero analytics, tracking, or network calls (except one-time model downloads from Hugging Face)
 - **No accounts** — No sign-up, no cloud, no server
 - **Local storage only** — Settings and history stored via `electron-store` on disk
 

@@ -1,52 +1,71 @@
 # Changelog
 
-All notable changes to Clarity Scribe are documented here.
+## v2.0.0 — Frontier-Lab Transcription Pipeline (2026-03-23)
 
-## [1.2.0] - 2026-03-18
+### 🚀 New Features
 
-### Fixed
-- **Recording in Production Builds** — AudioWorklet processor was not bundled by Vite for production. Inlined via Blob URL so recording works in both dev and packaged builds.
-- **Recording Toggle State** — Fixed desync between App and hook `isRecordingRef` that caused recordings to get stuck and require a force-quit to stop.
+- **Dual Transcription Engine** — Added NVIDIA Parakeet TDT 0.6B-v3 alongside Whisper Large V3 Turbo
+  - Parakeet: 6.05% WER (English), 25 European languages, ~20x real-time on CPU
+  - Auto-selection: Parakeet for supported languages, Whisper for all others
+  - INT8-quantized ONNX model (~890MB), downloaded on first use
+- **Engine Settings** — New "Engine" dropdown in Settings: Auto / Whisper Only / Parakeet TDT Only
+- **Silero VAD Segmentation** — Intelligent voice activity detection via ONNX Runtime
+  - Splits audio at natural speech pauses instead of arbitrary 28s intervals
+  - Merges short segments (<300ms gaps), splits long ones at quietest points
+  - Falls back to fixed chunking if VAD unavailable
+- **Transcription Progress** — Widget shows "Processing 43%..." during multi-chunk transcription
 
-### Changed
-- **App Icon** — Redesigned to full-bleed dark navy with white mic-pen symbol. Squircle mask with transparent corners applied for proper Dock appearance on unsigned builds.
-- **Dock Visibility** — App now appears in the macOS Dock like a standard application.
-- **Setup Persistence** — Setup completion is saved so returning users skip the setup screen entirely.
-- **Permission Hints** — Clearer rationale text for mic ("Required to hear your voice for transcription") and accessibility ("Required to auto-paste text into your active app") permissions during setup.
+### 🛡️ Quality Improvements
 
-## [1.1.0] - 2026-03-18
+- **Hallucination Detection & Retry** — Detects when Whisper loops the same phrase (4+ words repeated 3+ times), retries with temperature=0.2, cleans output if both attempts fail
+- **Context Prompting** — Last sentence of each chunk is passed as `initial_prompt` to the next chunk, maintaining coherent punctuation, casing, and flow across boundaries
+- **Overlap Deduplication** — Removes duplicate words at chunk boundaries caused by 1s audio overlap (compares last 15 words of chunk N with first words of chunk N+1)
 
-### Added
-- **Guided First-Run Setup** — Two-phase onboarding: model download progress bar followed by explicit permission requests for microphone and accessibility (System Events). No more surprise permission dialogs.
-- **Visible Tray Icon** — SVG microphone icon in the macOS menu bar with Show/Quit context menu. Previously the tray used an empty/invisible icon.
-- **Hotkey Hint in Widget** — Status area now shows `Press ⌥+Space to record` when idle, so new users know how to use the app without opening Settings.
-- **Launch on Login** — Toggle in Settings (off by default) to auto-start Clarity Scribe when you log in.
-- **Individual History Deletion** — Delete single transcription entries with inline "Confirm Delete?" / "Cancel" buttons. Previously only "Clear All" was available.
-- **Delete Confirmation UX** — Both individual delete and Clear All now show explicit "Confirm?" + "Cancel" buttons instead of auto-dismissing hints.
+### 📦 Dependencies
 
-### Changed
-- **Default Model** — Upgraded from Whisper Small (244M params, ~10.5% WER) to **Whisper Large V3 Turbo** (809M params, ~7.7% WER). ~30% more accurate with comparable speed.
-- **Setup Screen Title** — Renamed from "Clarity Lite" to "Clarity Scribe" throughout.
-- **Window Centering** — First launch now centers the widget horizontally and places it at the upper third of the screen. Previously defaulted to bottom-right corner which could be off-screen. Also validates saved positions are still on-screen (handles monitor changes).
-- **Active App Polling** — Deferred to after setup completes, so the System Events permission is requested in context during onboarding rather than firing unexpectedly at launch.
+- Added `onnxruntime-node` for ONNX Runtime inference (Silero VAD + Parakeet TDT)
 
-### Fixed
-- **Hotkey Display** — `Option+Space` on Mac now correctly displays as `⌥ + Space` in Settings. Previously the Space part was invisible because Mac's Option key produces a non-breaking space character (`\u00A0`) which wasn't being mapped.
+---
 
-### Security
-- **Build Hardening** — Source maps disabled, `console.log` and `debugger` statements stripped from production builds, legal comments removed. No personal paths or identifiers leak into the DMG.
-- **Git Author Sanitized** — All commits use `Clarity Scribe <noreply>` as author.
+## v1.4.0 — Hardened Chunking (2026-03-23)
 
-## [1.0.0] - 2026-03-17
+### 🛡️ Quality Improvements
 
-### Added
-- Initial release
-- Global hotkey recording with configurable shortcut
-- Whisper-powered offline transcription
-- Paste-to-target with active app detection (macOS AppleScript, Windows PowerShell)
-- Clipboard fallback when paste isn't possible
-- Transcription history with timestamps
+- **Hallucination Detection & Retry** — First implementation of hallucination detection
+- **Context Prompting** — Cross-chunk context prompting for coherent transcription
+- **Overlap Deduplication** — Chunk boundary dedup for clean output
+
+---
+
+## v1.3.1 — Long Recording Fix (2026-03-22)
+
+### 🐛 Bug Fixes
+
+- Fixed custom hotkey capture UX — Customize button always available, can re-capture hotkey
+- Fixed long recordings (2+ minutes) producing repeated sentences by implementing 28s chunking
+
+---
+
+## v1.3.0 — Hotkey Overhaul (2026-03-22)
+
+### 🚀 Features
+
+- Hotkey settings redesign with presets dropdown + Customize button
+- Preset hotkeys: Alt+Space, Ctrl+Shift+Space, Ctrl+Shift+R, F8
+- Custom hotkey capture with 3-key combo support
+
+---
+
+## v1.2.0 — Initial Release (2026-03-21)
+
+### 🚀 Features
+
+- GPU-accelerated transcription (CUDA / Vulkan / CPU fallback on Windows, Metal on macOS)
+- Global hotkey toggle recording (Alt+Space / Option+Space)
+- Paste-to-target with active app detection
+- Transcription history with timestamped entries
 - Always-on-top floating widget with waveform visualization
-- Settings panel: hotkey, microphone selection, language, auto-stop silence
-- macOS DMG and Windows NSIS installer build configs
-- macOS entitlements for microphone, automation, and native modules
+- Auto silence detection (2s, 3s, 5s, 10s)
+- Launch on login toggle
+- Multi-language support (100+ via Whisper)
+- First-run setup wizard with model download + permissions

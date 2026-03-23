@@ -52,16 +52,29 @@ const Widget: React.FC<WidgetProps> = ({
     const isProcessing = appState === 'PROCESSING';
     const isCopied = statusMessage?.includes('✓');
     const [platform, setPlatform] = useState('darwin');
+    const [transcriptionProgress, setTranscriptionProgress] = useState<number | null>(null);
 
     useEffect(() => {
         window.electronAPI?.getPlatform?.().then((p: string) => setPlatform(p));
+        const unsub = window.electronAPI?.onTranscriptionProgress?.((percent) => {
+            setTranscriptionProgress(percent);
+        });
+        const unsubResult = window.electronAPI?.onTranscriptionResult?.(() => {
+            setTranscriptionProgress(null);
+        });
+        return () => { unsub?.(); unsubResult?.(); };
     }, []);
 
     const getStatusText = () => {
         if (!whisperReady && whisperProgress < 100) return whisperStatus || 'Loading...';
         if (statusMessage) return statusMessage;
         if (isRecording) return 'Recording';
-        if (isProcessing) return 'Processing';
+        if (isProcessing) {
+            if (transcriptionProgress !== null && transcriptionProgress < 100) {
+                return `Processing ${transcriptionProgress}%`;
+            }
+            return 'Processing';
+        }
         if (hotkey) return `Press ${formatHotkeyShort(hotkey, platform)} to record`;
         return 'Ready';
     };

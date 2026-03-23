@@ -253,6 +253,37 @@ function LaunchOnLogin() {
                     </div>
                 </div>
 
+                {/* Transcription Engine */}
+                <div className="settings-group">
+                    <span className="settings-label">Engine</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <select
+                            className="settings-value"
+                            value={settings.transcriptionEngine || 'auto'}
+                            onChange={async e => {
+                                const engine = e.target.value;
+                                onUpdateSetting('transcriptionEngine', engine as any);
+                                window.electronAPI?.setTranscriptionEngine?.(engine);
+                                if (engine === 'parakeet' || engine === 'auto') {
+                                    // Trigger Parakeet init if needed
+                                    window.electronAPI?.initParakeet?.();
+                                }
+                            }}
+                        >
+                            <option value="auto">Auto (Best for language)</option>
+                            <option value="whisper">Whisper Only</option>
+                            <option value="parakeet">Parakeet TDT Only</option>
+                        </select>
+                        <span style={{
+                            fontSize: 9,
+                            color: 'var(--text-muted)',
+                            lineHeight: 1.4,
+                        }}>
+                            Auto: Parakeet for English/European, Whisper for all others
+                        </span>
+                    </div>
+                </div>
+
                 {/* Microphone */}
                 <div className="settings-group">
                     <span className="settings-label">Microphone</span>

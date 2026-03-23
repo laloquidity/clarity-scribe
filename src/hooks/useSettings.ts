@@ -9,6 +9,7 @@ const DEFAULT_SETTINGS: Settings = {
     selectedMicId: 'default',
     whisperLanguage: 'en',
     silenceDuration: 0,
+    transcriptionEngine: 'auto',
 };
 
 export function useSettings() {

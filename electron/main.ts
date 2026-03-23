@@ -429,7 +429,12 @@ function setupIpcHandlers(): void {
             const audioBuffer = audioData instanceof Float32Array ? audioData : new Float32Array(audioData);
             const settings = store.get('settings') as any;
             const language = settings?.whisperLanguage || 'en';
-            const text = await nativeWhisper.transcribe(audioBuffer, { language });
+            const text = await nativeWhisper.transcribe(audioBuffer, {
+                language,
+                onProgress: (percent: number) => {
+                    mainWindow?.webContents.send('transcription-progress', percent);
+                },
+            });
             console.log(`[Main] Transcribed: "${text.substring(0, 80)}"`);
             mainWindow?.webContents.send('transcription-result', text);
             return { success: true, text };
@@ -440,6 +445,21 @@ function setupIpcHandlers(): void {
     });
 
     ipcMain.handle('is-whisper-ready', () => isWhisperReady);
+
+    // Engine management
+    ipcMain.handle('get-engine-info', () => nativeWhisper.getEngineInfo());
+    ipcMain.handle('set-transcription-engine', (_, engine: string) => {
+        nativeWhisper.setTranscriptionEngine(engine as any);
+        const settings = store.get('settings') as any || {};
+        settings.transcriptionEngine = engine;
+        store.set('settings', settings);
+        return true;
+    });
+    ipcMain.handle('init-parakeet', async () => {
+        return nativeWhisper.initParakeetEngine((percent, status) => {
+            mainWindow?.webContents.send('whisper-progress', percent, status);
+        });
+    });
 
     ipcMain.handle('get-target-app', () => {
         const detected = inlineDetectActiveApp();
@@ -589,6 +609,8 @@ app.whenReady().then(async () => {
         if (ready) {
             mainWindow?.webContents.send('whisper-ready', { acceleration: nativeWhisper.getAccelerationInfo().type });
             console.log(`[Main] ✓ Whisper ready`);
+            // Initialize VAD for intelligent audio segmentation
+            await nativeWhisper.initAudioSegmentation();
         } else {
             console.error('[Main] Whisper failed to initialize');
         }

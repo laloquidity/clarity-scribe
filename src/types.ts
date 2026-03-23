@@ -7,6 +7,7 @@ export interface Settings {
     selectedMicId: string;
     whisperLanguage: string;
     silenceDuration: number;
+    transcriptionEngine: 'auto' | 'whisper' | 'parakeet';
 }
 
 export interface HistoryEntry {
@@ -27,6 +28,7 @@ export interface ElectronAPI {
     onWhisperReady: (cb: (info?: { acceleration: string }) => void) => () => void;
     onWhisperProgress: (cb: (p: number, m: string) => void) => () => void;
     onTranscriptionResult: (cb: (text: string) => void) => () => void;
+    onTranscriptionProgress: (cb: (percent: number) => void) => () => void;
     onToggleRecording: (cb: () => void) => () => void;
 
     getTargetApp: () => Promise<{ targetApp: { name: string; pid: number } | null; confidence: string }>;
@@ -41,6 +43,11 @@ export interface ElectronAPI {
     getHotkey: () => Promise<string>;
     setHotkey: (key: string) => Promise<boolean>;
     onHotkeyChanged: (cb: (key: string) => void) => () => void;
+
+    // Engine management
+    getEngineInfo: () => Promise<{ whisper: string; parakeet: boolean; currentEngine: string }>;
+    setTranscriptionEngine: (engine: string) => Promise<boolean>;
+    initParakeet: () => Promise<boolean>;
 
     getHistory: () => Promise<HistoryEntry[]>;
     addHistory: (entry: HistoryEntry) => Promise<void>;
