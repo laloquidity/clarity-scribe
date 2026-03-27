@@ -15,7 +15,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 ## Features
 
-- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (20–40x real-time with GPU acceleration), Whisper for all others. Manual override available in settings.
+- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (7–41x real-time on DirectML GPU), Whisper for all others. Manual override available in settings.
 - **Silero VAD Segmentation** — Intelligent voice activity detection splits audio at natural speech boundaries instead of arbitrary time intervals
 - **Hallucination Detection** — Detects and corrects Whisper's looping/repetition artifacts with automatic retry
 - **Context Prompting** — Maintains coherent transcription across long recordings by passing context between chunks
@@ -49,7 +49,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | 20–40x real-time with GPU (DirectML/CUDA), ~10x on CPU |
+| Speed | 7–41x real-time on DirectML GPU (measured on RTX 3090) |
 | Model Size | ~890 MB (INT8 quantized ONNX) |
 
 ### Whisper Large V3 Turbo
@@ -167,10 +167,12 @@ The app uses a tiered GPU acceleration strategy per engine:
 
 | Priority | Backend | GPUs | Performance |
 |----------|---------|------|-------------|
-| 1 | **CUDA** | NVIDIA (GTX 10xx+) | 30–40x real-time |
-| 2 | **DirectML** | Any Windows GPU (NVIDIA, AMD, Intel) | 20–30x real-time |
-| 3 | **CoreML** | Apple Silicon (M1+) | ~15x real-time |
-| 4 | **CPU** | Any (fallback) | ~10x real-time |
+| 1 | **CUDA** | NVIDIA (GTX 10xx+) | Untested (future upgrade) |
+| 2 | **DirectML** | Any Windows GPU (NVIDIA, AMD, Intel) | 7–41x real-time (measured on RTX 3090) |
+| 3 | **CoreML** | Apple Silicon (M1+) | Untested |
+| 4 | **CPU** | Any (fallback) | Fallback |
+
+DirectML is already fast enough for real-time dictation (sub-second for typical clips) that the added complexity of CUDA support may not be necessary, but it remains a potential future upgrade.
 
 ### Whisper Large V3 Turbo (whisper.cpp)
 
