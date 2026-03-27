@@ -599,36 +599,59 @@ app.whenReady().then(async () => {
     createTray();
     setupIpcHandlers();
 
-    console.log('[Main] Initializing Whisper...');
+    console.log('[Main] Initializing engines...');
+    const sendStep = (id: string, label: string, percent: number, status: string) => {
+        mainWindow?.webContents.send('setup-step-progress', { id, label, percent, status });
+    };
+
     try {
+        // Step 1: Whisper model
+        sendStep('whisper', 'Whisper AI Model', 0, 'Preparing...');
         const ready = await nativeWhisper.initWhisper('turbo', (percent, status) => {
             console.log(`[Main] Whisper: ${status} (${percent}%)`);
             mainWindow?.webContents.send('whisper-progress', percent, status);
+            sendStep('whisper', 'Whisper AI Model', percent, status);
         });
         isWhisperReady = ready;
         if (ready) {
+            sendStep('whisper', 'Whisper AI Model', 100, 'Ready');
             mainWindow?.webContents.send('whisper-ready', { acceleration: nativeWhisper.getAccelerationInfo().type });
             console.log(`[Main] ✓ Whisper ready`);
-            // Initialize VAD for intelligent audio segmentation
-            await nativeWhisper.initAudioSegmentation();
 
-            // Set engine based on saved language (English → Parakeet, else → Whisper)
+            // Step 2: VAD
+            sendStep('vad', 'Voice Detection', 0, 'Downloading...');
+            await nativeWhisper.initAudioSegmentation();
+            sendStep('vad', 'Voice Detection', 100, 'Ready');
+            console.log(`[Main] ✓ VAD ready`);
+
+            // Step 3: Parakeet (for English — the default language)
             const settings = store.get('settings') as any || {};
             const savedLang = settings?.whisperLanguage || 'en';
             if (savedLang === 'en') {
                 nativeWhisper.setTranscriptionEngine('parakeet' as any);
-                // Init Parakeet in background (non-blocking)
-                nativeWhisper.initParakeetEngine((percent, status) => {
-                    mainWindow?.webContents.send('whisper-progress', percent, status);
-                }).catch(e => console.warn('[Main] Parakeet init failed:', e));
+                sendStep('parakeet', 'Parakeet Engine', 0, 'Downloading...');
+                try {
+                    await nativeWhisper.initParakeetEngine((percent, status) => {
+                        sendStep('parakeet', 'Parakeet Engine', percent, status);
+                    });
+                    sendStep('parakeet', 'Parakeet Engine', 100, 'Ready');
+                    console.log(`[Main] ✓ Parakeet ready`);
+                } catch (e) {
+                    console.warn('[Main] Parakeet init failed, Whisper will handle English:', e);
+                    sendStep('parakeet', 'Parakeet Engine', 100, 'Skipped');
+                    nativeWhisper.setTranscriptionEngine('whisper' as any);
+                }
             } else {
                 nativeWhisper.setTranscriptionEngine('whisper' as any);
             }
+
+            // Signal overall completion
+            mainWindow?.webContents.send('whisper-progress', 100, 'Ready');
         } else {
             console.error('[Main] Whisper failed to initialize');
         }
     } catch (error) {
-        console.error('[Main] Whisper init error:', error);
+        console.error('[Main] Init error:', error);
     }
 
     registerHotkey((store.get('hotkey') as string) || 'Alt+Space');

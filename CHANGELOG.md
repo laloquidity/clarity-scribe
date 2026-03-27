@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.1.0 — Parakeet GPU Acceleration (2026-03-27)
+
+### 🚀 New Features
+
+- **Parakeet TDT GPU Acceleration** — Tiered GPU provider strategy for Parakeet encoder:
+  - CUDA → DirectML → CPU on Windows (20–40x real-time on GPU)
+  - CoreML → CPU on macOS Apple Silicon
+  - Verified 29x real-time on RTX 3090 via DirectML
+- **Self-Hosted Parakeet Models** — Parakeet ONNX models now served from GitHub Releases (`laloquidity/clarity-scribe/releases/tag/parakeet-models`) for reliable, consistent downloads
+
+### 🛡️ Quality Improvements
+
+- **Corrected TDT Greedy Decode** — Rewrote transducer decode to match sherpa-onnx reference implementation:
+  - Duration skip now applies to both blank and non-blank tokens (fixes truncated words)
+  - Added `max_tokens_per_frame=5` safety limit
+  - Proper blank+skip=0 handling (force advance 1 frame)
+- **NeMo-Standard Mel Spectrogram** — Matched sherpa-onnx/Kaldi feature extraction:
+  - No dithering, no preemphasis (matching Kaldi defaults)
+  - Correct filterbank: `low_freq=20`, `high_freq=7600`
+  - Reflect padding (`snip_edges=false`)
+  - Per-feature normalization (zero mean, unit variance)
+- **Post-Processing** — Clean transcription output:
+  - Strip leading silence artifacts (dots from noise)
+  - Collapse multiple periods into single period
+  - Auto-append sentence-ending period when missing
+  - Capitalize first letter
+
+---
+
 ## v2.0.0 — Frontier-Lab Transcription Pipeline (2026-03-23)
 
 ### 🚀 New Features

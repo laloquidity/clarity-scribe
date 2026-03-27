@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('transcription-progress', handler);
         return () => { ipcRenderer.removeListener('transcription-progress', handler); };
     },
+    onSetupStepProgress: (cb: (step: { id: string; label: string; percent: number; status: string }) => void) => {
+        const handler = (_: any, step: any) => cb(step);
+        ipcRenderer.on('setup-step-progress', handler);
+        return () => { ipcRenderer.removeListener('setup-step-progress', handler); };
+    },
     onToggleRecording: (cb: () => void) => {
         const handler = () => cb();
         ipcRenderer.on('toggle-recording', handler);

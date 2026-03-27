@@ -29,6 +29,7 @@ export interface ElectronAPI {
     onWhisperProgress: (cb: (p: number, m: string) => void) => () => void;
     onTranscriptionResult: (cb: (text: string) => void) => () => void;
     onTranscriptionProgress: (cb: (percent: number) => void) => () => void;
+    onSetupStepProgress: (cb: (step: { id: string; label: string; percent: number; status: string }) => void) => () => void;
     onToggleRecording: (cb: () => void) => () => void;
 
     getTargetApp: () => Promise<{ targetApp: { name: string; pid: number } | null; confidence: string }>;

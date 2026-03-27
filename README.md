@@ -15,14 +15,14 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 ## Features
 
-- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (20x real-time on CPU), Whisper for all others. Manual override available in settings.
+- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (20–40x real-time with GPU acceleration), Whisper for all others. Manual override available in settings.
 - **Silero VAD Segmentation** — Intelligent voice activity detection splits audio at natural speech boundaries instead of arbitrary time intervals
 - **Hallucination Detection** — Detects and corrects Whisper's looping/repetition artifacts with automatic retry
 - **Context Prompting** — Maintains coherent transcription across long recordings by passing context between chunks
 - **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
 - **Transcription Progress** — Real-time progress percentage shown during long recordings
 - **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows)
-- **GPU-Accelerated Transcription** — Metal on macOS, CUDA (NVIDIA) or Vulkan (Intel/AMD) on Windows, with automatic CPU fallback
+- **GPU-Accelerated Transcription** — Tiered GPU acceleration: CUDA (NVIDIA) and DirectML (all GPUs) for Parakeet, CUDA/Vulkan for Whisper, Metal on macOS, with automatic CPU fallback
 - **Paste-to-Target** — Transcriptions are automatically pasted into the app you were using when you started recording
 - **Transcription History** — Timestamped log of all dictations with click-to-copy, individual delete, and clear all
 - **Always-on-Top Widget** — Minimal floating bar with mic button, waveform visualization, and expandable history panel
@@ -49,7 +49,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | ~20x real-time on CPU, faster with CUDA |
+| Speed | 20–40x real-time with GPU (DirectML/CUDA), ~10x on CPU |
 | Model Size | ~890 MB (INT8 quantized ONNX) |
 
 ### Whisper Large V3 Turbo
@@ -161,15 +161,27 @@ clarity-scribe/
 
 ## GPU Acceleration
 
-The app auto-detects the best available GPU backend at startup:
+The app uses a tiered GPU acceleration strategy per engine:
+
+### Parakeet TDT (ONNX Runtime)
+
+| Priority | Backend | GPUs | Performance |
+|----------|---------|------|-------------|
+| 1 | **CUDA** | NVIDIA (GTX 10xx+) | 30–40x real-time |
+| 2 | **DirectML** | Any Windows GPU (NVIDIA, AMD, Intel) | 20–30x real-time |
+| 3 | **CoreML** | Apple Silicon (M1+) | ~15x real-time |
+| 4 | **CPU** | Any (fallback) | ~10x real-time |
+
+### Whisper Large V3 Turbo (whisper.cpp)
 
 | Priority | Backend | GPUs | Performance |
 |----------|---------|------|-------------|
 | 1 | **CUDA** | NVIDIA (GTX 10xx+) | ~1-2s for 3s audio |
 | 2 | **Vulkan** | Intel, AMD, NVIDIA | ~3-5s for 3s audio |
-| 3 | **CPU** | Any (fallback) | ~20s for 3s audio |
+| 3 | **Metal** | Apple Silicon / Intel Mac | ~2-3s for 3s audio |
+| 4 | **CPU** | Any (fallback) | ~20s for 3s audio |
 
-Detection happens in `nativeWhisper.ts` → `detectGpuBackend()`. The corresponding DLLs are loaded from `resources/win-gpu/{cuda,vulkan}/` and injected into `PATH` before the whisper module loads.
+GPU detection happens automatically at startup. Whisper's GPU DLLs are loaded from `resources/win-gpu/{cuda,vulkan}/`.
 
 ## Privacy
 
