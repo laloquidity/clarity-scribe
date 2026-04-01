@@ -9,12 +9,18 @@ import { exec, execSync } from 'child_process';
 import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
+import { initWinPaste, focusAndPaste, isNativePasteAvailable } from './winPaste';
 
 const store = new Store();
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isWhisperReady = false;
+
+// Initialize native Win32 paste (loads user32.dll via FFI)
+if (process.platform === 'win32') {
+    initWinPaste();
+}
 
 // --- History Storage ---
 interface HistoryEntry {
@@ -227,20 +233,29 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
 
             await execPromise('osascript -e \'tell application "System Events" to keystroke "v" using command down\'');
         } else {
-            // Windows: inline PowerShell to focus and paste
-            try {
+            // Windows: native Win32 FFI to focus and paste (~4ms vs ~1100ms for PowerShell)
+            if (isNativePasteAvailable()) {
+                const ok = focusAndPaste(targetApp.pid);
+                if (!ok) {
+                    console.error('[Main] Native paste failed, falling back to PowerShell');
+                    // Fallback to PowerShell if native fails
+                    const focusCmd = 'powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\' -Name WF -Namespace Temp -ErrorAction SilentlyContinue; $p=Get-Process -Id ' + targetApp.pid + ' -ErrorAction SilentlyContinue; if($p -and $p.MainWindowHandle){[Temp.WF]::SetForegroundWindow($p.MainWindowHandle)|Out-Null}"';
+                    await execPromise(focusCmd);
+                    await delay(150);
+                    const pasteCmd = 'powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')"';
+                    await execPromise(pasteCmd);
+                }
+            } else {
+                // Fallback: PowerShell when koffi is unavailable
                 const focusCmd = 'powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\' -Name WF -Namespace Temp -ErrorAction SilentlyContinue; $p=Get-Process -Id ' + targetApp.pid + ' -ErrorAction SilentlyContinue; if($p -and $p.MainWindowHandle){[Temp.WF]::SetForegroundWindow($p.MainWindowHandle)|Out-Null}"';
                 await execPromise(focusCmd);
                 await delay(150);
-
                 const pasteCmd = 'powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')"';
                 await execPromise(pasteCmd);
-            } catch (e) {
-                console.error('[Main] Windows paste failed:', e);
             }
         }
 
-        await delay(300);
+        await delay(100);
 
         // Restore original clipboard
         if (hadOriginalContent) {
