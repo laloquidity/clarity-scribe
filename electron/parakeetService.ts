@@ -154,14 +154,14 @@ export async function downloadParakeetModel(
 /**
  * Determine the best ONNX execution providers for this platform
  *
- * onnxruntime-node v1.24+ supports:
- *   Windows: DirectML (any GPU — NVIDIA, AMD, Intel) + CPU
+ * Custom CUDA-enabled onnxruntime build:
+ *   Windows: CUDA (NVIDIA RTX GPUs) → DirectML fallback → CPU
  *   Linux:   CUDA (NVIDIA) + CPU
  *   macOS:   CoreML + CPU
  */
 function getExecutionProviders(): string[] {
     if (process.platform === 'win32') {
-        // DirectML: hardware-accelerated on any GPU via DirectX 12
+        // Optimal: DML for encoder (4.3x faster than CPU), CPU for decoder/joiner
         return ['dml', 'cpu'];
     }
     if (process.platform === 'linux') {
@@ -170,6 +170,33 @@ function getExecutionProviders(): string[] {
     }
     // macOS
     return ['coreml', 'cpu'];
+}
+
+/**
+ * Add the win-gpu resource directory to the DLL search path so that
+ * the CUDA/cuDNN runtime DLLs bundled with the app can be found
+ * when onnxruntime_providers_cuda.dll is loaded.
+ */
+function setupGpuDllPath(): void {
+    if (process.platform !== 'win32') return;
+    try {
+        const { join } = require('path');
+        // In production: resources/win-gpu sits next to the asar archive
+        // In dev: resources/win-gpu is in the project root
+        const gpuDir = app.isPackaged
+            ? join(process.resourcesPath, 'win-gpu')
+            : join(__dirname, '..', 'resources', 'win-gpu');
+
+        // Prepend to PATH so Windows can find the CUDA/cuDNN DLLs
+        if (require('fs').existsSync(gpuDir)) {
+            process.env.PATH = gpuDir + ';' + (process.env.PATH || '');
+            console.log(`[Parakeet] Added GPU DLL path: ${gpuDir}`);
+        } else {
+            console.log(`[Parakeet] GPU DLL directory not found: ${gpuDir} (CUDA may still work if toolkit is installed)`);
+        }
+    } catch (e) {
+        console.warn('[Parakeet] Could not set up GPU DLL path:', e);
+    }
 }
 
 /**
@@ -193,6 +220,9 @@ export async function initParakeet(
     onProgress?: (percent: number, status: string) => void
 ): Promise<boolean> {
     if (isInitialized) return true;
+
+    // Ensure CUDA/cuDNN DLLs are discoverable before loading ORT sessions
+    setupGpuDllPath();
 
     const modelDir = getModelDir();
 
@@ -225,7 +255,7 @@ export async function initParakeet(
         // Read metadata to get decoder state dimensions
         readEncoderMetadata(encoderSession);
 
-        // Load decoder (small — CPU is fine)
+        // Load decoder on CPU (sequential loop — GPU kernel launch overhead hurts)
         onProgress?.(90, 'Loading decoder...');
         decoderSession = await ort.InferenceSession.create(
             join(modelDir, 'decoder.int8.onnx'),
@@ -234,9 +264,9 @@ export async function initParakeet(
                 logSeverityLevel: 3,
             }
         );
-        console.log(`[Parakeet] ✓ Decoder loaded (inputs: ${decoderSession.inputNames}, outputs: ${decoderSession.outputNames})`);
+        console.log(`[Parakeet] ✓ Decoder loaded on CPU (inputs: ${decoderSession.inputNames}, outputs: ${decoderSession.outputNames})`);
 
-        // Load joiner (small — CPU is fine)
+        // Load joiner on CPU (sequential loop — GPU kernel launch overhead hurts)
         onProgress?.(93, 'Loading joiner...');
         joinerSession = await ort.InferenceSession.create(
             join(modelDir, 'joiner.int8.onnx'),
@@ -245,7 +275,7 @@ export async function initParakeet(
                 logSeverityLevel: 3,
             }
         );
-        console.log(`[Parakeet] ✓ Joiner loaded (inputs: ${joinerSession.inputNames}, outputs: ${joinerSession.outputNames})`);
+        console.log(`[Parakeet] ✓ Joiner loaded on CPU (inputs: ${joinerSession.inputNames}, outputs: ${joinerSession.outputNames})`);
 
         // Load vocabulary
         onProgress?.(96, 'Loading vocabulary...');
@@ -406,6 +436,9 @@ async function transducerGreedyDecode(
                     skip = i;
                 }
             }
+            // Cap skip to prevent aggressive jumps that truncate long audio
+            const maxSkip = Math.min(skip, 6);
+            if (skip > maxSkip) skip = maxSkip;
         }
 
         if (y !== BLANK_ID) {
@@ -434,6 +467,7 @@ async function transducerGreedyDecode(
         }
     }
 
+    console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames`);
     return tokensToText(tokens);
 }
 
@@ -662,9 +696,9 @@ export async function transcribeParakeet(
 
     try {
         // Step 1: Compute 128-channel log-mel spectrogram
-        // NeMo FastConformer encoder expects: audio_signal [B, C, T] where C=128 mel channels
+        const melStart = Date.now();
         const { features, nFrames } = computeMelSpectrogram(audioData);
-        console.log(`[Parakeet] Mel spectrogram: 128 x ${nFrames} frames`);
+        const melTime = Date.now() - melStart;
 
         // audio_signal: [1, 128, nFrames]
         const audioTensor = new ort.Tensor('float32', features, [1, 128, nFrames]);
@@ -677,21 +711,24 @@ export async function transcribeParakeet(
         encoderInputs[encoderSession.inputNames[0]] = audioTensor;
         encoderInputs[encoderSession.inputNames[1]] = lengthTensor;
 
+        const encStart = Date.now();
         const encoderResult = await encoderSession.run(encoderInputs);
+        const encTime = Date.now() - encStart;
 
         // Get encoder outputs — first is encoded features, second is lengths
         const encoderOut = encoderResult[encoderSession.outputNames[0]] as ort.Tensor;
         const encoderOutLens = encoderResult[encoderSession.outputNames[1]] as ort.Tensor;
         const encoderLen = Number(encoderOutLens.data[0]);
 
-        console.log(`[Parakeet] Encoder output: ${encoderOut.dims} (${encoderLen} frames)`);
-
         // Transducer greedy decode
+        const decStart = Date.now();
         const text = await transducerGreedyDecode(encoderOut, encoderLen);
+        const decTime = Date.now() - decStart;
 
-        const duration = Date.now() - startTime;
-        const rtf = durationSeconds / (duration / 1000);
-        console.log(`[Parakeet] Done in ${duration}ms (${rtf.toFixed(1)}x real-time): "${text.substring(0, 80)}"`);
+        const totalTime = Date.now() - startTime;
+        const rtf = durationSeconds / (totalTime / 1000);
+        console.log(`[Parakeet] ⏱ Mel: ${melTime}ms | Encoder: ${encTime}ms | Decoder: ${decTime}ms | Total: ${totalTime}ms (${rtf.toFixed(1)}x real-time)`);
+        console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
         return text;
     } catch (error) {
         console.error('[Parakeet] Transcription failed:', error);

@@ -1,6 +1,6 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using.
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using — up to **38x faster than real-time**.
 
 Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated speech-to-text.
 
@@ -15,14 +15,14 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 ## Features
 
-- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (7–41x real-time on DirectML GPU), Whisper for all others. Manual override available in settings.
+- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to 38.6x real-time), Whisper for all others. Manual override available in settings.
 - **Silero VAD Segmentation** — Intelligent voice activity detection splits audio at natural speech boundaries instead of arbitrary time intervals
 - **Hallucination Detection** — Detects and corrects Whisper's looping/repetition artifacts with automatic retry
 - **Context Prompting** — Maintains coherent transcription across long recordings by passing context between chunks
 - **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
 - **Transcription Progress** — Real-time progress percentage shown during long recordings
 - **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows)
-- **GPU-Accelerated Transcription** — Tiered GPU acceleration: CUDA (NVIDIA) and DirectML (all GPUs) for Parakeet, CUDA/Vulkan for Whisper, Metal on macOS, with automatic CPU fallback
+- **GPU-Accelerated Transcription** — Hybrid hardware routing: DirectML GPU encoder + CPU decoder for Parakeet (benchmarked 38.6x real-time on RTX 3090), CUDA/Vulkan/Metal for Whisper, with automatic fallback
 - **Paste-to-Target** — Transcriptions are automatically pasted into the app you were using when you started recording
 - **Transcription History** — Timestamped log of all dictations with click-to-copy, individual delete, and clear all
 - **Always-on-Top Widget** — Minimal floating bar with mic button, waveform visualization, and expandable history panel
@@ -49,7 +49,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | 7–41x real-time on DirectML GPU (measured on RTX 3090) |
+| Speed | 15–38x real-time (hybrid DML+CPU, benchmarked on RTX 3090) |
 | Model Size | ~890 MB (INT8 quantized ONNX) |
 
 ### Whisper Large V3 Turbo
@@ -161,18 +161,29 @@ clarity-scribe/
 
 ## GPU Acceleration
 
-The app uses a tiered GPU acceleration strategy per engine:
+The app uses a **hybrid hardware routing** strategy, assigning each stage of the transcription pipeline to the hardware where it performs best:
 
 ### Parakeet TDT (ONNX Runtime)
 
-| Priority | Backend | GPUs | Performance |
-|----------|---------|------|-------------|
-| 1 | **CUDA** | NVIDIA (GTX 10xx+) | Untested (future upgrade) |
-| 2 | **DirectML** | Any Windows GPU (NVIDIA, AMD, Intel) | 7–41x real-time (measured on RTX 3090) |
-| 3 | **CoreML** | Apple Silicon (M1+) | Untested |
-| 4 | **CPU** | Any (fallback) | Fallback |
+The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU. This hybrid approach was benchmarked to be faster than running everything on any single provider:
 
-DirectML is already fast enough for real-time dictation (sub-second for typical clips) that the added complexity of CUDA support may not be necessary, but it remains a potential future upgrade.
+| Config | 23s Audio | 63s Audio | RTF |
+|--------|-----------|-----------|-----|
+| **Hybrid (DML encoder + CPU decoder)** | — | **1,633ms** | **38.6x** |
+| DML (all GPU) | 1,457ms | 2,283ms | 28.1x |
+| CPU (all) | 1,268ms | 4,731ms | 13.5x |
+| CUDA custom build (all GPU) | 1,971ms | 5,126ms | 13.1x |
+
+*Benchmarked on NVIDIA GeForce RTX 3090, Windows 11, reading identical scripts.*
+
+**Why hybrid wins:** The encoder benefits from GPU parallelism (processes entire audio at once), but the decoder runs hundreds of sequential inference calls per transcription — GPU kernel launch overhead dominates for these tiny operations, making CPU 3–6x faster for the decoder.
+
+| Platform | Encoder | Decoder/Joiner |
+|----------|---------|----------------|
+| Windows (NVIDIA/AMD/Intel GPU) | DirectML | CPU |
+| Windows (no GPU) | CPU | CPU |
+| macOS (Apple Silicon) | CoreML | CPU |
+| Linux | CUDA / CPU | CPU |
 
 ### Whisper Large V3 Turbo (whisper.cpp)
 

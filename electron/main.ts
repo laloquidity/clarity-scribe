@@ -231,7 +231,7 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
             try {
                 const focusCmd = 'powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\' -Name WF -Namespace Temp -ErrorAction SilentlyContinue; $p=Get-Process -Id ' + targetApp.pid + ' -ErrorAction SilentlyContinue; if($p -and $p.MainWindowHandle){[Temp.WF]::SetForegroundWindow($p.MainWindowHandle)|Out-Null}"';
                 await execPromise(focusCmd);
-                await delay(150);
+                await delay(50);
 
                 const pasteCmd = 'powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')"';
                 await execPromise(pasteCmd);
@@ -240,7 +240,7 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
             }
         }
 
-        await delay(300);
+        await delay(50);
 
         // Restore original clipboard
         if (hadOriginalContent) {
