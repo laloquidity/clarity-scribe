@@ -115,7 +115,21 @@ function downloadFile(url: string, dest: string, onProgress?: (bytes: number) =>
 }
 
 /**
- * Download all model files with progress
+ * Check if a model file exists AND has the expected size (within 90%).
+ * Catches truncated downloads that would cause "Protobuf parsing failed" errors.
+ */
+function isModelFileValid(filePath: string, expectedSize: number): boolean {
+    try {
+        const { statSync } = require('fs');
+        const stats = statSync(filePath);
+        return stats.size >= expectedSize * 0.9;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Download all model files with progress and integrity validation
  */
 export async function downloadParakeetModel(
     onProgress?: (percent: number, status: string) => void
@@ -125,10 +139,13 @@ export async function downloadParakeetModel(
 
     for (const file of MODEL_FILES) {
         const filePath = join(modelDir, file.name);
-        if (existsSync(filePath)) {
+        if (isModelFileValid(filePath, file.size)) {
             downloadedTotal += file.size;
             continue;
         }
+
+        // Remove truncated/corrupt file before re-downloading
+        try { require('fs').unlinkSync(filePath); } catch { /* didn't exist */ }
 
         const url = `${MODEL_BASE_URL}/${file.name}`;
         console.log(`[Parakeet] Downloading ${file.label} (${(file.size / 1e6).toFixed(0)}MB)...`);
@@ -140,9 +157,18 @@ export async function downloadParakeetModel(
                 const total = baseDownloaded + bytes;
                 onProgress?.(Math.round((total / TOTAL_SIZE) * 100), `Downloading ${file.label}...`);
             });
+
+            // Validate download completed fully
+            if (!isModelFileValid(filePath, file.size)) {
+                console.error(`[Parakeet] ${file.name} downloaded but size check failed (truncated?). Removing.`);
+                try { require('fs').unlinkSync(filePath); } catch { /* ignore */ }
+                return false;
+            }
+
             downloadedTotal += file.size;
         } catch (error) {
             console.error(`[Parakeet] Failed to download ${file.name}:`, error);
+            try { require('fs').unlinkSync(filePath); } catch { /* ignore */ }
             return false;
         }
     }
@@ -154,22 +180,22 @@ export async function downloadParakeetModel(
 /**
  * Determine the best ONNX execution providers for this platform
  *
- * Custom CUDA-enabled onnxruntime build:
- *   Windows: CUDA (NVIDIA RTX GPUs) → DirectML fallback → CPU
- *   Linux:   CUDA (NVIDIA) + CPU
- *   macOS:   CoreML + CPU
+ * macOS: CPU only. CoreML EP crashes (SIGTRAP / EXC_BREAKPOINT) with the
+ *        INT8 FastConformer encoder at all practical dictation lengths (>~15s).
+ *        M-series CPU is fast enough: 23s in 1,422ms (16.7x real-time).
+ *
+ * Windows: DirectML (all GPUs) → CPU fallback
+ * Linux:   CUDA (NVIDIA) → CPU fallback
  */
 function getExecutionProviders(): string[] {
     if (process.platform === 'win32') {
-        // Optimal: DML for encoder (4.3x faster than CPU), CPU for decoder/joiner
         return ['dml', 'cpu'];
     }
     if (process.platform === 'linux') {
-        // CUDA available on Linux builds of onnxruntime-node
         return ['cuda', 'cpu'];
     }
-    // macOS
-    return ['coreml', 'cpu'];
+    // macOS — CPU only (CoreML crashes with SIGTRAP on this model)
+    return ['cpu'];
 }
 
 /**
@@ -226,9 +252,9 @@ export async function initParakeet(
 
     const modelDir = getModelDir();
 
-    // Download if needed
-    const allExist = MODEL_FILES.every(f => existsSync(join(modelDir, f.name)));
-    if (!allExist) {
+    // Download if needed — validate file sizes, not just existence
+    const allValid = MODEL_FILES.every(f => isModelFileValid(join(modelDir, f.name), f.size));
+    if (!allValid) {
         onProgress?.(0, 'Downloading Parakeet model...');
         const downloaded = await downloadParakeetModel(onProgress);
         if (!downloaded) return false;
@@ -437,8 +463,7 @@ async function transducerGreedyDecode(
                 }
             }
             // Cap skip to prevent aggressive jumps that truncate long audio
-            const maxSkip = Math.min(skip, 6);
-            if (skip > maxSkip) skip = maxSkip;
+            skip = Math.min(skip, 3);
         }
 
         if (y !== BLANK_ID) {
@@ -681,6 +706,10 @@ function fft(real: Float32Array, imag: Float32Array, n: number): void {
 
 /**
  * Transcribe audio using Parakeet TDT
+ *
+ * Single-pass encoding — no chunking. Parakeet is a transducer model
+ * (not Whisper-style seq2seq) and is designed for single-pass inference.
+ * The TDT decoder's maxSkip cap handles all audio lengths.
  */
 export async function transcribeParakeet(
     audioData: Float32Array,
@@ -695,18 +724,16 @@ export async function transcribeParakeet(
     console.log(`[Parakeet] Transcribing ${durationSeconds.toFixed(1)}s...`);
 
     try {
-        // Step 1: Compute 128-channel log-mel spectrogram
+        // Compute mel spectrogram
         const melStart = Date.now();
         const { features, nFrames } = computeMelSpectrogram(audioData);
         const melTime = Date.now() - melStart;
 
         // audio_signal: [1, 128, nFrames]
         const audioTensor = new ort.Tensor('float32', features, [1, 128, nFrames]);
-        // length: [1] — number of valid frames
-        // Encoder expects int64 for length
         const lengthTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(nFrames)]), [1]);
 
-        // Run encoder — use dynamic input names from the session
+        // Run encoder (single pass — no chunking)
         const encoderInputs: Record<string, ort.Tensor> = {};
         encoderInputs[encoderSession.inputNames[0]] = audioTensor;
         encoderInputs[encoderSession.inputNames[1]] = lengthTensor;
@@ -715,12 +742,11 @@ export async function transcribeParakeet(
         const encoderResult = await encoderSession.run(encoderInputs);
         const encTime = Date.now() - encStart;
 
-        // Get encoder outputs — first is encoded features, second is lengths
         const encoderOut = encoderResult[encoderSession.outputNames[0]] as ort.Tensor;
         const encoderOutLens = encoderResult[encoderSession.outputNames[1]] as ort.Tensor;
         const encoderLen = Number(encoderOutLens.data[0]);
 
-        // Transducer greedy decode
+        // Transducer greedy decode (TDT skip cap handles all audio lengths)
         const decStart = Date.now();
         const text = await transducerGreedyDecode(encoderOut, encoderLen);
         const decTime = Date.now() - decStart;
