@@ -13,6 +13,7 @@ asarUnpack:
   - "node_modules/whisper-node/**"
   - "node_modules/smart-whisper/**"
   - "node_modules/onnxruntime-node/**"
+  - "node_modules/koffi/**"
 mac:
   target:
     - dmg

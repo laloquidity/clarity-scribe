@@ -8,22 +8,22 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 | Platform | Download | Size |
 |----------|----------|------|
-| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~472 MB |
+| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~531 MB |
 | **macOS** (Apple Silicon) | [**Clarity Scribe.dmg (macOS)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~119 MB |
 
 > On first launch, the app downloads the Whisper AI model (~1.5 GB). Parakeet TDT (~890 MB) is downloaded on first use when engine is set to Auto or Parakeet. Fully offline after model downloads.
 
 ## Features
 
-- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to 38.6x real-time), Whisper for all others. Manual override available in settings.
+- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to 46x real-time), Whisper for all others. Manual override available in settings.
 - **Silero VAD Segmentation** — Intelligent voice activity detection splits audio at natural speech boundaries instead of arbitrary time intervals
 - **Hallucination Detection** — Detects and corrects Whisper's looping/repetition artifacts with automatic retry
 - **Context Prompting** — Maintains coherent transcription across long recordings by passing context between chunks
 - **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
 - **Transcription Progress** — Real-time progress percentage shown during long recordings
 - **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows)
-- **GPU-Accelerated Transcription** — Hybrid hardware routing: DirectML GPU encoder + CPU decoder for Parakeet (benchmarked 38.6x real-time on RTX 3090), CUDA/Vulkan/Metal for Whisper, with automatic fallback
-- **Paste-to-Target** — Transcriptions are automatically pasted into the app you were using when you started recording
+- **GPU-Accelerated Transcription** — Hybrid hardware routing: DirectML GPU encoder + CPU decoder for Parakeet (benchmarked 46.2x real-time on RTX 3090), CUDA/Vulkan/Metal for Whisper, with automatic fallback
+- **Native Paste-to-Target** — Transcriptions instantly pasted into your active app via native Win32 FFI (11ms on Windows, AppleScript on Mac)
 - **Transcription History** — Timestamped log of all dictations with click-to-copy, individual delete, and clear all
 - **Always-on-Top Widget** — Minimal floating bar with mic button, waveform visualization, and expandable history panel
 - **Guided First-Run Setup** — Model download progress bar followed by permission requests
@@ -49,7 +49,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | 15–38x real-time (hybrid DML+CPU, benchmarked on RTX 3090) |
+| Speed | 26–46x real-time (hybrid DML+CPU, benchmarked on RTX 3090) |
 | Model Size | ~890 MB (INT8 quantized ONNX) |
 
 ### Whisper Large V3 Turbo
@@ -136,6 +136,7 @@ clarity-scribe/
 │   ├── nativeWhisper.ts   # Engine router, Whisper, GPU detection, chunking
 │   ├── vadService.ts      # Silero VAD speech detection (ONNX Runtime)
 │   ├── parakeetService.ts # Parakeet TDT 0.6B-v3 engine (ONNX Runtime)
+│   ├── winPaste.ts        # Native Win32 paste via koffi FFI (Windows)
 │   ├── tdtDecoder.ts      # Token-and-Duration Transducer beam search
 │   └── preload.ts         # Context bridge (IPC API)
 ├── src/                   # Renderer (React)
