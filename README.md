@@ -1,6 +1,6 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using — up to **38x faster than real-time**.
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using — up to **46x faster than real-time**.
 
 Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated speech-to-text.
 
@@ -167,14 +167,14 @@ The app uses a **hybrid hardware routing** strategy, assigning each stage of the
 
 The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU. This hybrid approach was benchmarked to be faster than running everything on any single provider:
 
-| Config | 23s Audio | 63s Audio |
+| Config | 23s Audio | 60s Audio |
 |--------|-----------|-----------|
-| **Hybrid (DML encoder + CPU decoder)** | **893ms (25.7x)** | **1,633ms (38.6x)** |
+| **Hybrid (DML encoder + CPU decoder)** | **854ms (26.6x)** | **1,313ms (46.2x)** |
 | DML (all GPU) | 1,457ms (15.6x) | 2,283ms (28.1x) |
 | CPU (all) | 1,268ms (17.2x) | 4,731ms (13.5x) |
 | CUDA custom build (all GPU) | 1,971ms (12.3x) | 5,126ms (13.1x) |
 
-*Benchmarked on NVIDIA GeForce RTX 3090, Windows 11, reading identical scripts.*
+*Benchmarked on NVIDIA GeForce RTX 3090, Windows 11, reading identical scripts. Paste latency: 11ms (native Win32 FFI via koffi).*
 
 **Why hybrid wins:** The encoder benefits from GPU parallelism (processes entire audio at once), but the decoder runs hundreds of sequential inference calls per transcription — GPU kernel launch overhead dominates for these tiny operations, making CPU 3–6x faster for the decoder.
 

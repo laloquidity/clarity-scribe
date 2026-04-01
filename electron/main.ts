@@ -9,7 +9,7 @@ import { exec, execSync } from 'child_process';
 import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
-import { initWinPaste, focusAndPaste, isNativePasteAvailable } from './winPaste';
+import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow } from './winPaste';
 
 const store = new Store();
 
@@ -404,6 +404,9 @@ function registerHotkey(key: string): boolean {
             console.log('[Main] Hotkey triggered');
 
             if (!isCurrentlyRecording) {
+                // Capture native HWND FIRST (before our window steals focus)
+                captureTargetWindow();
+
                 if (lastKnownFrontApp) {
                     const cacheAge = Date.now() - lastKnownFrontApp.timestamp;
                     targetAppBeforeRecording = lastKnownFrontApp;
@@ -482,6 +485,8 @@ function setupIpcHandlers(): void {
             targetAppBeforeRecording = detected;
             targetAppConfidence = 'confirmed';
             lastKnownFrontApp = { ...detected, timestamp: Date.now() };
+            // Capture native HWND for fast paste (before our window steals focus)
+            captureTargetWindow();
         }
         return { targetApp: targetAppBeforeRecording, confidence: targetAppConfidence };
     });
@@ -503,6 +508,8 @@ function setupIpcHandlers(): void {
                     targetAppBeforeRecording = lastKnownFrontApp;
                     targetAppConfidence = 'cached';
                     console.log(`[Main] Widget: captured target ${lastKnownFrontApp.name} (PID: ${lastKnownFrontApp.pid})`);
+                    // Capture native HWND for fast paste
+                    captureTargetWindow();
                 } else {
                     targetAppBeforeRecording = null;
                     targetAppConfidence = 'stale';
