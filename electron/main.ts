@@ -231,7 +231,7 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
             try {
                 const focusCmd = 'powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\' -Name WF -Namespace Temp -ErrorAction SilentlyContinue; $p=Get-Process -Id ' + targetApp.pid + ' -ErrorAction SilentlyContinue; if($p -and $p.MainWindowHandle){[Temp.WF]::SetForegroundWindow($p.MainWindowHandle)|Out-Null}"';
                 await execPromise(focusCmd);
-                await delay(50);
+                await delay(150);
 
                 const pasteCmd = 'powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')"';
                 await execPromise(pasteCmd);
@@ -240,17 +240,15 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
             }
         }
 
-        // Restore clipboard in the background — don't block the return.
-        // 200ms gives any app enough time to process Ctrl+V and read clipboard.
-        const _targetName = targetApp.name;
-        setTimeout(() => {
-            if (hadOriginalContent) {
-                clipboard.writeText(originalClipboard);
-            } else {
-                clipboard.clear();
-            }
-            console.log('[Main] Pasted to ' + _targetName + ', clipboard restored');
-        }, 200);
+        await delay(300);
+
+        // Restore original clipboard
+        if (hadOriginalContent) {
+            clipboard.writeText(originalClipboard);
+            console.log('[Main] Pasted to ' + targetApp.name + ', clipboard restored');
+        } else {
+            clipboard.clear();
+        }
 
         targetAppBeforeRecording = null;
         return { success: true, app: targetApp.name };
