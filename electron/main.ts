@@ -240,15 +240,17 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
             }
         }
 
-        await delay(50);
-
-        // Restore original clipboard
-        if (hadOriginalContent) {
-            clipboard.writeText(originalClipboard);
-            console.log('[Main] Pasted to ' + targetApp.name + ', clipboard restored');
-        } else {
-            clipboard.clear();
-        }
+        // Restore clipboard in the background — don't block the return.
+        // 200ms gives any app enough time to process Ctrl+V and read clipboard.
+        const _targetName = targetApp.name;
+        setTimeout(() => {
+            if (hadOriginalContent) {
+                clipboard.writeText(originalClipboard);
+            } else {
+                clipboard.clear();
+            }
+            console.log('[Main] Pasted to ' + _targetName + ', clipboard restored');
+        }, 200);
 
         targetAppBeforeRecording = null;
         return { success: true, app: targetApp.name };
