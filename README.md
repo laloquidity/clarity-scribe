@@ -8,8 +8,8 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 | Platform | Download | Size |
 |----------|----------|------|
-| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~531 MB |
-| **macOS** (Apple Silicon) | [**Clarity Scribe.dmg (macOS)**](https://github.com/laloquidity/clarity-scribe/releases/latest) | ~119 MB |
+| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.2.0/Clarity.Scribe.Setup.2.2.0.exe) | ~912 MB |
+| **macOS** (Apple Silicon) | [**Clarity Scribe.dmg (macOS)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.2.0/Clarity.Scribe-2.2.0-arm64.dmg) | ~153 MB |
 
 > On first launch, the app downloads the Whisper AI model (~1.5 GB). Parakeet TDT (~890 MB) is downloaded on first use when engine is set to Auto or Parakeet. Fully offline after model downloads.
 
@@ -22,8 +22,8 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 - **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
 - **Transcription Progress** — Real-time progress percentage shown during long recordings
 - **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows)
-- **GPU-Accelerated Transcription** — Hybrid hardware routing: DirectML GPU encoder + CPU decoder for Parakeet (benchmarked 46.2x real-time on RTX 3090), CUDA/Vulkan/Metal for Whisper, with automatic fallback
-- **Native Paste-to-Target** — Transcriptions instantly pasted into your active app via native Win32 FFI (11ms on Windows, AppleScript on Mac)
+- **GPU-Accelerated Transcription** — Hybrid hardware routing: DirectML GPU encoder + CPU decoder for Parakeet on Windows, CPU-optimized on Apple Silicon, with automatic fallback
+- **Native Paste-to-Target** — Transcriptions instantly pasted into your active app via native Win32 FFI (11ms on Windows) or consolidated AppleScript (~50ms on Mac)
 - **Transcription History** — Timestamped log of all dictations with click-to-copy, individual delete, and clear all
 - **Always-on-Top Widget** — Minimal floating bar with mic button, waveform visualization, and expandable history panel
 - **Guided First-Run Setup** — Model download progress bar followed by permission requests
@@ -49,7 +49,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | 26–46x real-time (hybrid DML+CPU, benchmarked on RTX 3090) |
+| Speed | 26–46x real-time (Windows), 39–41x real-time (Mac) |
 | Model Size | ~890 MB (INT8 quantized ONNX) |
 
 ### Whisper Large V3 Turbo
@@ -73,9 +73,11 @@ Long recordings are processed through a hardened pipeline:
 5. **Overlap Dedup** — Removes repeated words at segment boundaries
 6. **Result Assembly** — Clean, continuous transcription output
 
+> **Note:** The Whisper pipeline uses VAD-based chunking. Parakeet TDT runs single-pass encoding with no chunking — the TDT transducer architecture handles arbitrarily long audio natively.
+
 ## Requirements
 
-- **macOS** 10.12+ (Apple Silicon or Intel)
+- **macOS** 12.0+ (Apple Silicon)
 - **Windows** 10/11 x64 (NVIDIA GPU recommended for best performance)
 - ~2.5 GB disk space for both models (downloaded on first launch/use)
 - ~2 GB RAM during transcription
@@ -168,6 +170,8 @@ The app uses a **hybrid hardware routing** strategy, assigning each stage of the
 
 The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU. This hybrid approach was benchmarked to be faster than running everything on any single provider:
 
+**Windows (RTX 3090):**
+
 | Config | 23s Audio | 60s Audio |
 |--------|-----------|-----------|
 | **Hybrid (DML encoder + CPU decoder)** | **854ms (26.6x)** | **1,313ms (46.2x)** |
@@ -175,15 +179,24 @@ The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU.
 | CPU (all) | 1,268ms (17.2x) | 4,731ms (13.5x) |
 | CUDA custom build (all GPU) | 1,971ms (12.3x) | 5,126ms (13.1x) |
 
-*Benchmarked on NVIDIA GeForce RTX 3090, Windows 11, reading identical scripts. Paste latency: 11ms (native Win32 FFI via koffi).*
+*Paste latency: 11ms (native Win32 FFI via koffi).*
 
-**Why hybrid wins:** The encoder benefits from GPU parallelism (processes entire audio at once), but the decoder runs hundreds of sequential inference calls per transcription — GPU kernel launch overhead dominates for these tiny operations, making CPU 3–6x faster for the decoder.
+**macOS (Apple Silicon M-series):**
+
+| Audio | Total | RTF | Encoder | Decoder | Paste |
+|-------|-------|-----|---------|---------|-------|
+| 23.7s | **576ms** | **41.1x** | 412ms | 61ms | ~50ms |
+| 66.1s | **1,696ms** | **39.0x** | 1,270ms | 153ms | ~50ms |
+
+*CPU encoder, single-pass (no chunking). Consolidated AppleScript paste.*
+
+**Why hybrid wins on Windows:** The encoder benefits from GPU parallelism (processes entire audio at once), but the decoder runs hundreds of sequential inference calls per transcription — GPU kernel launch overhead dominates for these tiny operations, making CPU 3–6x faster for the decoder.
 
 | Platform | Encoder | Decoder/Joiner |
 |----------|---------|----------------|
 | Windows (NVIDIA/AMD/Intel GPU) | DirectML | CPU |
 | Windows (no GPU) | CPU | CPU |
-| macOS (Apple Silicon) | CoreML | CPU |
+| macOS (Apple Silicon) | CPU | CPU |
 | Linux | CUDA / CPU | CPU |
 
 ### Whisper Large V3 Turbo (whisper.cpp)
