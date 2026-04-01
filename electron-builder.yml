@@ -1,3 +1,4 @@
+# Clarity Scribe — electron-builder configuration
 appId: com.clarity-scribe.app
 productName: Clarity Scribe
 directories:

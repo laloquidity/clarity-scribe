@@ -167,12 +167,12 @@ The app uses a **hybrid hardware routing** strategy, assigning each stage of the
 
 The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU. This hybrid approach was benchmarked to be faster than running everything on any single provider:
 
-| Config | 23s Audio | 63s Audio | RTF |
-|--------|-----------|-----------|-----|
-| **Hybrid (DML encoder + CPU decoder)** | — | **1,633ms** | **38.6x** |
-| DML (all GPU) | 1,457ms | 2,283ms | 28.1x |
-| CPU (all) | 1,268ms | 4,731ms | 13.5x |
-| CUDA custom build (all GPU) | 1,971ms | 5,126ms | 13.1x |
+| Config | 23s Audio | 63s Audio |
+|--------|-----------|-----------|
+| **Hybrid (DML encoder + CPU decoder)** | **893ms (25.7x)** | **1,633ms (38.6x)** |
+| DML (all GPU) | 1,457ms (15.6x) | 2,283ms (28.1x) |
+| CPU (all) | 1,268ms (17.2x) | 4,731ms (13.5x) |
+| CUDA custom build (all GPU) | 1,971ms (12.3x) | 5,126ms (13.1x) |
 
 *Benchmarked on NVIDIA GeForce RTX 3090, Windows 11, reading identical scripts.*
 
@@ -187,14 +187,7 @@ The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU.
 
 ### Whisper Large V3 Turbo (whisper.cpp)
 
-| Priority | Backend | GPUs | Performance |
-|----------|---------|------|-------------|
-| 1 | **CUDA** | NVIDIA (GTX 10xx+) | ~1-2s for 3s audio |
-| 2 | **Vulkan** | Intel, AMD, NVIDIA | ~3-5s for 3s audio |
-| 3 | **Metal** | Apple Silicon / Intel Mac | ~2-3s for 3s audio |
-| 4 | **CPU** | Any (fallback) | ~20s for 3s audio |
-
-GPU detection happens automatically at startup. Whisper's GPU DLLs are loaded from `resources/win-gpu/{cuda,vulkan}/`.
+Uses CUDA, Vulkan, or Metal depending on platform. GPU DLLs are loaded automatically from `resources/win-gpu/{cuda,vulkan}/` on Windows.
 
 ## Privacy
 
