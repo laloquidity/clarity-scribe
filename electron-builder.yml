@@ -6,6 +6,11 @@ directories:
 files:
   - dist/**/*
   - dist-electron/**/*
+  # Strip koffi binaries for platforms we never target
+  - "!node_modules/koffi/build/koffi/linux_*"
+  - "!node_modules/koffi/build/koffi/musl_*"
+  - "!node_modules/koffi/build/koffi/freebsd_*"
+  - "!node_modules/koffi/build/koffi/openbsd_*"
 npmRebuild: false
 asar: true
 asarUnpack:
@@ -22,6 +27,8 @@ mac:
   hardenedRuntime: true
   entitlements: resources/entitlements.mac.plist
   entitlementsInherit: resources/entitlements.mac.plist
+  files:
+    - "!node_modules/koffi/build/koffi/win32_*"
 win:
   target:
     - target: nsis
@@ -32,9 +39,12 @@ win:
     - from: "resources/win-gpu/"
       to: "win-gpu/"
       filter: ["**/*.dll"]
+  files:
+    - "!node_modules/koffi/build/koffi/darwin_*"
 nsis:
   oneClick: true
   allowToChangeInstallationDirectory: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
   runAfterFinish: true
+
