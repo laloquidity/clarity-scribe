@@ -6,10 +6,10 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 ## ⬇️ Download
 
-| Platform | Download | Size |
-|----------|----------|------|
-| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.2.0/Clarity.Scribe.Setup.2.2.0.exe) | ~912 MB |
-| **macOS** (Apple Silicon) | [**Clarity Scribe.dmg (macOS)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.2.0/Clarity.Scribe-2.2.0-arm64.dmg) | ~153 MB |
+| Platform | Install |
+|----------|---------|
+| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.2.0/Clarity.Scribe.Setup.2.2.0.exe) (~912 MB) |
+| **macOS** (Apple Silicon) | Clone and run from source — see [Getting Started](#getting-started) |
 
 > On first launch, the app downloads the Whisper AI model (~1.5 GB). Parakeet TDT (~890 MB) is downloaded on first use when engine is set to Auto or Parakeet. Fully offline after model downloads.
 
