@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.3.0 — Long-Form Parakeet Stabilization (2026-04-03)
+
+### 🐛 Bug Fixes
+
+- **SIGTRAP crash on long audio** — 8+ minute recordings no longer crash the app. Root cause: Silero VAD v5 context prepend was missing (input should be `[1, 576]` = 64 context + 512 audio, we sent `[1, 512]`), making VAD non-functional and forcing the encoder to process minutes of audio in a single O(n²) attention pass
+- **Transcription truncation** — Removed artificial `maxSkip=3` cap in TDT decoder that caused incomplete output on longer recordings. No such cap exists in any reference implementation
+
+### ⚡ Improvements
+
+- **VAD-based segmentation for Parakeet** — Long audio (>60s) is now split at silence boundaries via Silero VAD, with each segment transcribed independently and results concatenated. Short audio (≤60s) still uses zero-overhead single-pass
+- **TDT decoder aligned to production reference** — Matched [onnx-asr](https://github.com/istupakov/onnx-asr) implementation: `maxTokensPerFrame` 5→10, uncapped duration predictions, corrected elif pattern
+- **Silero VAD v5 API** — Updated from v4 API (`h`, `c` state tensors) to v5 (`state` tensor `[2, 1, 128]` + 64-sample context prepend)
+
+### 📊 Benchmarks (macOS Apple Silicon)
+
+| Audio | Time | RTF | Method |
+|-------|------|-----|--------|
+| 4.2s | 111ms | 37.4x | Single-pass |
+| 15.9s | 404ms | 39.2x | Single-pass |
+| 74.0s | 1,922ms | 38.5x | 15 VAD segments |
+| **486.4s** | **11,073ms** | **43.9x** | **85 VAD segments** |
+
+---
+
 ## v2.1.0 — Parakeet GPU Acceleration (2026-03-27)
 
 ### 🚀 New Features

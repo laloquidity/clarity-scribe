@@ -1,6 +1,6 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using — up to **46x faster than real-time**.
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using — up to **46x faster than real-time**. Transcribe 8 minutes of audio in 11 seconds.
 
 Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated speech-to-text.
 
@@ -49,7 +49,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | 26–46x real-time (Windows), 39–41x real-time (Mac) |
+| Speed | 26–46x real-time (Windows), 37–44x real-time (Mac) |
 | Model Size | ~890 MB (INT8 quantized ONNX) |
 
 ### Whisper Large V3 Turbo
@@ -66,14 +66,21 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 Long recordings are processed through a hardened pipeline:
 
+**Parakeet TDT:**
 1. **Silero VAD** — Detects speech segments, splits on natural pauses (~2MB ONNX model)
-2. **Chunked Transcription** — Each segment processed independently (≤28s each)
+2. **Per-Segment Encoding** — Each segment encoded independently (≤28s each) via FastConformer
+3. **TDT Decoding** — Token-and-Duration Transducer greedy decode per segment
+4. **Result Assembly** — Clean, continuous transcription output
+
+> Short recordings (≤60s) use single-pass encoding for zero overhead. Longer recordings use VAD segmentation to stay within encoder memory limits while maintaining 40x+ real-time speed.
+
+**Whisper:**
+1. **Silero VAD** — Same speech boundary detection
+2. **Chunked Transcription** — Each segment processed independently
 3. **Context Prompting** — Last sentence of chunk N feeds into chunk N+1 for coherent flow
 4. **Hallucination Detection** — If looping detected, retries with adjusted temperature
 5. **Overlap Dedup** — Removes repeated words at segment boundaries
 6. **Result Assembly** — Clean, continuous transcription output
-
-> **Note:** The Whisper pipeline uses VAD-based chunking. Parakeet TDT runs single-pass encoding with no chunking — the TDT transducer architecture handles arbitrarily long audio natively.
 
 ## Requirements
 
@@ -183,12 +190,14 @@ The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU.
 
 **macOS (Apple Silicon M-series):**
 
-| Audio | Total | RTF | Encoder | Decoder | Paste |
-|-------|-------|-----|---------|---------|-------|
-| 23.7s | **576ms** | **41.1x** | 412ms | 61ms | ~50ms |
-| 66.1s | **1,696ms** | **39.0x** | 1,270ms | 153ms | ~50ms |
+| Audio | Total | RTF | Method | Paste |
+|-------|-------|-----|--------|-------|
+| 4.2s | **111ms** | **37.4x** | Single-pass | ~50ms |
+| 15.9s | **404ms** | **39.2x** | Single-pass | ~50ms |
+| 74.0s | **1,922ms** | **38.5x** | 15 VAD segments | ~50ms |
+| 486.4s | **11,073ms** | **43.9x** | 85 VAD segments | ~50ms |
 
-*CPU encoder, single-pass (no chunking). Consolidated AppleScript paste.*
+*CPU encoder. Short audio (≤60s) uses single-pass. Long audio uses Silero VAD segmentation.*
 
 **Why hybrid wins on Windows:** The encoder benefits from GPU parallelism (processes entire audio at once), but the decoder runs hundreds of sequential inference calls per transcription — GPU kernel launch overhead dominates for these tiny operations, making CPU 3–6x faster for the decoder.
 
