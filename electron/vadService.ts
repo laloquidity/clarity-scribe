@@ -100,22 +100,36 @@ export async function detectSpeechSegments(
     const minSilenceMs = 300; // Merge segments with <300ms silence gaps
     const minSilenceSamples = (minSilenceMs / 1000) * sampleRate;
 
-    // Silero VAD state tensors
-    let h = new ort.Tensor('float32', new Float32Array(2 * 1 * 64), [2, 1, 64]);
-    let c = new ort.Tensor('float32', new Float32Array(2 * 1 * 64), [2, 1, 64]);
+    // Silero VAD v5 state tensor (consolidated h+c into single state)
+    // Shape: [2, 1, 128] — see https://github.com/snakers4/silero-vad
+    let state = new ort.Tensor('float32', new Float32Array(2 * 1 * 128), [2, 1, 128]);
     const sr = new ort.Tensor('int64', BigInt64Array.from([BigInt(sampleRate)]), [1]);
+
+    // Silero VAD v5 requires 64 context samples prepended to each 512-sample window
+    // Input tensor shape: [1, 576] (64 context + 512 audio)
+    // Reference: https://github.com/snakers4/silero-vad/blob/master/src/silero_vad/utils_vad.py#L70-L91
+    // Reference: https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/models/silero.py#L43-L68
+    const CONTEXT_SIZE = 64;
+    let context = new Float32Array(CONTEXT_SIZE); // Initialize with zeros (matches official: line 80)
 
     try {
         for (let offset = 0; offset + WINDOW_SIZE <= audioData.length; offset += WINDOW_SIZE) {
             const chunk = audioData.slice(offset, offset + WINDOW_SIZE);
-            const input = new ort.Tensor('float32', chunk, [1, WINDOW_SIZE]);
 
-            const result = await vadSession.run({ input, h, c, sr });
+            // Prepend context to chunk: [64 context + 512 audio] = 576 samples
+            const inputData = new Float32Array(CONTEXT_SIZE + WINDOW_SIZE);
+            inputData.set(context, 0);
+            inputData.set(chunk, CONTEXT_SIZE);
+            const input = new ort.Tensor('float32', inputData, [1, CONTEXT_SIZE + WINDOW_SIZE]);
+
+            const result = await vadSession.run({ input, state, sr });
             const prob = (result.output.data as Float32Array)[0];
 
-            // Update state from output
-            h = result.hn as any;
-            c = result.cn as any;
+            // Update state from output (v5 returns 'stateN')
+            state = result.stateN as any;
+
+            // Update context with last 64 samples of current chunk (matches official: line 91)
+            context = chunk.slice(-CONTEXT_SIZE);
 
             if (prob >= threshold) {
                 if (speechStart === -1) {

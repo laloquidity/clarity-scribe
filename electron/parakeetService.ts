@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, createWriteStream, readFileSync } from 'fs';
 import { join } from 'path';
 import { app } from 'electron';
 import https from 'https';
+import { detectSpeechSegments, isVADReady } from './vadService';
 
 // Self-hosted on GitHub releases (reliable CDN, full control)
 // Original source: csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 (INT8 quantized)
@@ -415,7 +416,7 @@ async function transducerGreedyDecode(
 
     // TDT greedy decode — matching sherpa-onnx reference implementation exactly
     // See: offline-transducer-greedy-search-nemo-decoder.cc DecodeOneTDT()
-    const maxTokensPerFrame = 5;
+    const maxTokensPerFrame = 10; // Matches onnx-asr reference: nemo.py max_tokens_per_step
     let tokensThisFrame = 0;
     let skip = 1; // frames to advance
 
@@ -462,8 +463,8 @@ async function transducerGreedyDecode(
                     skip = i;
                 }
             }
-            // Cap skip to prevent aggressive jumps that truncate long audio
-            skip = Math.min(skip, 3);
+            // Duration prediction used directly — matches onnx-asr reference (no cap)
+            // The model was trained to predict accurate frame durations
         }
 
         if (y !== BLANK_ID) {
@@ -474,22 +475,17 @@ async function transducerGreedyDecode(
             tokensThisFrame += 1;
         }
 
-        // Reset per-frame counter when skipping frames
+        // Frame advancement logic — aligned with onnx-asr reference (elif pattern)
+        // Reference: https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/asr.py#L227
         if (skip > 0) {
+            // Model predicted a skip: advance by skip frames
             tokensThisFrame = 0;
-        }
-
-        // Safety: limit tokens per frame
-        if (tokensThisFrame >= maxTokensPerFrame) {
-            tokensThisFrame = 0;
-            skip = 1;
-        }
-
-        // If blank and skip=0, must advance at least 1 frame
-        if (y === BLANK_ID && skip === 0) {
+        } else if (y === BLANK_ID || tokensThisFrame >= maxTokensPerFrame) {
+            // Blank with no skip, or max tokens reached: advance by 1 frame
             tokensThisFrame = 0;
             skip = 1;
         }
+        // When y != BLANK_ID and skip == 0: stay on same frame (emit more tokens)
     }
 
     console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames`);
@@ -705,11 +701,54 @@ function fft(real: Float32Array, imag: Float32Array, n: number): void {
 }
 
 /**
+ * Single-pass encode + decode for one audio segment.
+ * Handles mel spectrogram, encoder, and TDT decoder in one call.
+ */
+async function transcribeSinglePass(audioData: Float32Array): Promise<{
+    text: string;
+    melTime: number;
+    encTime: number;
+    decTime: number;
+}> {
+    // Compute mel spectrogram
+    const melStart = Date.now();
+    const { features, nFrames } = computeMelSpectrogram(audioData);
+    const melTime = Date.now() - melStart;
+
+    // audio_signal: [1, 128, nFrames]
+    const audioTensor = new ort.Tensor('float32', features, [1, 128, nFrames]);
+    const lengthTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(nFrames)]), [1]);
+
+    // Run encoder
+    const encoderInputs: Record<string, ort.Tensor> = {};
+    encoderInputs[encoderSession!.inputNames[0]] = audioTensor;
+    encoderInputs[encoderSession!.inputNames[1]] = lengthTensor;
+
+    const encStart = Date.now();
+    const encoderResult = await encoderSession!.run(encoderInputs);
+    const encTime = Date.now() - encStart;
+
+    const encoderOut = encoderResult[encoderSession!.outputNames[0]] as ort.Tensor;
+    const encoderOutLens = encoderResult[encoderSession!.outputNames[1]] as ort.Tensor;
+    const encoderLen = Number(encoderOutLens.data[0]);
+
+    // Transducer greedy decode
+    const decStart = Date.now();
+    const text = await transducerGreedyDecode(encoderOut, encoderLen);
+    const decTime = Date.now() - decStart;
+
+    return { text, melTime, encTime, decTime };
+}
+
+/**
  * Transcribe audio using Parakeet TDT
  *
- * Single-pass encoding — no chunking. Parakeet is a transducer model
- * (not Whisper-style seq2seq) and is designed for single-pass inference.
- * The TDT decoder's maxSkip cap handles all audio lengths.
+ * For audio ≤60s: single-pass encoding (proven fast, zero overhead)
+ * For audio >60s: VAD-based segmentation → per-segment single-pass → concatenate
+ *
+ * The VAD approach is the standard production method used by onnx-asr
+ * (https://github.com/istupakov/onnx-asr) and NeMo's buffered inference scripts.
+ * Each segment is capped at 28s by vadService.ts, well within single-pass encoder limits.
  */
 export async function transcribeParakeet(
     audioData: Float32Array,
@@ -724,38 +763,63 @@ export async function transcribeParakeet(
     console.log(`[Parakeet] Transcribing ${durationSeconds.toFixed(1)}s...`);
 
     try {
-        // Compute mel spectrogram
-        const melStart = Date.now();
-        const { features, nFrames } = computeMelSpectrogram(audioData);
-        const melTime = Date.now() - melStart;
+        // Short audio: single-pass (proven to work up to 66s at 39x+ RTF)
+        if (durationSeconds <= 60) {
+            const { text, melTime, encTime, decTime } = await transcribeSinglePass(audioData);
 
-        // audio_signal: [1, 128, nFrames]
-        const audioTensor = new ort.Tensor('float32', features, [1, 128, nFrames]);
-        const lengthTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(nFrames)]), [1]);
+            const totalTime = Date.now() - startTime;
+            const rtf = durationSeconds / (totalTime / 1000);
+            console.log(`[Parakeet] ⏱ Mel: ${melTime}ms | Encoder: ${encTime}ms | Decoder: ${decTime}ms | Total: ${totalTime}ms (${rtf.toFixed(1)}x real-time)`);
+            console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
+            return text;
+        }
 
-        // Run encoder (single pass — no chunking)
-        const encoderInputs: Record<string, ort.Tensor> = {};
-        encoderInputs[encoderSession.inputNames[0]] = audioTensor;
-        encoderInputs[encoderSession.inputNames[1]] = lengthTensor;
+        // Long audio: VAD-based segmentation
+        // Split at silence boundaries, transcribe each segment independently, concatenate
+        // This is the approach used by onnx-asr and NeMo's buffered inference scripts
+        console.log(`[Parakeet] Long audio (${durationSeconds.toFixed(1)}s) — using VAD segmentation`);
 
-        const encStart = Date.now();
-        const encoderResult = await encoderSession.run(encoderInputs);
-        const encTime = Date.now() - encStart;
+        let audioSegments: Float32Array[];
 
-        const encoderOut = encoderResult[encoderSession.outputNames[0]] as ort.Tensor;
-        const encoderOutLens = encoderResult[encoderSession.outputNames[1]] as ort.Tensor;
-        const encoderLen = Number(encoderOutLens.data[0]);
+        if (isVADReady()) {
+            const segments = await detectSpeechSegments(audioData, 16000);
+            audioSegments = segments.map(seg => audioData.slice(seg.startSample, seg.endSample));
+            console.log(`[Parakeet] VAD: ${audioSegments.length} segments (${audioSegments.map(s => (s.length / 16000).toFixed(1) + 's').join(', ')})`);
+        } else {
+            // Fallback: fixed 30s chunks (no VAD available)
+            console.warn('[Parakeet] VAD not ready, using fixed 30s chunks');
+            audioSegments = [];
+            const chunkSamples = 30 * 16000;
+            for (let offset = 0; offset < audioData.length; offset += chunkSamples) {
+                audioSegments.push(audioData.slice(offset, Math.min(offset + chunkSamples, audioData.length)));
+            }
+        }
 
-        // Transducer greedy decode (TDT skip cap handles all audio lengths)
-        const decStart = Date.now();
-        const text = await transducerGreedyDecode(encoderOut, encoderLen);
-        const decTime = Date.now() - decStart;
+        // Transcribe each segment independently
+        const texts: string[] = [];
+        let totalMel = 0, totalEnc = 0, totalDec = 0;
 
+        for (let i = 0; i < audioSegments.length; i++) {
+            const seg = audioSegments[i];
+            const segDur = seg.length / 16000;
+            console.log(`[Parakeet] Segment ${i + 1}/${audioSegments.length}: ${segDur.toFixed(1)}s`);
+
+            const { text, melTime, encTime, decTime } = await transcribeSinglePass(seg);
+            totalMel += melTime;
+            totalEnc += encTime;
+            totalDec += decTime;
+
+            if (text.trim()) {
+                texts.push(text.trim());
+            }
+        }
+
+        const fullText = texts.join(' ');
         const totalTime = Date.now() - startTime;
         const rtf = durationSeconds / (totalTime / 1000);
-        console.log(`[Parakeet] ⏱ Mel: ${melTime}ms | Encoder: ${encTime}ms | Decoder: ${decTime}ms | Total: ${totalTime}ms (${rtf.toFixed(1)}x real-time)`);
-        console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
-        return text;
+        console.log(`[Parakeet] ⏱ Mel: ${totalMel}ms | Encoder: ${totalEnc}ms | Decoder: ${totalDec}ms | Total: ${totalTime}ms (${rtf.toFixed(1)}x real-time)`);
+        console.log(`[Parakeet] Result (${audioSegments.length} segments): "${fullText.substring(0, 80)}"`);
+        return fullText;
     } catch (error) {
         console.error('[Parakeet] Transcription failed:', error);
         throw error;
