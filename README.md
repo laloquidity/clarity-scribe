@@ -1,6 +1,6 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using — up to **46x faster than real-time**. Transcribe 8 minutes of audio in 11 seconds.
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using — up to **53x faster than real-time**. Transcribe 8 minutes of audio in 11 seconds.
 
 Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated speech-to-text.
 
@@ -15,7 +15,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 ## Features
 
-- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to 46x real-time), Whisper for all others. Manual override available in settings.
+- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to 53x real-time), Whisper for all others. Manual override available in settings.
 - **Silero VAD Segmentation** — Intelligent voice activity detection splits audio at natural speech boundaries instead of arbitrary time intervals
 - **Hallucination Detection** — Detects and corrects Whisper's looping/repetition artifacts with automatic retry
 - **Context Prompting** — Maintains coherent transcription across long recordings by passing context between chunks
@@ -49,7 +49,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | 26–46x real-time (Windows), 37–44x real-time (Mac) |
+| Speed | 19–53x real-time (Windows), 37–44x real-time (Mac) |
 | Model Size | ~890 MB (INT8 quantized ONNX) |
 
 ### Whisper Large V3 Turbo
@@ -67,12 +67,11 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 Long recordings are processed through a hardened pipeline:
 
 **Parakeet TDT:**
-1. **Silero VAD** — Detects speech segments, splits on natural pauses (~2MB ONNX model)
-2. **Per-Segment Encoding** — Each segment encoded independently (≤28s each) via FastConformer
-3. **TDT Decoding** — Token-and-Duration Transducer greedy decode per segment
-4. **Result Assembly** — Clean, continuous transcription output
+1. **Single-Pass Encoding** — Full audio encoded at once via FastConformer (Windows/Linux)
+2. **TDT Decoding** — Token-and-Duration Transducer greedy decode
+3. **Result Assembly** — Clean, continuous transcription output
 
-> Short recordings (≤60s) use single-pass encoding for zero overhead. Longer recordings use VAD segmentation to stay within encoder memory limits while maintaining 40x+ real-time speed.
+> **Windows/Linux**: Always single-pass — the encoder handles any audio length with no segmentation overhead (53x real-time at 78s). **macOS**: Single-pass ≤60s; longer audio uses Silero VAD segmentation (CoreML encoder limit).
 
 **Whisper:**
 1. **Silero VAD** — Same speech boundary detection
@@ -179,14 +178,14 @@ The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU.
 
 **Windows (RTX 3090):**
 
-| Config | 23s Audio | 60s Audio |
-|--------|-----------|-----------|
-| **Hybrid (DML encoder + CPU decoder)** | **854ms (26.6x)** | **1,313ms (46.2x)** |
-| DML (all GPU) | 1,457ms (15.6x) | 2,283ms (28.1x) |
-| CPU (all) | 1,268ms (17.2x) | 4,731ms (13.5x) |
-| CUDA custom build (all GPU) | 1,971ms (12.3x) | 5,126ms (13.1x) |
+| Config | 14s Audio | 23s Audio | 60s Audio | 78s Audio |
+|--------|-----------|-----------|-----------|----------|
+| **Hybrid (DML encoder + CPU decoder)** | **747ms (19.1x)** | **854ms (26.6x)** | **1,313ms (46.2x)** | **1,460ms (53.2x)** |
+| DML (all GPU) | — | 1,457ms (15.6x) | 2,283ms (28.1x) | — |
+| CPU (all) | — | 1,268ms (17.2x) | 4,731ms (13.5x) | — |
+| CUDA custom build (all GPU) | — | 1,971ms (12.3x) | 5,126ms (13.1x) | — |
 
-*Paste latency: 11ms (native Win32 FFI via koffi).*
+*Paste latency: 2–3ms (native Win32 FFI via koffi). Always single-pass on Windows — no VAD segmentation overhead.*
 
 **macOS (Apple Silicon M-series):**
 
