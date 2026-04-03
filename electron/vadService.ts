@@ -96,9 +96,27 @@ export async function detectSpeechSegments(
 
     const segments: SpeechSegment[] = [];
     let speechStart = -1;
+
+    // Thresholds — matching onnx-asr silero.py:75-80 (hysteresis)
+    // https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/models/silero.py#L75-L80
     const threshold = 0.5;
-    const minSilenceMs = 300; // Merge segments with <300ms silence gaps
-    const minSilenceSamples = (minSilenceMs / 1000) * sampleRate;
+    const negThreshold = threshold - 0.15; // 0.35 — speech END threshold (hysteresis)
+
+    // Merge parameters — based on onnx-asr vad.py:59-70 (_merge_segments)
+    // https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/vad.py#L59-L70
+    // NOTE: onnx-asr uses min_silence_duration_ms=100, but that creates too many
+    // segments for Parakeet TDT which benefits from larger context windows.
+    // We use 500ms to merge through conversational pauses while still
+    // splitting at genuine sentence/topic boundaries.
+    const speechPadMs = 30;
+    const minSpeechDurationMs = 250;
+    const maxSpeechDurationS = 20;
+    const minSilenceDurationMs = 500; // onnx-asr default: 100ms
+
+    const speechPadSamples = Math.floor(speechPadMs * sampleRate / 1000);
+    const minSpeechSamples = Math.floor(minSpeechDurationMs * sampleRate / 1000) - 2 * speechPadSamples;
+    const maxSpeechSamples = Math.floor(maxSpeechDurationS * sampleRate) - 2 * speechPadSamples;
+    const minSilenceSamples = Math.floor(minSilenceDurationMs * sampleRate / 1000) + 2 * speechPadSamples;
 
     // Silero VAD v5 state tensor (consolidated h+c into single state)
     // Shape: [2, 1, 128] — see https://github.com/snakers4/silero-vad
@@ -111,6 +129,9 @@ export async function detectSpeechSegments(
     // Reference: https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/models/silero.py#L43-L68
     const CONTEXT_SIZE = 64;
     let context = new Float32Array(CONTEXT_SIZE); // Initialize with zeros (matches official: line 80)
+
+    // Raw speech segments from VAD (before merging)
+    const rawSegments: Array<{ start: number; end: number }> = [];
 
     try {
         for (let offset = 0; offset + WINDOW_SIZE <= audioData.length; offset += WINDOW_SIZE) {
@@ -131,29 +152,24 @@ export async function detectSpeechSegments(
             // Update context with last 64 samples of current chunk (matches official: line 91)
             context = chunk.slice(-CONTEXT_SIZE);
 
+            // Hysteresis: use threshold (0.5) to START speech, negThreshold (0.35) to END speech
+            // Reference: onnx-asr silero.py:85-90
             if (prob >= threshold) {
                 if (speechStart === -1) {
                     speechStart = offset;
                 }
-            } else {
+            } else if (prob < negThreshold) {
                 if (speechStart !== -1) {
-                    segments.push({
-                        startSample: speechStart,
-                        endSample: offset + WINDOW_SIZE,
-                        durationMs: ((offset + WINDOW_SIZE - speechStart) / sampleRate) * 1000,
-                    });
+                    rawSegments.push({ start: speechStart, end: offset + WINDOW_SIZE });
                     speechStart = -1;
                 }
             }
+            // When negThreshold <= prob < threshold: no state change (hysteresis zone)
         }
 
         // Close any open segment
         if (speechStart !== -1) {
-            segments.push({
-                startSample: speechStart,
-                endSample: audioData.length,
-                durationMs: ((audioData.length - speechStart) / sampleRate) * 1000,
-            });
+            rawSegments.push({ start: speechStart, end: audioData.length });
         }
     } catch (error) {
         console.error('[VAD] Inference error:', error);
@@ -161,84 +177,56 @@ export async function detectSpeechSegments(
     }
 
     // No speech detected — return full audio
-    if (segments.length === 0) {
+    if (rawSegments.length === 0) {
         return [{ startSample: 0, endSample: audioData.length, durationMs: (audioData.length / sampleRate) * 1000 }];
     }
 
-    // Merge segments with small gaps (<300ms)
-    const merged: SpeechSegment[] = [segments[0]];
-    for (let i = 1; i < segments.length; i++) {
-        const prev = merged[merged.length - 1];
-        const gap = segments[i].startSample - prev.endSample;
-        if (gap < minSilenceSamples) {
-            // Merge
-            prev.endSample = segments[i].endSample;
-            prev.durationMs = ((prev.endSample - prev.startSample) / sampleRate) * 1000;
+    // Merge segments — exact port of onnx-asr _merge_segments (vad.py:59-86)
+    // https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/vad.py#L59-L86
+    // Merges adjacent segments as long as:
+    //   1. Gap between them < minSilenceSamples (100ms + 2*pad)
+    //   2. Combined segment stays under maxSpeechSamples (20s - 2*pad)
+    // Drops segments shorter than minSpeechSamples (250ms - 2*pad)
+    const mergedSegments: Array<{ start: number; end: number }> = [];
+    let curStart = -Infinity;
+    let curEnd = -Infinity;
+
+    // Chain: rawSegments + sentinel pair to flush the last segment (matches reference chain pattern)
+    const sentinel = [
+        { start: audioData.length, end: audioData.length },
+        { start: Infinity, end: Infinity },
+    ];
+
+    for (const seg of [...rawSegments, ...sentinel]) {
+        if (seg.start - curEnd < minSilenceSamples && seg.end - curStart < maxSpeechSamples) {
+            // Merge: extend current segment
+            curEnd = seg.end;
         } else {
-            merged.push({ ...segments[i] });
-        }
-    }
-
-    // Split segments longer than 28s at the quietest point
-    const maxSegmentSamples = 28 * sampleRate;
-    const finalSegments: SpeechSegment[] = [];
-
-    for (const seg of merged) {
-        const segLength = seg.endSample - seg.startSample;
-        if (segLength <= maxSegmentSamples) {
-            finalSegments.push(seg);
-            continue;
-        }
-
-        // Split long segments at quietest 300ms window
-        let offset = seg.startSample;
-        while (offset < seg.endSample) {
-            const remaining = seg.endSample - offset;
-            if (remaining <= maxSegmentSamples) {
-                finalSegments.push({
-                    startSample: offset,
-                    endSample: seg.endSample,
-                    durationMs: (remaining / sampleRate) * 1000,
-                });
-                break;
+            // Emit current segment if long enough
+            if (curEnd - curStart > minSpeechSamples) {
+                const paddedStart = Math.max(curStart - speechPadSamples, 0);
+                const paddedEnd = Math.min(curEnd + speechPadSamples, audioData.length);
+                mergedSegments.push({ start: paddedStart, end: paddedEnd });
             }
-
-            // Find quietest 300ms window in the second half of the chunk
-            const searchStart = offset + Math.floor(maxSegmentSamples * 0.5);
-            const searchEnd = Math.min(offset + maxSegmentSamples, seg.endSample);
-            const windowSamples = Math.floor(0.3 * sampleRate); // 300ms
-            let bestPos = searchEnd - windowSamples;
-            let bestRms = Infinity;
-
-            for (let pos = searchStart; pos + windowSamples <= searchEnd; pos += Math.floor(windowSamples / 3)) {
-                let sum = 0;
-                for (let j = pos; j < pos + windowSamples; j++) {
-                    sum += audioData[j] * audioData[j];
-                }
-                const rms = Math.sqrt(sum / windowSamples);
-                if (rms < bestRms) {
-                    bestRms = rms;
-                    bestPos = pos;
-                }
+            // Handle segments longer than maxSpeechSamples (split)
+            let s = seg.start;
+            while (seg.end - s > maxSpeechSamples) {
+                const paddedStart = Math.max(s - speechPadSamples, 0);
+                const paddedEnd = s + maxSpeechSamples + speechPadSamples;
+                mergedSegments.push({ start: paddedStart, end: paddedEnd });
+                s += maxSpeechSamples;
             }
-
-            const splitPoint = bestPos + Math.floor(windowSamples / 2);
-            finalSegments.push({
-                startSample: offset,
-                endSample: splitPoint,
-                durationMs: ((splitPoint - offset) / sampleRate) * 1000,
-            });
-            offset = splitPoint;
+            curStart = s;
+            curEnd = seg.end;
         }
     }
 
-    // Add padding: 150ms before and after each segment
-    const padSamples = Math.floor(0.15 * sampleRate);
-    for (const seg of finalSegments) {
-        seg.startSample = Math.max(0, seg.startSample - padSamples);
-        seg.endSample = Math.min(audioData.length, seg.endSample + padSamples);
-        seg.durationMs = ((seg.endSample - seg.startSample) / sampleRate) * 1000;
-    }
+    // Convert to SpeechSegment format
+    const finalSegments: SpeechSegment[] = mergedSegments.map(seg => ({
+        startSample: seg.start,
+        endSample: seg.end,
+        durationMs: ((seg.end - seg.start) / sampleRate) * 1000,
+    }));
 
     console.log(`[VAD] Detected ${finalSegments.length} speech segments: ${finalSegments.map(s => `${(s.durationMs / 1000).toFixed(1)}s`).join(', ')}`);
     return finalSegments;
