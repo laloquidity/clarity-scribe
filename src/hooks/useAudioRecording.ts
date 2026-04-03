@@ -10,10 +10,11 @@ interface UseAudioRecordingOptions {
     settings: Settings;
     onStateChange: (state: AppState) => void;
     onError: (message: string) => void;
+    skipSilenceDetection?: boolean;
 }
 
 export function useAudioRecording(options: UseAudioRecordingOptions) {
-    const { settings, onStateChange, onError } = options;
+    const { settings, onStateChange, onError, skipSilenceDetection } = options;
     const settingsRef = useRef(settings);
 
     useEffect(() => { settingsRef.current = settings; }, [settings]);
@@ -252,7 +253,9 @@ registerProcessor('audio-recorder-processor', AudioRecorderProcessor);
             if (audioCtx.state === 'suspended') await audioCtx.resume();
 
             onStateChange('RECORDING');
-            startSilenceDetection(stream, settingsRef.current.silenceDuration, stopRecording);
+            if (!skipSilenceDetection) {
+                startSilenceDetection(stream, settingsRef.current.silenceDuration, stopRecording);
+            }
 
             maxDurationTimeoutRef.current = window.setTimeout(() => {
                 stopRecording();
