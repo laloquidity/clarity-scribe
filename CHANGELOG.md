@@ -6,11 +6,13 @@
 
 - **SIGTRAP crash on long audio** — 8+ minute recordings no longer crash the app. Root cause: Silero VAD v5 context prepend was missing (input should be `[1, 576]` = 64 context + 512 audio, we sent `[1, 512]`), making VAD non-functional and forcing the encoder to process minutes of audio in a single O(n²) attention pass
 - **Transcription truncation** — Removed artificial `maxSkip=3` cap in TDT decoder that caused incomplete output on longer recordings. No such cap exists in any reference implementation
+- **Windows performance regression** — VAD segmentation was being applied globally; now macOS-only. Windows/Linux use single-pass for any audio length (no encoder overhead)
 
 ### ⚡ Improvements
 
-- **VAD-based segmentation for Parakeet** — Long audio (>60s) is now split at silence boundaries via Silero VAD, with each segment transcribed independently and results concatenated. Short audio (≤60s) still uses zero-overhead single-pass
-- **TDT decoder aligned to production reference** — Matched [onnx-asr](https://github.com/istupakov/onnx-asr) implementation: `maxTokensPerFrame` 5→10, uncapped duration predictions, corrected elif pattern
+- **VAD-based segmentation for Parakeet (macOS)** — Long audio (>60s) is split at silence boundaries via Silero VAD, with each segment transcribed independently and results concatenated. Short audio (≤60s) still uses zero-overhead single-pass
+- **Segment merging** — Ported [onnx-asr `_merge_segments`](https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/vad.py#L59-L86) logic: adjacent segments merge up to 20s, drops segments <250ms, hysteresis threshold (0.35 off / 0.5 on). Produces ~11 segments from 90s (was 25)
+- **TDT decoder aligned to production reference** — Matched [onnx-asr](https://github.com/istupakov/onnx-asr) implementation: `maxTokensPerFrame` 5→10, uncapped duration predictions, corrected elif pattern. A/B tested: no quality difference
 - **Silero VAD v5 API** — Updated from v4 API (`h`, `c` state tensors) to v5 (`state` tensor `[2, 1, 128]` + 64-sample context prepend)
 
 ### 📊 Benchmarks (macOS Apple Silicon)
@@ -19,7 +21,7 @@
 |-------|------|-----|--------|
 | 4.2s | 111ms | 37.4x | Single-pass |
 | 15.9s | 404ms | 39.2x | Single-pass |
-| 74.0s | 1,922ms | 38.5x | 15 VAD segments |
+| 90.0s | 1,963ms | 45.8x | 11 VAD segments |
 | **486.4s** | **11,073ms** | **43.9x** | **85 VAD segments** |
 
 ---
