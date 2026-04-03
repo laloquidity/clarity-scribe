@@ -27,16 +27,17 @@ const Waveform = () => (
     </div>
 );
 
-// Simple hotkey display formatter — platform-aware
-function formatHotkeyShort(hotkey: string, platform: string = 'darwin'): string {
+// Simple hotkey display formatter — maps key IDs to display labels
+function formatHotkeyShort(hotkey: string): string {
     if (!hotkey) return '';
-    const isWin = platform === 'win32';
-    const map: Record<string, string> = isWin ? {
-        'Alt': 'Alt', 'Command': 'Ctrl', 'Control': 'Ctrl', 'Super': 'Win', 'Shift': 'Shift', 'Space': 'Space',
-    } : {
-        'Alt': '⌥', 'Command': '⌘', 'Control': 'Ctrl', 'Shift': '⇧', 'Space': 'Space',
+    // Map common key IDs to nice display names
+    const labels: Record<string, string> = {
+        'fn': 'fn', 'space': 'Space', 'control': 'Ctrl', 'option': '⌥',
+        'shift': '⇧', 'command': '⌘', 'escape': 'Esc', 'tab': 'Tab',
+        'capslock': 'Caps', 'right-option': 'Right ⌥', 'right-control': 'Right Ctrl',
+        'right-shift': 'Right ⇧', 'right-command': 'Right ⌘',
     };
-    return hotkey.split('+').map(p => map[p] || p).join('+');
+    return labels[hotkey] || hotkey.toUpperCase();
 }
 
 const Widget: React.FC<WidgetProps> = ({
@@ -51,11 +52,9 @@ const Widget: React.FC<WidgetProps> = ({
     const isRecording = appState === 'RECORDING';
     const isProcessing = appState === 'PROCESSING';
     const isCopied = statusMessage?.includes('✓');
-    const [platform, setPlatform] = useState('darwin');
     const [transcriptionProgress, setTranscriptionProgress] = useState<number | null>(null);
 
     useEffect(() => {
-        window.electronAPI?.getPlatform?.().then((p: string) => setPlatform(p));
         const unsub = window.electronAPI?.onTranscriptionProgress?.((percent) => {
             setTranscriptionProgress(percent);
         });
@@ -75,7 +74,7 @@ const Widget: React.FC<WidgetProps> = ({
             }
             return 'Processing';
         }
-        if (hotkey) return `Press ${formatHotkeyShort(hotkey, platform)} to record`;
+        if (hotkey) return `Hold ${formatHotkeyShort(hotkey)} to record`;
         return 'Ready';
     };
 

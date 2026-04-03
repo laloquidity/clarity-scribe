@@ -31,6 +31,8 @@ export interface ElectronAPI {
     onTranscriptionProgress: (cb: (percent: number) => void) => () => void;
     onSetupStepProgress: (cb: (step: { id: string; label: string; percent: number; status: string }) => void) => () => void;
     onToggleRecording: (cb: () => void) => () => void;
+    onStartRecording: (cb: () => void) => () => void;
+    onStopRecording: (cb: () => void) => () => void;
 
     getTargetApp: () => Promise<{ targetApp: { name: string; pid: number } | null; confidence: string }>;
     clearTargetApp: () => Promise<void>;
@@ -44,6 +46,7 @@ export interface ElectronAPI {
     getHotkey: () => Promise<string>;
     setHotkey: (key: string) => Promise<boolean>;
     onHotkeyChanged: (cb: (key: string) => void) => () => void;
+    getKeyCodeMap: () => Promise<Array<{ id: string; label: string }>>;
 
     // Engine management
     getEngineInfo: () => Promise<{ whisper: string; parakeet: boolean; currentEngine: string }>;
@@ -57,6 +60,8 @@ export interface ElectronAPI {
 
     quitApp: () => Promise<void>;
     setWindowSize: (dims: { width: number; height: number }) => Promise<void>;
+    hideWindow: () => Promise<void>;
+    showWindow: () => Promise<void>;
 
     // Permissions & Setup
     requestMicPermission: () => Promise<string>;

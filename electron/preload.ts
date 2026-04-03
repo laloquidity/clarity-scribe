@@ -37,6 +37,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('toggle-recording', handler);
         return () => { ipcRenderer.removeListener('toggle-recording', handler); };
     },
+    onStartRecording: (cb: () => void) => {
+        const handler = () => cb();
+        ipcRenderer.on('start-recording', handler);
+        return () => { ipcRenderer.removeListener('start-recording', handler); };
+    },
+    onStopRecording: (cb: () => void) => {
+        const handler = () => cb();
+        ipcRenderer.on('stop-recording', handler);
+        return () => { ipcRenderer.removeListener('stop-recording', handler); };
+    },
 
     // Target app & paste
     getTargetApp: () => ipcRenderer.invoke('get-target-app'),
@@ -51,6 +61,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveSettings: (settings: any) => ipcRenderer.invoke('save-settings', settings),
     getHotkey: () => ipcRenderer.invoke('get-hotkey'),
     setHotkey: (key: string) => ipcRenderer.invoke('set-hotkey', key),
+    getKeyCodeMap: () => ipcRenderer.invoke('get-key-code-map'),
     onHotkeyChanged: (cb: (key: string) => void) => {
         const handler = (_: any, key: string) => cb(key);
         ipcRenderer.on('hotkey-changed', handler);
@@ -71,6 +82,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Window
     quitApp: () => ipcRenderer.invoke('quit-app'),
     setWindowSize: (dims: { width: number; height: number }) => ipcRenderer.invoke('set-window-size', dims),
+    hideWindow: () => ipcRenderer.invoke('hide-window'),
+    showWindow: () => ipcRenderer.invoke('show-window'),
 
     // Permissions & Setup
     requestMicPermission: () => ipcRenderer.invoke('request-mic-permission'),

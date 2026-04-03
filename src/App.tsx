@@ -2,7 +2,8 @@
  * Clarity Scribe — Main App Shell
  * 
  * Always-on-top widget with expandable history panel.
- * Global hotkey toggles recording, transcription gets pasted to the active app.
+ * Push-to-talk: hold hotkey to record, release to stop.
+ * Widget auto-hides when idle, appears during recording/processing.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronDown, ChevronUp, Settings } from 'lucide-react';
@@ -30,6 +31,8 @@ const App: React.FC = () => {
     const [whisperStatus, setWhisperStatus] = useState('Initializing...');
     const [copiedToast, setCopiedToast] = useState(false);
     const [setupDone, setSetupDone] = useState(false);
+    const [keepVisible, setKeepVisible] = useState(false); // User explicitly showed via tray
+    const [pttActivated, setPttActivated] = useState(false); // True after first PTT key-down
 
     const { settings, updateSetting, isLoaded } = useSettings();
 
@@ -41,17 +44,17 @@ const App: React.FC = () => {
             setStatusMessage(msg);
             setTimeout(() => setStatusMessage(undefined), 3000);
         },
+        skipSilenceDetection: true, // PTT handles stop via key release
     });
 
-    // Toggle recording — called by mic button click
+    // Toggle recording — called by mic button click (widget tap)
     // Uses widgetToggleRecording IPC to capture target app from cache
     // before Clarity Scribe's window steals focus
     const toggleRecordingFromWidget = useCallback(() => {
-        // Tell main process to capture target app and toggle state
         window.electronAPI?.widgetToggleRecording();
     }, []);
 
-    // The actual start/stop logic — called when main process sends toggle-recording
+    // The actual start/stop logic — called when main process sends toggle-recording (widget click)
     const handleToggle = useCallback(() => {
         if (isRecordingRef.current) {
             stopRecording();
@@ -61,6 +64,20 @@ const App: React.FC = () => {
         }
     }, [startRecording, stopRecording, isRecordingRef]);
 
+    // PTT start — called when main process sends start-recording (key down)
+    const handleStartRecording = useCallback(() => {
+        if (isRecordingRef.current) return;
+        setPttActivated(true);
+        setStatusMessage(undefined);
+        startRecording();
+    }, [startRecording, isRecordingRef]);
+
+    // PTT stop — called when main process sends stop-recording (key up)
+    const handleStopRecording = useCallback(() => {
+        if (!isRecordingRef.current) return;
+        stopRecording();
+    }, [stopRecording, isRecordingRef]);
+
     // Load history on mount + check if setup was already completed
     useEffect(() => {
         window.electronAPI?.getHistory().then(h => setHistory(h || []));
@@ -69,7 +86,7 @@ const App: React.FC = () => {
         });
     }, []);
 
-    // Listen for hotkey toggle
+    // Listen for hotkey events (toggle, start, stop)
     useEffect(() => {
         const api = window.electronAPI;
         if (!api) return;
@@ -78,13 +95,22 @@ const App: React.FC = () => {
             handleToggle();
         });
 
+        // PTT events from key monitor
+        const unsubStart = api.onStartRecording(() => {
+            handleStartRecording();
+        });
+
+        const unsubStop = api.onStopRecording(() => {
+            handleStopRecording();
+        });
+
         // If main process falls back to a different hotkey, sync the UI
         const unsubHotkey = api.onHotkeyChanged?.((key: string) => {
             updateSetting('hotkey', key);
         });
 
-        return () => { unsubToggle?.(); unsubHotkey?.(); };
-    }, [handleToggle, updateSetting]);
+        return () => { unsubToggle?.(); unsubStart?.(); unsubStop?.(); unsubHotkey?.(); };
+    }, [handleToggle, handleStartRecording, handleStopRecording, updateSetting]);
 
     // Listen for Whisper events
     useEffect(() => {
@@ -134,14 +160,31 @@ const App: React.FC = () => {
 
             // Show accurate feedback
             setStatusMessage(didPaste ? `Pasted → ${targetAppName} ✓` : 'Copied ✓');
-            setTimeout(() => setStatusMessage(undefined), 2000);
 
             setAppState('IDLE');
             isRecordingRef.current = false;
+
+            // Auto-hide after feedback shown
+            setTimeout(() => {
+                setStatusMessage(undefined);
+                if (!keepVisible) {
+                    api.hideWindow();
+                }
+            }, 2000);
         });
 
         return () => { unsubResult?.(); };
-    }, []);
+    }, [keepVisible]);
+
+    // Auto-hide when idle (after setup) — only after PTT has been used, and not kept visible by user
+    useEffect(() => {
+        const api = window.electronAPI;
+        if (!api || !setupDone || !pttActivated) return;
+
+        if (appState === 'IDLE' && !expanded && !showSettings && !statusMessage && !keepVisible) {
+            api.hideWindow();
+        }
+    }, [appState, expanded, showSettings, statusMessage, setupDone, keepVisible, pttActivated]);
 
     // Resize window based on state
     useEffect(() => {
@@ -213,6 +256,7 @@ const App: React.FC = () => {
                     <button
                         className="gear-btn"
                         onClick={() => {
+                            setKeepVisible(true);
                             if (!expanded) setExpanded(true);
                             setShowSettings(!showSettings);
                         }}
@@ -223,8 +267,13 @@ const App: React.FC = () => {
                     <button
                         className="expand-btn"
                         onClick={() => {
+                            if (!expanded) {
+                                setKeepVisible(true);
+                                setShowSettings(false);
+                            } else {
+                                setKeepVisible(false);
+                            }
                             setExpanded(!expanded);
-                            if (!expanded) setShowSettings(false);
                         }}
                         title={expanded ? 'Collapse' : 'Expand history'}
                     >

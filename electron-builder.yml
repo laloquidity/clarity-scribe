@@ -27,6 +27,9 @@ mac:
   hardenedRuntime: true
   entitlements: resources/entitlements.mac.plist
   entitlementsInherit: resources/entitlements.mac.plist
+  extraResources:
+    - from: "resources/keyMonitor.swift"
+      to: "keyMonitor.swift"
   files:
     - "!node_modules/koffi/build/koffi/win32_*"
 win:

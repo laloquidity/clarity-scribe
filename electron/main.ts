@@ -5,7 +5,7 @@
  * paste-to-target with clipboard restore, transcription history.
  */
 import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, screen, powerMonitor, systemPreferences } from 'electron';
-import { exec, execSync } from 'child_process';
+import { exec, execSync, spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
@@ -72,6 +72,39 @@ let lastWakeTimestamp = 0;
 let lastSuccessfulPollTimestamp = 0;
 let isCurrentlyRecording = false;
 let pollingInterval: ReturnType<typeof setInterval> | null = null;
+
+// --- Key Monitor (Push-to-Talk) ---
+let keyMonitorProcess: ChildProcess | null = null;
+let compiledKeyMonitorPath: string | null = null;
+
+// Key code constants for macOS virtual key codes
+const KEY_CODE_MAP: Record<string, { code: number; modifier?: string; label: string }> = {
+    'fn':        { code: 63,  modifier: 'fn',      label: 'fn' },
+    'space':     { code: 49,                        label: 'Space' },
+    'control':   { code: 59,  modifier: 'control',  label: 'Control' },
+    'option':    { code: 58,  modifier: 'option',   label: 'Option' },
+    'shift':     { code: 56,  modifier: 'shift',    label: 'Shift' },
+    'command':   { code: 55,  modifier: 'command',  label: 'Command' },
+    'f1':        { code: 122,                        label: 'F1' },
+    'f2':        { code: 120,                        label: 'F2' },
+    'f3':        { code: 99,                         label: 'F3' },
+    'f4':        { code: 118,                        label: 'F4' },
+    'f5':        { code: 96,                         label: 'F5' },
+    'f6':        { code: 97,                         label: 'F6' },
+    'f7':        { code: 98,                         label: 'F7' },
+    'f8':        { code: 100,                        label: 'F8' },
+    'f9':        { code: 101,                        label: 'F9' },
+    'f10':       { code: 109,                        label: 'F10' },
+    'f11':       { code: 103,                        label: 'F11' },
+    'f12':       { code: 111,                        label: 'F12' },
+    'escape':    { code: 53,                         label: 'Escape' },
+    'tab':       { code: 48,                         label: 'Tab' },
+    'capslock':  { code: 57,                         label: 'Caps Lock' },
+    'right-option':  { code: 61, modifier: 'option',  label: 'Right Option' },
+    'right-control': { code: 62, modifier: 'control', label: 'Right Control' },
+    'right-shift':   { code: 60, modifier: 'shift',   label: 'Right Shift' },
+    'right-command': { code: 54, modifier: 'command',  label: 'Right Command' },
+};
 
 function isProcessAlive(pid: number): boolean {
     try {
@@ -373,47 +406,149 @@ function createTray(): void {
     }
 }
 
-// --- Global Hotkey ---
-function registerHotkey(key: string): boolean {
-    globalShortcut.unregisterAll();
-    const originalKey = key;
-    if (!key || key.trim() === '' || key === '=') key = 'Alt+Space';
+// --- Key Monitor (Push-to-Talk) ---
 
-    // On Windows, convert macOS-specific modifiers
-    if (process.platform === 'win32') {
-        key = key.replace(/Command/g, 'Control').replace(/⌘/g, 'Control');
+async function compileKeyMonitor(): Promise<string | null> {
+    if (compiledKeyMonitorPath) return compiledKeyMonitorPath;
+
+    const swiftPath = app.isPackaged
+        ? path.join(process.resourcesPath, 'keyMonitor.swift')
+        : path.join(__dirname, '../resources/keyMonitor.swift');
+
+    const outPath = path.join(app.getPath('userData'), 'keyMonitor');
+
+    return new Promise((resolve) => {
+        exec(`swiftc -O "${swiftPath}" -o "${outPath}"`, { timeout: 30000 }, (err) => {
+            if (err) {
+                console.error('[Main] Failed to compile keyMonitor.swift:', err.message);
+                resolve(null);
+            } else {
+                console.log('[Main] keyMonitor compiled successfully');
+                compiledKeyMonitorPath = outPath;
+                resolve(outPath);
+            }
+        });
+    });
+}
+
+function stopKeyMonitor(): void {
+    if (keyMonitorProcess) {
+        console.log('[Main] Stopping key monitor');
+        keyMonitorProcess.kill();
+        keyMonitorProcess = null;
+    }
+}
+
+async function startKeyMonitor(hotkeyId: string): Promise<boolean> {
+    stopKeyMonitor();
+
+    if (process.platform !== 'darwin') {
+        // Fallback to globalShortcut on non-macOS
+        return registerGlobalShortcutFallback(hotkeyId);
     }
 
-    // Validate: hotkey must have at least one non-modifier key
-    const modifiers = ['Control', 'Alt', 'Shift', 'Command', 'Meta', 'Super'];
-    const parts = key.split('+').map(p => p.trim());
-    const hasNonModifier = parts.some(p => !modifiers.includes(p));
-    if (!hasNonModifier) {
-        console.log(`[Main] Invalid hotkey "${key}" (modifiers only), defaulting to Alt+Space`);
-        key = 'Alt+Space';
+    const binPath = await compileKeyMonitor();
+    if (!binPath) {
+        console.error('[Main] Cannot start key monitor — compilation failed');
+        return false;
     }
 
-    // If the key was corrected, update the store so UI stays in sync
-    if (key !== originalKey) {
-        store.set('hotkey', key);
-        // Also update settings.hotkey if settings exist
-        const settings = store.get('settings') as any;
-        if (settings) {
-            settings.hotkey = key;
-            store.set('settings', settings);
+    const keyInfo = KEY_CODE_MAP[hotkeyId];
+    if (!keyInfo) {
+        console.error(`[Main] Unknown hotkey id: ${hotkeyId}`);
+        return false;
+    }
+
+    const args = [String(keyInfo.code)];
+    if (keyInfo.modifier) args.push(keyInfo.modifier);
+
+    console.log(`[Main] Starting key monitor for "${keyInfo.label}" (code=${keyInfo.code}, modifier=${keyInfo.modifier || 'none'})`);
+
+    const proc = spawn(binPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    keyMonitorProcess = proc;
+
+    let buffer = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed === 'READY') {
+                console.log('[Main] Key monitor ready');
+            } else if (trimmed === 'KEY_DOWN') {
+                handlePTTKeyDown();
+            } else if (trimmed === 'KEY_UP') {
+                handlePTTKeyUp();
+            }
         }
-        // Notify renderer of the actual hotkey
-        mainWindow?.webContents.send('hotkey-changed', key);
+    });
+
+    proc.stderr?.on('data', (data: Buffer) => {
+        console.error('[Main] Key monitor error:', data.toString().trim());
+    });
+
+    proc.on('exit', (code) => {
+        console.log(`[Main] Key monitor exited with code ${code}`);
+        if (keyMonitorProcess === proc) {
+            keyMonitorProcess = null;
+        }
+    });
+
+    return true;
+}
+
+function handlePTTKeyDown(): void {
+    if (isCurrentlyRecording) return;
+    console.log('[Main] PTT key down — start recording');
+
+    // Capture target app BEFORE showing our window
+    captureTargetWindow();
+    if (lastKnownFrontApp) {
+        const cacheAge = Date.now() - lastKnownFrontApp.timestamp;
+        targetAppBeforeRecording = lastKnownFrontApp;
+        targetAppConfidence = cacheAge < getEffectiveCacheExpiry() ? 'cached' : 'stale';
+    } else {
+        targetAppBeforeRecording = null;
+        targetAppConfidence = 'unknown';
     }
+
+    isCurrentlyRecording = true;
+
+    // Show widget (without stealing focus) and start recording
+    if (mainWindow?.isMinimized()) mainWindow.restore();
+    mainWindow?.showInactive();
+    mainWindow?.webContents.send('start-recording');
+}
+
+function handlePTTKeyUp(): void {
+    if (!isCurrentlyRecording) return;
+    console.log('[Main] PTT key up — stop recording');
+
+    if (targetAppBeforeRecording && !isProcessAlive(targetAppBeforeRecording.pid)) {
+        targetAppBeforeRecording = null;
+    }
+    isCurrentlyRecording = false;
+
+    mainWindow?.webContents.send('stop-recording');
+}
+
+// Windows fallback — keeps old globalShortcut toggle behavior
+function registerGlobalShortcutFallback(hotkeyId: string): boolean {
+    globalShortcut.unregisterAll();
+
+    // Map hotkeyId back to an Electron accelerator for Windows
+    let accelerator = 'Alt+Space';
+    if (hotkeyId === 'space') accelerator = 'Alt+Space';
+    else if (hotkeyId === 'f5') accelerator = 'F5';
+    // Add more mappings as needed
 
     try {
-        const success = globalShortcut.register(key, () => {
-            console.log('[Main] Hotkey triggered');
-
+        const success = globalShortcut.register(accelerator, () => {
             if (!isCurrentlyRecording) {
-                // Capture native HWND FIRST (before our window steals focus)
                 captureTargetWindow();
-
                 if (lastKnownFrontApp) {
                     const cacheAge = Date.now() - lastKnownFrontApp.timestamp;
                     targetAppBeforeRecording = lastKnownFrontApp;
@@ -429,19 +564,12 @@ function registerHotkey(key: string): boolean {
                 }
                 isCurrentlyRecording = false;
             }
-
             mainWindow?.webContents.send('toggle-recording');
         });
-
-        if (success) console.log(`[Main] Hotkey registered: ${key}`);
+        if (success) console.log(`[Main] Fallback hotkey registered: ${accelerator}`);
         return success;
     } catch (err) {
-        console.error(`[Main] Hotkey error:`, err);
-        // If registration failed and we weren't already trying Alt+Space, try fallback
-        if (key !== 'Alt+Space') {
-            console.log('[Main] Falling back to Alt+Space');
-            return registerHotkey('Alt+Space');
-        }
+        console.error('[Main] Fallback hotkey error:', err);
         return false;
     }
 }
@@ -543,10 +671,18 @@ function setupIpcHandlers(): void {
     ipcMain.handle('get-settings', () => store.get('settings') || {});
     ipcMain.handle('save-settings', (_, settings) => {
         store.set('settings', settings);
-        if (settings.hotkey) registerHotkey(settings.hotkey);
+        if (settings.hotkey) {
+            store.set('hotkey', settings.hotkey);
+            startKeyMonitor(settings.hotkey);
+        }
     });
-    ipcMain.handle('get-hotkey', () => store.get('hotkey') || 'Alt+Space');
-    ipcMain.handle('set-hotkey', (_, key) => { store.set('hotkey', key); return registerHotkey(key); });
+    ipcMain.handle('get-hotkey', () => store.get('hotkey') || 'fn');
+    ipcMain.handle('set-hotkey', async (_, key) => { store.set('hotkey', key); return startKeyMonitor(key); });
+
+    // Key code map for settings UI
+    ipcMain.handle('get-key-code-map', () => {
+        return Object.entries(KEY_CODE_MAP).map(([id, info]) => ({ id, label: info.label }));
+    });
 
     // History
     ipcMain.handle('get-history', () => getHistory());
@@ -558,11 +694,17 @@ function setupIpcHandlers(): void {
     ipcMain.handle('quit-app', () => { (app as any).isQuitting = true; app.quit(); });
     ipcMain.handle('set-window-size', (_, { width, height }: { width: number; height: number }) => {
         if (mainWindow) {
-            // Use setBounds to resize, preserving current position
-            // This is more reliable than setSize on Windows with transparent windows
             const [x, y] = mainWindow.getPosition();
             mainWindow.setBounds({ x, y, width, height }, true);
         }
+    });
+
+    // Window show/hide for PTT auto-hide
+    ipcMain.handle('hide-window', () => {
+        mainWindow?.minimize();
+    });
+    ipcMain.handle('show-window', () => {
+        mainWindow?.showInactive();
     });
 
     // Permissions
@@ -683,7 +825,10 @@ app.whenReady().then(async () => {
         console.error('[Main] Init error:', error);
     }
 
-    registerHotkey((store.get('hotkey') as string) || 'Alt+Space');
+    // Start key monitor (push-to-talk) with saved hotkey
+    const savedHotkey = (store.get('hotkey') as string) || 'fn';
+    startKeyMonitor(savedHotkey);
+
     // If setup was already completed on a prior launch, start polling immediately
     if (store.get('setupDone') && !pollingInterval) {
         startActiveAppPolling();
@@ -700,6 +845,7 @@ app.whenReady().then(async () => {
 
 app.on('will-quit', () => {
     globalShortcut.unregisterAll();
+    stopKeyMonitor();
     if (pollingInterval) clearInterval(pollingInterval);
     nativeWhisper.cleanup();
 });
