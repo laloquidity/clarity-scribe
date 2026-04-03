@@ -464,7 +464,7 @@ async function transducerGreedyDecode(
                 }
             }
             // Duration prediction used directly — matches onnx-asr reference (no cap)
-            // The model was trained to predict accurate frame durations
+            // A/B tested: no quality difference vs maxSkip=3, but cap causes truncation on long audio
         }
 
         if (y !== BLANK_ID) {
@@ -763,8 +763,13 @@ export async function transcribeParakeet(
     console.log(`[Parakeet] Transcribing ${durationSeconds.toFixed(1)}s...`);
 
     try {
-        // Short audio: single-pass (proven to work up to 66s at 39x+ RTF)
-        if (durationSeconds <= 60) {
+        // Single-pass threshold: platform-dependent
+        // Windows/Linux: encoder handles any length fine (DML/CUDA don't crash)
+        // macOS: CoreML/CPU crashes on audio >~60s (SIGTRAP), so segment longer audio
+        // Reference: vad_segmentation_handoff.md
+        const singlePassLimit = process.platform === 'darwin' ? 60 : Infinity;
+
+        if (durationSeconds <= singlePassLimit) {
             const { text, melTime, encTime, decTime } = await transcribeSinglePass(audioData);
 
             const totalTime = Date.now() - startTime;
