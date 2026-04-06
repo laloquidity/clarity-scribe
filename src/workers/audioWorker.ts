@@ -1,6 +1,11 @@
 /**
- * Audio Processing Worker — resampling, trimming, normalization
- * Copied from Clarity, unchanged.
+ * Audio Processing Worker — resampling only
+ *
+ * Previously included trimSilence (clipped word-initial consonants) and
+ * normalizeAudio (amplified background noise to near-max levels).
+ * Both were removed: the browser's getUserMedia already provides clean
+ * [-1,1] float audio, and Whisper/Parakeet are trained on natural audio
+ * with silence and varying dynamics.
  */
 
 function resampleAudio(audio: Float32Array, fromSampleRate: number, toSampleRate: number): Float32Array {
@@ -25,31 +30,6 @@ function resampleAudio(audio: Float32Array, fromSampleRate: number, toSampleRate
     return result;
 }
 
-function trimSilence(audio: Float32Array, threshold = 0.002): Float32Array {
-    let start = 0;
-    let end = audio.length;
-    while (start < end && Math.abs(audio[start]) < threshold) start++;
-    while (end > start && Math.abs(audio[end - 1]) < threshold) end--;
-    if (start >= end) return new Float32Array(0);
-    const padding = 1600;
-    return audio.slice(Math.max(0, start - padding), Math.min(audio.length, end + padding));
-}
-
-function normalizeAudio(data: Float32Array): Float32Array | null {
-    const trimmed = trimSilence(data);
-    if (trimmed.length < 500) return null;
-    let max = 0;
-    for (let i = 0; i < trimmed.length; i++) {
-        const val = Math.abs(trimmed[i]);
-        if (val > max) max = val;
-    }
-    if (max < 0.0001) return null;
-    const multiplier = 0.95 / max;
-    const result = new Float32Array(trimmed.length);
-    for (let i = 0; i < trimmed.length; i++) result[i] = trimmed[i] * multiplier;
-    return result;
-}
-
 self.onmessage = (event: MessageEvent) => {
     const { audioData, sampleRate } = event.data;
     const inputAudio = audioData instanceof Float32Array ? audioData : new Float32Array(audioData);
@@ -57,13 +37,24 @@ self.onmessage = (event: MessageEvent) => {
     if (sampleRate !== 16000) {
         processed = resampleAudio(inputAudio, sampleRate, 16000);
     }
-    const normalized = normalizeAudio(processed);
-    if (!normalized) {
+
+    // Reject silent/empty audio (< 0.5s or near-zero energy)
+    if (processed.length < 8000) {
         self.postMessage({ success: false, error: 'silent' });
         return;
     }
+    let maxAbs = 0;
+    for (let i = 0; i < processed.length; i++) {
+        const v = Math.abs(processed[i]);
+        if (v > maxAbs) maxAbs = v;
+    }
+    if (maxAbs < 0.001) {
+        self.postMessage({ success: false, error: 'silent' });
+        return;
+    }
+
     (self as unknown as Worker).postMessage(
-        { success: true, processedAudio: normalized },
-        [normalized.buffer]
+        { success: true, processedAudio: processed },
+        [processed.buffer]
     );
 };

@@ -511,16 +511,13 @@ function tokensToText(tokenIds: number[]): string {
     let text = parts.join('');
     text = text.replace(/▁/g, ' ');  // SentencePiece word boundary
 
-    // Clean up artifacts from silence/noise at START only
-    // (trailing punctuation like periods should be preserved)
-    text = text.replace(/^[\s.,:;]+/, '');   // Strip leading dots/commas from silence
-    text = text.replace(/\.{2,}/g, '.');     // Collapse multiple dots into single period
+    // Clean up artifacts from silence/noise at start
+    text = text.replace(/^[\s.]+/, '');          // Strip leading dots/whitespace from silence
+    text = text.replace(/\.{3,}/g, '...');       // Collapse excessive dots but preserve ellipsis
     text = text.trim();
 
-    // Ensure proper sentence ending
-    if (text.length > 0 && !/[.!?]$/.test(text)) {
-        text += '.';
-    }
+    // Let the model's own punctuation stand — forced periods create artifacts
+    // at VAD segment boundaries ("I was saying. That we should.")
 
     // Capitalize first letter
     if (text.length > 0) {
