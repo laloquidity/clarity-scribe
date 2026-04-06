@@ -1,6 +1,6 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey, speak, and your transcription is instantly pasted into whatever app you're using — up to **53x faster than real-time**. Transcribe 8 minutes of audio in 11 seconds.
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using — up to **53x faster than real-time**. Transcribe 8 minutes of audio in 11 seconds.
 
 Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated speech-to-text.
 
@@ -8,7 +8,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 | Platform | Install |
 |----------|---------|
-| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.3.0/Clarity.Scribe.Setup.2.3.0.exe) (~912 MB) |
+| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.4.0/Clarity.Scribe.Setup.2.4.0.exe) (~912 MB) |
 | **macOS** (Apple Silicon) | Clone and run from source — see [Getting Started](#getting-started) |
 
 > On first launch, the app downloads the Whisper AI model (~1.5 GB). Parakeet TDT (~890 MB) is downloaded on first use when engine is set to Auto or Parakeet. Fully offline after model downloads.
@@ -16,6 +16,8 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 ## Features
 
 - **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to 53x real-time), Whisper for all others. Manual override available in settings.
+- **Hold-to-Talk Mode** — Hold a key to record, release to transcribe — or use the classic tap-to-toggle. Switch modes instantly in Settings with an Apple-style segmented control. Single function keys (F5–F12) for hold mode, modifier combos for toggle mode.
+- **Filler Word Removal** — Automatically strips filled pauses (um, uh, ah, er) from transcriptions while preserving natural speech patterns
 - **Silero VAD Segmentation** — Intelligent voice activity detection splits audio at natural speech boundaries instead of arbitrary time intervals
 - **Hallucination Detection** — Detects and corrects Whisper's looping/repetition artifacts with automatic retry
 - **Context Prompting** — Maintains coherent transcription across long recordings by passing context between chunks
@@ -30,7 +32,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 - **Tray Icon** — Lives in the system tray/menu bar for quick access
 - **Launch on Login** — Optional toggle to start automatically when you log in
 - **Multi-Language** — 25 European languages via Parakeet, 100+ via Whisper, with auto-detect and translate-to-English mode
-- **Auto-Stop** — Configurable silence detection to automatically stop recording
+- **Auto-Stop** — Configurable silence detection to automatically stop recording (toggle mode only)
 
 ## Transcription Engines
 
@@ -140,7 +142,8 @@ Build output goes to the `release/` directory.
 ```
 clarity-scribe/
 ├── electron/              # Main process
-│   ├── main.ts            # Window, tray, IPC, hotkey, paste logic
+│   ├── main.ts            # Window, tray, IPC, paste logic
+│   ├── hotkeyService.ts   # Unified hotkey handler (toggle + hold-to-talk)
 │   ├── nativeWhisper.ts   # Engine router, Whisper, GPU detection, chunking
 │   ├── vadService.ts      # Silero VAD speech detection (ONNX Runtime)
 │   ├── parakeetService.ts # Parakeet TDT 0.6B-v3 engine (ONNX Runtime)
@@ -152,11 +155,13 @@ clarity-scribe/
 │   ├── components/
 │   │   ├── Widget.tsx         # Floating bar with mic, waveform, progress
 │   │   ├── HistoryPanel.tsx   # Transcription history with delete
-│   │   ├── SettingsPanel.tsx  # Engine, hotkey, mic, language, auto-stop
+│   │   ├── SettingsPanel.tsx  # Recording mode, hotkey, mic, language, auto-stop
 │   │   └── SetupScreen.tsx    # First-run download + permissions
 │   ├── hooks/
 │   │   ├── useAudioRecording.ts  # AudioWorklet recording pipeline
 │   │   └── useSettings.ts       # Settings state management
+│   ├── utils/
+│   │   └── cleanTranscription.ts # Filler word removal post-processing
 │   └── styles/globals.css        # Dark glassmorphic theme
 ├── resources/
 │   ├── win-gpu/

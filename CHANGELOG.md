@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.4.0 — Hold-to-Talk & Post-Processing (2026-04-06)
+
+### 🚀 New Features
+
+- **Hold-to-Talk Mode** — New recording mode: hold down a key to record, release to stop and transcribe. Choose between "Tap to Toggle" (existing behavior) and "Hold to Talk" in Settings. Uses [`uiohook-napi`](https://github.com/nickhardwareiot/uiohook-napi) for cross-platform global key-down/key-up detection (`SetWindowsHookEx` on Windows, `CGEventTap` on macOS)
+- **Recording Mode Selector** — Apple-style segmented control in Settings for switching between modes. Shortcut picker adapts contextually: modifier combos for toggle mode, single function keys (F5–F12) for hold mode
+- **Filler Word Removal** — Post-processing pipeline strips filled pauses (um, uh, ah, er, like, so) from transcriptions while preserving natural discourse markers and hedge words
+- **Trailing Space** — All transcriptions automatically end with a trailing space so consecutive dictations concatenate naturally
+
+### 🐛 Bug Fixes
+
+- **TDT Decoder Truncation** — Fixed intermittent transcription truncation by aligning decoder to the [sherpa-onnx `DecodeOneTDT`](https://github.com/k2-fsa/sherpa-onnx) reference. Three bugs: (1) frame advancement used `else-if` instead of three separate `if`-blocks, causing blank-fallback checks to be skipped; (2) `maxTokensPerFrame` was 10 instead of the reference's 5; (3) initial skip was 1 instead of 0
+- **Window restore on recording** — App no longer forces itself to the foreground when starting/stopping recording while minimized
+- **"INITIALIZING" status race condition** — Widget now correctly shows "Ready" after engine initialization instead of remaining stuck on "INITIALIZING"
+- **Transparent corner artifacts** — Resolved via `thickFrame: false` and CSS border-radius propagation on Windows
+
+### ⚡ Improvements
+
+- **Silence detection disabled in Hold mode** — Redundant when the user controls stop via key release
+- **Auto-stop silence setting hidden in Hold mode** — Cleaner settings UI when the option doesn't apply
+- **Audio pipeline cleanup** — Removed `trimSilence` and `normalizeAudio` preprocessing to prevent word-initial consonant clipping and noise amplification. Pipeline now only resamples 48kHz→16kHz
+- **VAD tuning** — Increased `minSilenceDurationMs` from 500ms to 700ms to reduce over-segmentation
+
+### 📦 Dependencies
+
+- Added `uiohook-napi` ^1.5.4 — Cross-platform global keyboard hook (prebuilt binaries, no runtime compilation)
+
+---
+
 ## v2.3.0 — Long-Form Parakeet Stabilization (2026-04-03)
 
 ### 🐛 Bug Fixes
