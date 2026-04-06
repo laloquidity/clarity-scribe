@@ -156,21 +156,36 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
             return;
         }
 
-        isRecordingRef.current = false;
-        const bufferChunks = [...audioBuffersRef.current];
+        // Signal the worklet to stop sending new data, but DON'T set
+        // isRecordingRef.current = false yet — in-flight audio chunks from
+        // the AudioWorklet's render thread may still arrive via postMessage.
+        // We give it a short window to flush before collecting buffers.
         const ctx = audioContextRef.current;
 
-        if (ctx) {
-            ctx.suspend().then(() => {
-                processRecordedAudio(bufferChunks, ctx.sampleRate);
-                stopStream();
-            });
-        } else {
-            stopStream();
-            onStateChange('IDLE');
+        // Tell the processor to stop capturing
+        if (processorRef.current) {
+            processorRef.current.port.postMessage({ command: 'stop' });
         }
 
         onStateChange('PROCESSING');
+
+        // Wait for the worklet to flush remaining audio (render quanta are
+        // 128 samples ≈ 2.7ms at 48kHz, but IPC latency can add 50-100ms).
+        // 150ms is generous enough to capture everything.
+        setTimeout(() => {
+            isRecordingRef.current = false;
+            const bufferChunks = [...audioBuffersRef.current];
+
+            if (ctx) {
+                ctx.suspend().then(() => {
+                    processRecordedAudio(bufferChunks, ctx.sampleRate);
+                    stopStream();
+                });
+            } else {
+                stopStream();
+                onStateChange('IDLE');
+            }
+        }, 150);
     }, [processRecordedAudio, stopStream, onStateChange]);
 
     const startRecording = useCallback(async () => {
