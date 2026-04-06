@@ -285,10 +285,11 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
 function createWindow(): void {
     const isWin = process.platform === 'win32';
     mainWindow = new BrowserWindow({
-        width: 380,
-        height: 104,
+        width: 340,
+        height: 64,
         frame: false,
         transparent: true,
+        backgroundColor: '#00000000',
         alwaysOnTop: true,
         resizable: false,
         movable: true,

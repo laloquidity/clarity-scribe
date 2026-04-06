@@ -37,10 +37,6 @@ body,
     color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
     user-select: none;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 20px;
 }
 
 /* Scrollbar */
@@ -72,9 +68,8 @@ body,
 
 /* Widget shell */
 .widget-shell {
-    width: 340px;
-    height: auto;
-    max-height: calc(100% - 40px);
+    width: 100%;
+    height: 100%;
     display: flex;
     flex-direction: column;
     border-radius: 32px;
