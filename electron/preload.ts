@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Window
     quitApp: () => ipcRenderer.invoke('quit-app'),
+    minimizeToTray: () => ipcRenderer.invoke('minimize-to-tray'),
     setWindowSize: (dims: { width: number; height: number }) => ipcRenderer.invoke('set-window-size', dims),
 
     // Permissions & Setup
