@@ -111,7 +111,7 @@ export async function detectSpeechSegments(
     const speechPadMs = 30;
     const minSpeechDurationMs = 250;
     const maxSpeechDurationS = 20;
-    const minSilenceDurationMs = 500; // onnx-asr default: 100ms
+    const minSilenceDurationMs = 700; // onnx-asr default: 100ms, bumped to reduce over-segmentation
 
     const speechPadSamples = Math.floor(speechPadMs * sampleRate / 1000);
     const minSpeechSamples = Math.floor(minSpeechDurationMs * sampleRate / 1000) - 2 * speechPadSamples;
