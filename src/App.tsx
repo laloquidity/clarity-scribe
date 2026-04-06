@@ -34,7 +34,7 @@ const App: React.FC = () => {
 
     const { settings, updateSetting, isLoaded } = useSettings();
 
-    // Audio recording
+    // Audio recording — disable silence detection in hold-to-talk mode
     const { startRecording, stopRecording, isRecordingRef } = useAudioRecording({
         settings,
         onStateChange: setAppState,
@@ -42,6 +42,7 @@ const App: React.FC = () => {
             setStatusMessage(msg);
             setTimeout(() => setStatusMessage(undefined), 3000);
         },
+        skipSilenceDetection: settings.hotkeyMode === 'hold',
     });
 
     // Toggle recording — called by mic button click
@@ -62,6 +63,19 @@ const App: React.FC = () => {
         }
     }, [startRecording, stopRecording, isRecordingRef]);
 
+    // PTT start — called when main process sends start-recording (key down)
+    const handleStartRecording = useCallback(() => {
+        if (isRecordingRef.current) return;
+        setStatusMessage(undefined);
+        startRecording();
+    }, [startRecording, isRecordingRef]);
+
+    // PTT stop — called when main process sends stop-recording (key up)
+    const handleStopRecording = useCallback(() => {
+        if (!isRecordingRef.current) return;
+        stopRecording();
+    }, [stopRecording, isRecordingRef]);
+
     // Load history on mount + check if setup was already completed
     useEffect(() => {
         window.electronAPI?.getHistory().then(h => setHistory(h || []));
@@ -80,7 +94,7 @@ const App: React.FC = () => {
         });
     }, []);
 
-    // Listen for hotkey toggle
+    // Listen for hotkey events (toggle, start, stop)
     useEffect(() => {
         const api = window.electronAPI;
         if (!api) return;
@@ -89,13 +103,22 @@ const App: React.FC = () => {
             handleToggle();
         });
 
+        // PTT events from hold mode
+        const unsubStart = api.onStartRecording(() => {
+            handleStartRecording();
+        });
+
+        const unsubStop = api.onStopRecording(() => {
+            handleStopRecording();
+        });
+
         // If main process falls back to a different hotkey, sync the UI
         const unsubHotkey = api.onHotkeyChanged?.((key: string) => {
             updateSetting('hotkey', key);
         });
 
-        return () => { unsubToggle?.(); unsubHotkey?.(); };
-    }, [handleToggle, updateSetting]);
+        return () => { unsubToggle?.(); unsubStart?.(); unsubStop?.(); unsubHotkey?.(); };
+    }, [handleToggle, handleStartRecording, handleStopRecording, updateSetting]);
 
     // Listen for Whisper events
     useEffect(() => {
@@ -230,6 +253,7 @@ const App: React.FC = () => {
                         whisperProgress={whisperProgress}
                         whisperStatus={whisperStatus}
                         hotkey={settings.hotkey}
+                        hotkeyMode={settings.hotkeyMode}
                     />
                 </div>
                 <div className="no-drag" style={{ display: 'flex', gap: 4, paddingRight: 12 }}>

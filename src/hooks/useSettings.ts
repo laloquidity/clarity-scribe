@@ -6,6 +6,7 @@ import type { Settings } from '../types';
 
 const DEFAULT_SETTINGS: Settings = {
     hotkey: 'Alt+Space',
+    hotkeyMode: 'toggle',
     selectedMicId: 'default',
     whisperLanguage: 'en',
     silenceDuration: 0,

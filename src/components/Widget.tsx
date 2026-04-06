@@ -11,6 +11,7 @@ interface WidgetProps {
     whisperProgress: number;
     whisperStatus: string;
     hotkey?: string;
+    hotkeyMode?: 'toggle' | 'hold';
 }
 
 const Waveform = () => (
@@ -47,6 +48,7 @@ const Widget: React.FC<WidgetProps> = ({
     whisperProgress,
     whisperStatus,
     hotkey,
+    hotkeyMode,
 }) => {
     const isRecording = appState === 'RECORDING';
     const isProcessing = appState === 'PROCESSING';
@@ -75,7 +77,10 @@ const Widget: React.FC<WidgetProps> = ({
             }
             return 'Processing';
         }
-        if (hotkey) return `Press ${formatHotkeyShort(hotkey, platform)} to record`;
+        if (hotkey) {
+            const verb = hotkeyMode === 'hold' ? 'Hold' : 'Press';
+            return `${verb} ${formatHotkeyShort(hotkey, platform)} to record`;
+        }
         return 'Ready';
     };
 

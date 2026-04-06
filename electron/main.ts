@@ -10,6 +10,7 @@ import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
 import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow } from './winPaste';
+import { initHotkeyService, registerHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
 
 const store = new Store();
 
@@ -375,55 +376,26 @@ function createTray(): void {
     }
 }
 
-// --- Global Hotkey ---
-function registerHotkey(key: string): boolean {
-    globalShortcut.unregisterAll();
-    const originalKey = key;
-    if (!key || key.trim() === '' || key === '=') key = 'Alt+Space';
-
-    // On Windows, convert macOS-specific modifiers
-    if (process.platform === 'win32') {
-        key = key.replace(/Command/g, 'Control').replace(/⌘/g, 'Control');
+// --- Global Hotkey (via hotkeyService) ---
+function captureTargetBeforeRecording(): void {
+    captureTargetWindow();
+    if (lastKnownFrontApp) {
+        const cacheAge = Date.now() - lastKnownFrontApp.timestamp;
+        targetAppBeforeRecording = lastKnownFrontApp;
+        targetAppConfidence = cacheAge < getEffectiveCacheExpiry() ? 'cached' : 'stale';
+    } else {
+        targetAppBeforeRecording = null;
+        targetAppConfidence = 'unknown';
     }
+}
 
-    // Validate: hotkey must have at least one non-modifier key
-    const modifiers = ['Control', 'Alt', 'Shift', 'Command', 'Meta', 'Super'];
-    const parts = key.split('+').map(p => p.trim());
-    const hasNonModifier = parts.some(p => !modifiers.includes(p));
-    if (!hasNonModifier) {
-        console.log(`[Main] Invalid hotkey "${key}" (modifiers only), defaulting to Alt+Space`);
-        key = 'Alt+Space';
-    }
-
-    // If the key was corrected, update the store so UI stays in sync
-    if (key !== originalKey) {
-        store.set('hotkey', key);
-        // Also update settings.hotkey if settings exist
-        const settings = store.get('settings') as any;
-        if (settings) {
-            settings.hotkey = key;
-            store.set('settings', settings);
-        }
-        // Notify renderer of the actual hotkey
-        mainWindow?.webContents.send('hotkey-changed', key);
-    }
-
-    try {
-        const success = globalShortcut.register(key, () => {
-            console.log('[Main] Hotkey triggered');
-
+function setupHotkeyCallbacks(): void {
+    initHotkeyService({
+        // Toggle mode: single press toggles recording on/off
+        onToggle: () => {
+            console.log('[Main] Hotkey triggered (toggle)');
             if (!isCurrentlyRecording) {
-                // Capture native HWND FIRST (before our window steals focus)
-                captureTargetWindow();
-
-                if (lastKnownFrontApp) {
-                    const cacheAge = Date.now() - lastKnownFrontApp.timestamp;
-                    targetAppBeforeRecording = lastKnownFrontApp;
-                    targetAppConfidence = cacheAge < getEffectiveCacheExpiry() ? 'cached' : 'stale';
-                } else {
-                    targetAppBeforeRecording = null;
-                    targetAppConfidence = 'unknown';
-                }
+                captureTargetBeforeRecording();
                 isCurrentlyRecording = true;
             } else {
                 if (targetAppBeforeRecording && !isProcessAlive(targetAppBeforeRecording.pid)) {
@@ -431,21 +403,32 @@ function registerHotkey(key: string): boolean {
                 }
                 isCurrentlyRecording = false;
             }
-
             mainWindow?.webContents.send('toggle-recording');
-        });
+        },
+        // Hold mode: key down starts recording
+        onKeyDown: () => {
+            console.log('[Main] PTT key down — start recording');
+            if (isCurrentlyRecording) return;
+            captureTargetBeforeRecording();
+            isCurrentlyRecording = true;
+            mainWindow?.webContents.send('start-recording');
+        },
+        // Hold mode: key up stops recording
+        onKeyUp: () => {
+            console.log('[Main] PTT key up — stop recording');
+            if (!isCurrentlyRecording) return;
+            if (targetAppBeforeRecording && !isProcessAlive(targetAppBeforeRecording.pid)) {
+                targetAppBeforeRecording = null;
+            }
+            isCurrentlyRecording = false;
+            mainWindow?.webContents.send('stop-recording');
+        },
+    });
+}
 
-        if (success) console.log(`[Main] Hotkey registered: ${key}`);
-        return success;
-    } catch (err) {
-        console.error(`[Main] Hotkey error:`, err);
-        // If registration failed and we weren't already trying Alt+Space, try fallback
-        if (key !== 'Alt+Space') {
-            console.log('[Main] Falling back to Alt+Space');
-            return registerHotkey('Alt+Space');
-        }
-        return false;
-    }
+function registerHotkey(key: string, mode?: HotkeyMode): boolean {
+    const resolvedMode = mode || (store.get('settings') as any)?.hotkeyMode || 'toggle';
+    return registerHotkeyService(key, resolvedMode);
 }
 
 // --- IPC Handlers ---
@@ -545,10 +528,11 @@ function setupIpcHandlers(): void {
     ipcMain.handle('get-settings', () => store.get('settings') || {});
     ipcMain.handle('save-settings', (_, settings) => {
         store.set('settings', settings);
-        if (settings.hotkey) registerHotkey(settings.hotkey);
+        if (settings.hotkey) registerHotkey(settings.hotkey, settings.hotkeyMode);
     });
     ipcMain.handle('get-hotkey', () => store.get('hotkey') || 'Alt+Space');
     ipcMain.handle('set-hotkey', (_, key) => { store.set('hotkey', key); return registerHotkey(key); });
+    ipcMain.handle('get-hold-mode-keys', () => HOLD_MODE_KEYS);
 
     // History
     ipcMain.handle('get-history', () => getHistory());
@@ -708,7 +692,12 @@ app.whenReady().then(async () => {
         console.error('[Main] Init error:', error);
     }
 
-    registerHotkey((store.get('hotkey') as string) || 'Alt+Space');
+    setupHotkeyCallbacks();
+    const savedSettings = store.get('settings') as any;
+    registerHotkey(
+        (store.get('hotkey') as string) || savedSettings?.hotkey || 'Alt+Space',
+        savedSettings?.hotkeyMode || 'toggle'
+    );
     // If setup was already completed on a prior launch, start polling immediately
     if (store.get('setupDone') && !pollingInterval) {
         startActiveAppPolling();
@@ -724,7 +713,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('will-quit', () => {
-    globalShortcut.unregisterAll();
+    stopHotkeyService();
     if (pollingInterval) clearInterval(pollingInterval);
     nativeWhisper.cleanup();
 });
