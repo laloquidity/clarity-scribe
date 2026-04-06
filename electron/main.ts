@@ -285,8 +285,8 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
 function createWindow(): void {
     const isWin = process.platform === 'win32';
     mainWindow = new BrowserWindow({
-        width: 340,
-        height: 64,
+        width: 380,
+        height: 104,
         frame: false,
         transparent: true,
         alwaysOnTop: true,
