@@ -669,7 +669,10 @@ app.whenReady().then(async () => {
             // Whisper will lazy-load on first fallback if Parakeet fails
             sendStep('whisper', 'Whisper AI Model', 100, 'Deferred (Parakeet primary)');
             console.log(`[Main] Whisper deferred — Parakeet is primary engine for English`);
-            isWhisperReady = false; // will lazy-init if needed
+            isWhisperReady = true; // Parakeet is the primary engine, UI should be enabled
+            // Signal ready immediately so the mic button enables while Parakeet loads
+            mainWindow?.webContents.send('whisper-progress', 100, 'Ready');
+            mainWindow?.webContents.send('whisper-ready', { acceleration: 'DirectML' });
         }
 
         // Step 2: VAD (needed by both engines)

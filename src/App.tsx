@@ -5,7 +5,7 @@
  * Global hotkey toggles recording, transcription gets pasted to the active app.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ChevronDown, ChevronUp, Settings } from 'lucide-react';
+import { ChevronDown, ChevronUp, Settings, Minus } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Widget from './components/Widget';
 import HistoryPanel from './components/HistoryPanel';
@@ -210,6 +210,13 @@ const App: React.FC = () => {
                     />
                 </div>
                 <div className="no-drag" style={{ display: 'flex', gap: 4, paddingRight: 12 }}>
+                    <button
+                        className="minimize-btn"
+                        onClick={() => window.electronAPI?.minimizeToTray?.()}
+                        title="Minimize to tray"
+                    >
+                        <Minus size={14} />
+                    </button>
                     <button
                         className="gear-btn"
                         onClick={() => {
