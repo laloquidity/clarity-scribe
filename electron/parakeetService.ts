@@ -416,9 +416,9 @@ async function transducerGreedyDecode(
 
     // TDT greedy decode — matching sherpa-onnx reference implementation exactly
     // See: offline-transducer-greedy-search-nemo-decoder.cc DecodeOneTDT()
-    const maxTokensPerFrame = 10; // Matches onnx-asr reference: nemo.py max_tokens_per_step
+    const maxTokensPerFrame = 5; // Matches sherpa-onnx reference: max_tokens_per_frame
     let tokensThisFrame = 0;
-    let skip = 1; // frames to advance
+    let skip = 0; // frames to advance
 
     for (let t = 0; t < encoderOutLen; t += skip) {
         // Extract encoder output at timestep t: shape [1, D, 1]
@@ -454,6 +454,7 @@ async function transducerGreedyDecode(
         }
 
         // Argmax over duration portion (duration logits)
+        // Note: skip can be 0 (stay on same frame)
         skip = 0;
         if (numDurations > 0) {
             let durMax = logitsData[vocabSize];
@@ -463,8 +464,6 @@ async function transducerGreedyDecode(
                     skip = i;
                 }
             }
-            // Duration prediction used directly — matches onnx-asr reference (no cap)
-            // A/B tested: no quality difference vs maxSkip=3, but cap causes truncation on long audio
         }
 
         if (y !== BLANK_ID) {
@@ -475,17 +474,22 @@ async function transducerGreedyDecode(
             tokensThisFrame += 1;
         }
 
-        // Frame advancement logic — aligned with onnx-asr reference (elif pattern)
-        // Reference: https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/asr.py#L227
+        // Frame advancement logic — three SEPARATE if-blocks, NOT else-if
+        // This exactly matches sherpa-onnx DecodeOneTDT() reference:
+        // https://github.com/k2-fsa/sherpa-onnx offline-transducer-greedy-search-nemo-decoder.cc
         if (skip > 0) {
-            // Model predicted a skip: advance by skip frames
             tokensThisFrame = 0;
-        } else if (y === BLANK_ID || tokensThisFrame >= maxTokensPerFrame) {
-            // Blank with no skip, or max tokens reached: advance by 1 frame
+        }
+
+        if (tokensThisFrame >= maxTokensPerFrame) {
             tokensThisFrame = 0;
             skip = 1;
         }
-        // When y != BLANK_ID and skip == 0: stay on same frame (emit more tokens)
+
+        if (y === BLANK_ID && skip === 0) {
+            tokensThisFrame = 0;
+            skip = 1;
+        }
     }
 
     console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames`);
