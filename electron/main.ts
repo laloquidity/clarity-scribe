@@ -432,11 +432,6 @@ function registerHotkey(key: string): boolean {
                 isCurrentlyRecording = false;
             }
 
-            // Restore widget if minimized
-            if (mainWindow && mainWindow.isMinimized()) {
-                mainWindow.restore();
-            }
-
             mainWindow?.webContents.send('toggle-recording');
         });
 
