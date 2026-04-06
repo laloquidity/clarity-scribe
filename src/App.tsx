@@ -15,9 +15,9 @@ import { useSettings } from './hooks/useSettings';
 import { useAudioRecording } from './hooks/useAudioRecording';
 import type { AppState, HistoryEntry } from './types';
 
-const COLLAPSED_HEIGHT = 104; // 64 capsule + padding for shadow
-const EXPANDED_HEIGHT = 500; // 460 + padding for shadow
-const SETUP_HEIGHT = 340; // 300 + padding for shadow
+const COLLAPSED_HEIGHT = 64;
+const EXPANDED_HEIGHT = 460;
+const SETUP_HEIGHT = 300;
 
 const App: React.FC = () => {
     const [appState, setAppState] = useState<AppState>('IDLE');
@@ -155,7 +155,7 @@ const App: React.FC = () => {
             height = EXPANDED_HEIGHT;
         }
 
-        api.setWindowSize({ width: 380, height });
+        api.setWindowSize({ width: 340, height });
     }, [expanded, setupDone]);
 
     // Copy entry to clipboard
