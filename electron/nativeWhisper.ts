@@ -415,9 +415,14 @@ export async function transcribe(
         }
     }
 
-    // Whisper path
+    // Whisper path — lazy-init if not yet loaded (deferred at startup to save VRAM)
     if (!whisperInstance) {
-        throw new Error('Whisper not initialized');
+        console.log('[Engine] Whisper not loaded — initializing on demand...');
+        const loaded = await initWhisper('turbo');
+        if (!loaded || !whisperInstance) {
+            throw new Error('Whisper failed to initialize on demand');
+        }
+        console.log('[Engine] ✓ Whisper lazy-loaded successfully');
     }
 
     try {

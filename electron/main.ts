@@ -634,51 +634,65 @@ app.whenReady().then(async () => {
     };
 
     try {
-        // Step 1: Whisper model
-        sendStep('whisper', 'Whisper AI Model', 0, 'Preparing...');
-        const ready = await nativeWhisper.initWhisper('turbo', (percent, status) => {
-            console.log(`[Main] Whisper: ${status} (${percent}%)`);
-            mainWindow?.webContents.send('whisper-progress', percent, status);
-            sendStep('whisper', 'Whisper AI Model', percent, status);
-        });
-        isWhisperReady = ready;
-        if (ready) {
-            sendStep('whisper', 'Whisper AI Model', 100, 'Ready');
-            mainWindow?.webContents.send('whisper-ready', { acceleration: nativeWhisper.getAccelerationInfo().type });
-            console.log(`[Main] ✓ Whisper ready`);
+        const settings = store.get('settings') as any || {};
+        const savedLang = settings?.whisperLanguage || 'en';
+        const needsWhisperNow = savedLang !== 'en';
 
-            // Step 2: VAD
-            sendStep('vad', 'Voice Detection', 0, 'Downloading...');
-            await nativeWhisper.initAudioSegmentation();
-            sendStep('vad', 'Voice Detection', 100, 'Ready');
-            console.log(`[Main] ✓ VAD ready`);
+        if (needsWhisperNow) {
+            // Non-English language: load Whisper eagerly (it's the primary engine)
+            sendStep('whisper', 'Whisper AI Model', 0, 'Preparing...');
+            const ready = await nativeWhisper.initWhisper('turbo', (percent, status) => {
+                console.log(`[Main] Whisper: ${status} (${percent}%)`);
+                mainWindow?.webContents.send('whisper-progress', percent, status);
+                sendStep('whisper', 'Whisper AI Model', percent, status);
+            });
+            isWhisperReady = ready;
+            if (ready) {
+                sendStep('whisper', 'Whisper AI Model', 100, 'Ready');
+                mainWindow?.webContents.send('whisper-ready', { acceleration: nativeWhisper.getAccelerationInfo().type });
+                console.log(`[Main] ✓ Whisper ready`);
+            }
+            nativeWhisper.setTranscriptionEngine('whisper' as any);
+        } else {
+            // English: skip Whisper GPU init — saves ~1.5GB VRAM
+            // Whisper will lazy-load on first fallback if Parakeet fails
+            sendStep('whisper', 'Whisper AI Model', 100, 'Deferred (Parakeet primary)');
+            console.log(`[Main] Whisper deferred — Parakeet is primary engine for English`);
+            isWhisperReady = false; // will lazy-init if needed
+        }
 
-            // Step 3: Parakeet (for English — the default language)
-            const settings = store.get('settings') as any || {};
-            const savedLang = settings?.whisperLanguage || 'en';
-            if (savedLang === 'en') {
-                nativeWhisper.setTranscriptionEngine('parakeet' as any);
-                sendStep('parakeet', 'Parakeet Engine', 0, 'Downloading...');
-                try {
-                    await nativeWhisper.initParakeetEngine((percent, status) => {
-                        sendStep('parakeet', 'Parakeet Engine', percent, status);
-                    });
-                    sendStep('parakeet', 'Parakeet Engine', 100, 'Ready');
-                    console.log(`[Main] ✓ Parakeet ready`);
-                } catch (e) {
-                    console.warn('[Main] Parakeet init failed, Whisper will handle English:', e);
-                    sendStep('parakeet', 'Parakeet Engine', 100, 'Skipped');
-                    nativeWhisper.setTranscriptionEngine('whisper' as any);
-                }
-            } else {
+        // Step 2: VAD (needed by both engines)
+        sendStep('vad', 'Voice Detection', 0, 'Downloading...');
+        await nativeWhisper.initAudioSegmentation();
+        sendStep('vad', 'Voice Detection', 100, 'Ready');
+        console.log(`[Main] ✓ VAD ready`);
+
+        // Step 3: Parakeet (for English — the default language)
+        if (!needsWhisperNow) {
+            nativeWhisper.setTranscriptionEngine('parakeet' as any);
+            sendStep('parakeet', 'Parakeet Engine', 0, 'Downloading...');
+            try {
+                await nativeWhisper.initParakeetEngine((percent, status) => {
+                    sendStep('parakeet', 'Parakeet Engine', percent, status);
+                });
+                sendStep('parakeet', 'Parakeet Engine', 100, 'Ready');
+                console.log(`[Main] ✓ Parakeet ready`);
+            } catch (e) {
+                console.warn('[Main] Parakeet init failed, falling back to Whisper:', e);
+                sendStep('parakeet', 'Parakeet Engine', 100, 'Skipped');
+                // Lazy-load Whisper now since Parakeet failed
+                sendStep('whisper', 'Whisper AI Model', 0, 'Loading (fallback)...');
+                const ready = await nativeWhisper.initWhisper('turbo', (percent, status) => {
+                    sendStep('whisper', 'Whisper AI Model', percent, status);
+                });
+                isWhisperReady = ready;
                 nativeWhisper.setTranscriptionEngine('whisper' as any);
             }
-
-            // Signal overall completion
-            mainWindow?.webContents.send('whisper-progress', 100, 'Ready');
-        } else {
-            console.error('[Main] Whisper failed to initialize');
         }
+
+        // Signal overall completion
+        mainWindow?.webContents.send('whisper-progress', 100, 'Ready');
+        mainWindow?.webContents.send('whisper-ready', { acceleration: nativeWhisper.getAccelerationInfo().type });
     } catch (error) {
         console.error('[Main] Init error:', error);
     }
