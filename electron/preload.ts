@@ -37,6 +37,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('toggle-recording', handler);
         return () => { ipcRenderer.removeListener('toggle-recording', handler); };
     },
+    onStartRecording: (cb: () => void) => {
+        const handler = () => cb();
+        ipcRenderer.on('start-recording', handler);
+        return () => { ipcRenderer.removeListener('start-recording', handler); };
+    },
+    onStopRecording: (cb: () => void) => {
+        const handler = () => cb();
+        ipcRenderer.on('stop-recording', handler);
+        return () => { ipcRenderer.removeListener('stop-recording', handler); };
+    },
 
     // Target app & paste
     getTargetApp: () => ipcRenderer.invoke('get-target-app'),
@@ -56,6 +66,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('hotkey-changed', handler);
         return () => { ipcRenderer.removeListener('hotkey-changed', handler); };
     },
+    getHoldModeKeys: () => ipcRenderer.invoke('get-hold-mode-keys'),
 
     // Engine management
     getEngineInfo: () => ipcRenderer.invoke('get-engine-info'),

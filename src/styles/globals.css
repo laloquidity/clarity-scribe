@@ -578,6 +578,42 @@ select.settings-value option {
     padding: 8px;
 }
 
+/* --- Segmented Control (Recording Mode) --- */
+.segmented-control {
+    display: flex;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    padding: 2px;
+    gap: 2px;
+}
+
+.segmented-control .segment {
+    flex: 1;
+    padding: 7px 12px;
+    border: none;
+    border-radius: calc(var(--radius-sm) - 2px);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    letter-spacing: 0.01em;
+}
+
+.segmented-control .segment:hover:not(.active) {
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.segmented-control .segment.active {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
 .hotkey-capture {
     padding: 10px 12px;
     border-radius: var(--radius-sm);

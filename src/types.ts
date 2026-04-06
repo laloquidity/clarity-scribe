@@ -4,6 +4,7 @@
 
 export interface Settings {
     hotkey: string;
+    hotkeyMode: 'toggle' | 'hold';
     selectedMicId: string;
     whisperLanguage: string;
     silenceDuration: number;
@@ -31,6 +32,8 @@ export interface ElectronAPI {
     onTranscriptionProgress: (cb: (percent: number) => void) => () => void;
     onSetupStepProgress: (cb: (step: { id: string; label: string; percent: number; status: string }) => void) => () => void;
     onToggleRecording: (cb: () => void) => () => void;
+    onStartRecording: (cb: () => void) => () => void;
+    onStopRecording: (cb: () => void) => () => void;
 
     getTargetApp: () => Promise<{ targetApp: { name: string; pid: number } | null; confidence: string }>;
     clearTargetApp: () => Promise<void>;
@@ -44,6 +47,7 @@ export interface ElectronAPI {
     getHotkey: () => Promise<string>;
     setHotkey: (key: string) => Promise<boolean>;
     onHotkeyChanged: (cb: (key: string) => void) => () => void;
+    getHoldModeKeys: () => Promise<Array<{ value: string; label: string }>>;
 
     // Engine management
     getEngineInfo: () => Promise<{ whisper: string; parakeet: boolean; currentEngine: string }>;
