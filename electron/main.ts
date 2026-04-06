@@ -430,9 +430,9 @@ function registerHotkey(key: string): boolean {
                 isCurrentlyRecording = false;
             }
 
-            // Show widget if hidden (user minimized to tray)
-            if (mainWindow && !mainWindow.isVisible()) {
-                mainWindow.show();
+            // Restore widget if minimized
+            if (mainWindow && mainWindow.isMinimized()) {
+                mainWindow.restore();
             }
 
             mainWindow?.webContents.send('toggle-recording');
@@ -563,8 +563,8 @@ function setupIpcHandlers(): void {
     ipcMain.handle('quit-app', () => { (app as any).isQuitting = true; app.quit(); });
     ipcMain.handle('minimize-to-tray', () => {
         if (mainWindow) {
-            mainWindow.hide();
-            console.log('[Main] Widget hidden to tray');
+            mainWindow.minimize();
+            console.log('[Main] Widget minimized');
         }
     });
     ipcMain.handle('set-window-size', (_, { width, height }: { width: number; height: number }) => {
