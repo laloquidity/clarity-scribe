@@ -118,6 +118,30 @@ body,
     cursor: grabbing;
 }
 
+/* Minimize button */
+.minimize-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    opacity: 0.3;
+    margin-left: auto;
+}
+
+.minimize-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    opacity: 1;
+}
+
 /* Mic button */
 .mic-btn {
     position: relative;

@@ -56,6 +56,7 @@ export interface ElectronAPI {
     deleteHistory: (id: string) => Promise<void>;
 
     quitApp: () => Promise<void>;
+    minimizeToTray: () => Promise<void>;
     setWindowSize: (dims: { width: number; height: number }) => Promise<void>;
 
     // Permissions & Setup
