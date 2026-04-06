@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Mic, Square, Check, GripVertical, Minus } from 'lucide-react';
+import { Mic, Square, Check, GripVertical } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { AppState } from '../types';
 
@@ -131,15 +131,6 @@ const Widget: React.FC<WidgetProps> = ({
                     )}
                 </div>
             </div>
-
-            {/* Minimize to tray */}
-            <button
-                className="minimize-btn no-drag"
-                onClick={() => window.electronAPI?.minimizeToTray?.()}
-                title="Minimize to tray"
-            >
-                <Minus size={14} />
-            </button>
         </div>
     );
 };
