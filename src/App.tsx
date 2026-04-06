@@ -13,6 +13,7 @@ import SettingsPanel from './components/SettingsPanel';
 import SetupScreen from './components/SetupScreen';
 import { useSettings } from './hooks/useSettings';
 import { useAudioRecording } from './hooks/useAudioRecording';
+import { cleanTranscription } from './utils/cleanTranscription';
 import type { AppState, HistoryEntry } from './types';
 
 const COLLAPSED_HEIGHT = 64;
@@ -120,12 +121,24 @@ const App: React.FC = () => {
         const api = window.electronAPI;
         if (!api) return;
 
-        const unsubResult = api.onTranscriptionResult(async (text) => {
+        const unsubResult = api.onTranscriptionResult(async (rawText) => {
+            if (!rawText || rawText.trim().length === 0) {
+                setAppState('IDLE');
+                isRecordingRef.current = false;
+                return;
+            }
+
+            // Post-processing: remove filler words, stutters, and clean up
+            let text = cleanTranscription(rawText);
+
             if (!text || text.trim().length === 0) {
                 setAppState('IDLE');
                 isRecordingRef.current = false;
                 return;
             }
+
+            // Add trailing space so consecutive transcriptions read naturally
+            text = text.trimEnd() + ' ';
 
             // Paste to target app
             const result = await api.pasteToTarget(text);
