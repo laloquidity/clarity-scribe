@@ -20,10 +20,6 @@ const FILLER_WORDS = [
     'um', 'uh', 'uhh', 'umm', 'ummm',
     'ah', 'ahh', 'er', 'erm', 'em',
     'hmm', 'hm', 'huh', 'mhm', 'mm',
-    // Discourse markers (when used as fillers)
-    'you know', 'i mean', 'sort of', 'kind of',
-    // Hedge phrases
-    'basically', 'actually', 'literally',
 ];
 
 // Build a single regex from the filler word list
