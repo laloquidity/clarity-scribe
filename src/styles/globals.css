@@ -37,6 +37,7 @@ body,
     color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
     user-select: none;
+    border-radius: 32px;
 }
 
 /* Scrollbar */

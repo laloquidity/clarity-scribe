@@ -67,6 +67,16 @@ const App: React.FC = () => {
         window.electronAPI?.isSetupDone().then(done => {
             if (done) setSetupDone(true);
         });
+        // Catch the case where whisper-ready fired before React registered its listener.
+        // The IPC event is a one-shot broadcast emitted during app startup — if the
+        // renderer wasn't mounted yet, the event is lost. Polling here recovers from that.
+        window.electronAPI?.isWhisperReady().then(ready => {
+            if (ready) {
+                setWhisperReady(true);
+                setWhisperProgress(100);
+                setWhisperStatus('Ready');
+            }
+        });
     }, []);
 
     // Listen for hotkey toggle
