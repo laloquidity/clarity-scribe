@@ -156,21 +156,28 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
             return;
         }
 
-        isRecordingRef.current = false;
-        const bufferChunks = [...audioBuffersRef.current];
+        onStateChange('PROCESSING');
         const ctx = audioContextRef.current;
 
         if (ctx) {
+            // Suspend FIRST — stops the hardware audio graph
             ctx.suspend().then(() => {
-                processRecordedAudio(bufferChunks, ctx.sampleRate);
-                stopStream();
+                // Yield to the macrotask queue for 50ms.
+                // ctx.suspend() resolves as a microtask, but any final AudioWorklet 
+                // frames are traveling via MessagePort (macrotasks). Without this yield, 
+                // we would snapshot before the final frames arrive.
+                setTimeout(() => {
+                    isRecordingRef.current = false;
+                    const bufferChunks = [...audioBuffersRef.current];
+                    processRecordedAudio(bufferChunks, ctx.sampleRate);
+                    stopStream();
+                }, 50);
             });
         } else {
+            isRecordingRef.current = false;
             stopStream();
             onStateChange('IDLE');
         }
-
-        onStateChange('PROCESSING');
     }, [processRecordedAudio, stopStream, onStateChange]);
 
     const startRecording = useCallback(async () => {

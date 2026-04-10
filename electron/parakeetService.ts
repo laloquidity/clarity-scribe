@@ -711,9 +711,17 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     encTime: number;
     decTime: number;
 }> {
+    // Append 0.5s of silence to give TDT decoder lookahead for final tokens.
+    // Without this, the transducer loop terminates at the last encoder frame
+    // and cannot flush the final predicted token sequence.
+    const TAIL_PAD_SAMPLES = 8000; // 0.5s at 16kHz
+    const padded = new Float32Array(audioData.length + TAIL_PAD_SAMPLES);
+    padded.set(audioData);
+    // padded[audioData.length..end] is already zeros (Float32Array default)
+
     // Compute mel spectrogram
     const melStart = Date.now();
-    const { features, nFrames } = computeMelSpectrogram(audioData);
+    const { features, nFrames } = computeMelSpectrogram(padded);
     const melTime = Date.now() - melStart;
 
     // audio_signal: [1, 128, nFrames]
