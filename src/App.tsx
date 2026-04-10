@@ -160,6 +160,14 @@ const App: React.FC = () => {
                 return;
             }
 
+            // Guard: reject transcriptions that are only punctuation (no actual words)
+            // Parakeet can emit lone periods/commas from silence or background noise
+            if (!/[a-zA-Z0-9]/.test(text)) {
+                setAppState('IDLE');
+                isRecordingRef.current = false;
+                return;
+            }
+
             // Add trailing space so consecutive transcriptions read naturally
             text = text.trimEnd() + ' ';
 

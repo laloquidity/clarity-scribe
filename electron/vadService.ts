@@ -110,7 +110,7 @@ export async function detectSpeechSegments(
     // splitting at genuine sentence/topic boundaries.
     const speechPadMs = 30;
     const minSpeechDurationMs = 250;
-    const maxSpeechDurationS = 20;
+    const maxSpeechDurationS = 55; // onnx-asr default: 20s. Raised to 55s to match macOS single-pass encoder limit (60s) with 5s margin
     const minSilenceDurationMs = 700; // onnx-asr default: 100ms, bumped to reduce over-segmentation
 
     const speechPadSamples = Math.floor(speechPadMs * sampleRate / 1000);

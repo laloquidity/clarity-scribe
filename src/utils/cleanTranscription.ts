@@ -55,12 +55,14 @@ export function cleanTranscription(text: string): string {
     cleaned = cleaned.replace(REPEATED_WORD_PATTERN, '$1');
 
     // 4. Clean up punctuation artifacts
+    cleaned = cleaned.replace(/\.{3,}/g, '…');          // Protect ellipses: convert to unicode ellipsis
     cleaned = cleaned.replace(/\s*,\s*,/g, ',');       // Double commas
-    cleaned = cleaned.replace(/\s*\.\s*\./g, '.');     // Double periods
+    cleaned = cleaned.replace(/\s*\.\s*\./g, '.');     // Double periods (ellipses already protected)
     cleaned = cleaned.replace(/,\s*\./g, '.');          // Comma before period
     cleaned = cleaned.replace(/\.\s*,/g, '.');          // Period before comma
-    cleaned = cleaned.replace(/\s+([.,;:!?])/g, '$1');  // Space before punctuation
-    cleaned = cleaned.replace(/([.,;:!?])\s*(?=[A-Z])/g, '$1 '); // Ensure space after punctuation before capital
+    cleaned = cleaned.replace(/\s+([.,;:!?…])/g, '$1');  // Space before punctuation
+    cleaned = cleaned.replace(/([.,;:!?…])\s*(?=[A-Z])/g, '$1 '); // Ensure space after punctuation before capital
+    cleaned = cleaned.replace(/…/g, '...');             // Convert unicode ellipsis back to three dots
 
     // 5. Clean up whitespace
     cleaned = cleaned.replace(/\s{2,}/g, ' ');          // Collapse multiple spaces
