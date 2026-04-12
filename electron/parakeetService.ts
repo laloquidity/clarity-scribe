@@ -550,13 +550,8 @@ function tokensToText(tokenIds: number[]): string {
     text = text.replace(/\.{3,}/g, '...');       // Collapse excessive dots but preserve ellipsis
     text = text.trim();
 
-    // Let the model's own punctuation stand — forced periods create artifacts
-    // at VAD segment boundaries ("I was saying. That we should.")
-
-    // Capitalize first letter
-    if (text.length > 0) {
-        text = text.charAt(0).toUpperCase() + text.slice(1);
-    }
+    // Casing: trust the model's SentencePiece casing decisions.
+    // cleanTranscription handles first-letter capitalization of the final joined text.
 
     return text;
 }
