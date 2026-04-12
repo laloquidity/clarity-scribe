@@ -557,6 +557,15 @@ function tokensToText(tokenIds: number[]): string {
 }
 
 /**
+ * Normalization statistics for mel spectrogram features.
+ * When provided, these global stats are used instead of per-segment stats.
+ */
+interface MelNormStats {
+    mean: Float32Array;  // [nMels] per-channel mean
+    std: Float32Array;   // [nMels] per-channel std (with epsilon)
+}
+
+/**
  * Compute 128-channel log-mel spectrogram for NeMo FastConformer encoder
  *
  * Matches sherpa-onnx's kaldi-native-fbank feature extraction:
@@ -569,8 +578,18 @@ function tokensToText(tokenIds: number[]): string {
  *   - Audio samples in [-1,1] range (normalize_samples=true)
  *
  * Output shape: [nMels, nFrames] stored row-major (C, T)
+ *
+ * @param normStats — optional pre-computed normalization statistics from the
+ *   full recording. When provided, these global stats are used instead of
+ *   the segment's own statistics. This prevents short silence-heavy VAD
+ *   segments from having their speech features destroyed by normalization
+ *   against near-zero variance.
  */
-function computeMelSpectrogram(audio: Float32Array, sampleRate: number = 16000): { features: Float32Array; nFrames: number } {
+function computeMelSpectrogram(
+    audio: Float32Array,
+    sampleRate: number = 16000,
+    normStats?: MelNormStats,
+): { features: Float32Array; nFrames: number } {
     const nMels = 128;
     const windowSize = Math.round(sampleRate * 0.025); // 25ms = 400 samples
     const hopSize = Math.round(sampleRate * 0.01);     // 10ms = 160 samples
@@ -638,23 +657,108 @@ function computeMelSpectrogram(audio: Float32Array, sampleRate: number = 16000):
     }
 
     // Per-feature normalization (NeMo normalize_type="per_feature")
-    // Zero mean, unit variance per mel channel
+    // Matching sherpa-onnx NemoNormalizePerFeature: inv_std = 1/(sqrt(var) + 1e-5)
+    // When normStats are provided (VAD segmentation), use global statistics
+    // to prevent short silence-heavy segments from destroying speech features.
+    const useGlobal = normStats !== undefined;
     for (let m = 0; m < nMels; m++) {
-        let sum = 0, sumSq = 0;
-        for (let t = 0; t < nFrames; t++) {
-            const v = features[m * nFrames + t];
-            sum += v;
-            sumSq += v * v;
+        let mean: number;
+        let std: number;
+
+        if (useGlobal) {
+            mean = normStats.mean[m];
+            std = normStats.std[m];
+        } else {
+            let sum = 0, sumSq = 0;
+            for (let t = 0; t < nFrames; t++) {
+                const v = features[m * nFrames + t];
+                sum += v;
+                sumSq += v * v;
+            }
+            mean = sum / nFrames;
+            const variance = Math.max(sumSq / nFrames - mean * mean, 0);
+            std = Math.sqrt(variance) + 1e-5; // sherpa-onnx: additive epsilon
         }
-        const mean = sum / nFrames;
-        const variance = sumSq / nFrames - mean * mean;
-        const std = Math.sqrt(Math.max(variance, 1e-10));
+
         for (let t = 0; t < nFrames; t++) {
             features[m * nFrames + t] = (features[m * nFrames + t] - mean) / std;
         }
     }
 
     return { features, nFrames };
+}
+
+/**
+ * Compute global normalization statistics from the full recording's mel features.
+ * Used by VAD-segmented transcription to ensure consistent normalization across
+ * all segments, preventing short silence-heavy segments from feature destruction.
+ *
+ * Matches sherpa-onnx NemoNormalizePerFeature (offline-stream.cc:287-303)
+ */
+function computeGlobalNormStats(fullAudio: Float32Array, sampleRate: number = 16000): MelNormStats {
+    const nMels = 128;
+    const windowSize = Math.round(sampleRate * 0.025);
+    const hopSize = Math.round(sampleRate * 0.01);
+    const fftSize = 512;
+    const nBins = fftSize / 2 + 1;
+
+    const padLength = Math.floor(windowSize / 2);
+    const paddedLength = fullAudio.length + 2 * padLength;
+    const padded = new Float32Array(paddedLength);
+    for (let i = 0; i < padLength; i++) {
+        padded[i] = fullAudio[padLength - 1 - i] || 0;
+    }
+    padded.set(fullAudio, padLength);
+    for (let i = 0; i < padLength; i++) {
+        padded[padLength + fullAudio.length + i] = fullAudio[fullAudio.length - 1 - i] || 0;
+    }
+
+    const nFrames = Math.max(1, Math.floor((paddedLength - windowSize) / hopSize) + 1);
+
+    const window = new Float32Array(windowSize);
+    for (let i = 0; i < windowSize; i++) {
+        window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / windowSize));
+    }
+
+    const melFilters = createMelFilterbank(sampleRate, fftSize, nMels, 20, 7600);
+
+    // Accumulate mean/variance online (Welford-like) to avoid allocating full mel matrix
+    const channelSum = new Float64Array(nMels);
+    const channelSumSq = new Float64Array(nMels);
+
+    for (let frame = 0; frame < nFrames; frame++) {
+        const start = frame * hopSize;
+        const real = new Float32Array(fftSize);
+        const imag = new Float32Array(fftSize);
+        for (let i = 0; i < windowSize && (start + i) < paddedLength; i++) {
+            real[i] = padded[start + i] * window[i];
+        }
+        fft(real, imag, fftSize);
+        const power = new Float32Array(nBins);
+        for (let i = 0; i < nBins; i++) {
+            power[i] = (real[i] * real[i] + imag[i] * imag[i]);
+        }
+        for (let m = 0; m < nMels; m++) {
+            let energy = 0;
+            for (let i = 0; i < nBins; i++) {
+                energy += melFilters[m * nBins + i] * power[i];
+            }
+            const logEnergy = Math.log(Math.max(energy, 1.1920929e-7));
+            channelSum[m] += logEnergy;
+            channelSumSq[m] += logEnergy * logEnergy;
+        }
+    }
+
+    const mean = new Float32Array(nMels);
+    const std = new Float32Array(nMels);
+    for (let m = 0; m < nMels; m++) {
+        mean[m] = channelSum[m] / nFrames;
+        const variance = Math.max(channelSumSq[m] / nFrames - mean[m] * mean[m], 0);
+        std[m] = Math.sqrt(variance) + 1e-5; // sherpa-onnx: additive epsilon
+    }
+
+    console.log(`[Parakeet] Global mel stats computed over ${nFrames} frames (${(fullAudio.length / sampleRate).toFixed(1)}s)`);
+    return { mean, std };
 }
 
 function createMelFilterbank(sampleRate: number, fftSize: number, nMels: number, lowFreq: number = 20, highFreq: number = 7600): Float32Array {
@@ -730,7 +834,7 @@ function fft(real: Float32Array, imag: Float32Array, n: number): void {
  * Single-pass encode + decode for one audio segment.
  * Handles mel spectrogram, encoder, and TDT decoder in one call.
  */
-async function transcribeSinglePass(audioData: Float32Array): Promise<{
+async function transcribeSinglePass(audioData: Float32Array, normStats?: MelNormStats): Promise<{
     text: string;
     melTime: number;
     encTime: number;
@@ -745,8 +849,10 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     // padded[audioData.length..end] is already zeros (Float32Array default)
 
     // Compute mel spectrogram
+    // When normStats is provided (VAD segmentation), use global statistics
+    // from the full recording instead of this segment's own statistics.
     const melStart = Date.now();
-    const { features, nFrames } = computeMelSpectrogram(padded);
+    const { features, nFrames } = computeMelSpectrogram(padded, 16000, normStats);
     const melTime = Date.now() - melStart;
 
     // audio_signal: [1, 128, nFrames]
@@ -834,7 +940,16 @@ export async function transcribeParakeet(
             }
         }
 
-        // Transcribe each segment independently
+        // Compute global normalization statistics from the FULL recording.
+        // This prevents short silence-heavy VAD segments from having their
+        // speech features destroyed by per-segment normalization.
+        // Reference: sherpa-onnx offline-stream.cc NemoNormalizePerFeature computes
+        // stats per-stream, but in their architecture each stream is the full audio.
+        // Our VAD splits into short segments — using per-segment stats causes
+        // silence-dominated segments to squash speech into the noise floor (100% blanks).
+        const globalNormStats = computeGlobalNormStats(audioData);
+
+        // Transcribe each segment using global normalization
         const texts: string[] = [];
         let totalMel = 0, totalEnc = 0, totalDec = 0;
 
@@ -843,7 +958,7 @@ export async function transcribeParakeet(
             const segDur = seg.length / 16000;
             console.log(`[Parakeet] Segment ${i + 1}/${audioSegments.length}: ${segDur.toFixed(1)}s`);
 
-            const { text, melTime, encTime, decTime } = await transcribeSinglePass(seg);
+            const { text, melTime, encTime, decTime } = await transcribeSinglePass(seg, globalNormStats);
             totalMel += melTime;
             totalEnc += encTime;
             totalDec += decTime;
