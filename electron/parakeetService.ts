@@ -557,140 +557,195 @@ function tokensToText(tokenIds: number[]): string {
 }
 
 /**
- * Compute 128-channel log-mel spectrogram for NeMo FastConformer encoder
+ * Compute 128-channel log-mel spectrogram for NeMo FastConformer encoder.
  *
- * Matches sherpa-onnx's kaldi-native-fbank feature extraction:
- *   - No dithering (dither=0)
- *   - No preemphasis (NeMo FastConformer doesn't use it)
- *   - 25ms Hann window (periodic), 10ms hop, 512-pt FFT
- *   - 128 mel filterbanks, low_freq=20, high_freq=7600
- *   - Log compression with epsilon guard
- *   - Per-feature normalization (zero mean, unit variance per mel channel)
- *   - Audio samples in [-1,1] range (normalize_samples=true)
+ * Matches onnx-asr NemoPreprocessorNumpy (numpy_preprocessor.py:144-187)
+ * and the ONNX builder (preprocessors/nemo.py) line-by-line:
+ *   - Preemphasis coefficient 0.97
+ *   - Zero-pad by n_fft/2 = 256 on each side
+ *   - Symmetric Hann window (400 samples) centered in 512-pt FFT frame
+ *   - 128 Slaney-scale mel filterbanks, 0–8000 Hz, Slaney area normalization
+ *   - Log compression with guard value 2^-24
+ *   - Per-feature CMVN with Bessel's correction (N-1), masked to valid frames
+ *   - Audio samples in [-1,1] range
  *
- * Output shape: [nMels, nFrames] stored row-major (C, T)
+ * Returns features in [nMels, totalFrames] layout (C, T) and the valid
+ * frame count. The encoder length tensor should use validFrames, not
+ * totalFrames, so that padding-contaminated edge frames are ignored.
  */
 function computeMelSpectrogram(
     audio: Float32Array,
     sampleRate: number = 16000
-): { features: Float32Array; nFrames: number } {
+): { features: Float32Array; nFrames: number; validFrames: number } {
     const nMels = 128;
-    const windowSize = Math.round(sampleRate * 0.025); // 25ms = 400 samples
-    const hopSize = Math.round(sampleRate * 0.01);     // 10ms = 160 samples
-    const fftSize = 512;
-    const nBins = fftSize / 2 + 1; // 257
+    const winLength = 400;   // 25ms at 16kHz
+    const hopLength = 160;   // 10ms at 16kHz
+    const nFft = 512;
+    const nBins = nFft / 2 + 1; // 257
+    const preemph = 0.97;
+    const logZeroGuard = 5.960464477539063e-8; // 2^-24, matching NeMo/onnx-asr
 
-    // No dithering, no preemphasis — matching sherpa-onnx defaults
-    // Audio is already in [-1,1] float range (normalize_samples=true)
-
-    // snip_edges=false: pad signal so we don't lose edge frames
-    const padLength = Math.floor(windowSize / 2);
-    const paddedLength = audio.length + 2 * padLength;
-    const padded = new Float32Array(paddedLength);
-    // Reflect padding
-    for (let i = 0; i < padLength; i++) {
-        padded[i] = audio[padLength - 1 - i] || 0;
-    }
-    padded.set(audio, padLength);
-    for (let i = 0; i < padLength; i++) {
-        padded[padLength + audio.length + i] = audio[audio.length - 1 - i] || 0;
+    // ── 1. Preemphasis ──────────────────────────────────────────────────
+    // y[n] = x[n] - 0.97 * x[n-1], with x[-1] = 0
+    // Reference: onnx-asr numpy_preprocessor.py:161-163
+    const preemphasized = new Float32Array(audio.length);
+    preemphasized[0] = audio[0]; // x[-1] = 0, so y[0] = x[0]
+    for (let i = 1; i < audio.length; i++) {
+        preemphasized[i] = audio[i] - preemph * audio[i - 1];
     }
 
-    const nFrames = Math.max(1, Math.floor((paddedLength - windowSize) / hopSize) + 1);
+    // ── 2. Zero-pad by n_fft/2 on each side ─────────────────────────────
+    // Reference: onnx-asr numpy_preprocessor.py:165
+    const padSize = nFft / 2; // 256
+    const paddedLength = preemphasized.length + 2 * padSize;
+    const padded = new Float32Array(paddedLength); // zeros by default
+    padded.set(preemphasized, padSize);
 
-    // Periodic Hann window (matching torch.hann_window(periodic=True))
-    const window = new Float32Array(windowSize);
-    for (let i = 0; i < windowSize; i++) {
-        window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / windowSize));
+    // ── 3. Compute valid frame count (BEFORE computing total frames) ────
+    // Reference: onnx-asr numpy_preprocessor.py:174
+    // features_lens = waveforms_lens // hop_length
+    const validFrames = Math.floor(audio.length / hopLength);
+
+    // Total spectrogram frames from sliding_window_view
+    const totalFrames = Math.floor((paddedLength - nFft) / hopLength) + 1;
+
+    // ── 4. Symmetric Hann window, centered in n_fft frame ──────────────
+    // Reference: onnx-asr preprocessors/nemo.py:56-58, numpy_preprocessor.py:167-169
+    // np.hanning(win_length) padded to n_fft with (n_fft-win_length)/2 zeros each side
+    // np.hanning(N) = 0.5 * (1 - cos(2*pi*n / (N-1))) for n=0..N-1 (symmetric)
+    const windowPad = (nFft - winLength) / 2; // 56
+    const window = new Float32Array(nFft); // zeros by default
+    for (let i = 0; i < winLength; i++) {
+        window[windowPad + i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (winLength - 1)));
     }
 
-    // Mel filterbank: low_freq=20, high_freq=7600 (matching Kaldi/sherpa-onnx)
-    const melFilters = createMelFilterbank(sampleRate, fftSize, nMels, 20, 7600);
+    // ── 5. Mel filterbank (Slaney scale, Slaney norm, 0–8000 Hz) ───────
+    const melFilters = createMelFilterbank(sampleRate, nFft, nMels, 0, sampleRate / 2);
 
-    // STFT → power spectrum → mel → log
-    const features = new Float32Array(nMels * nFrames);
+    // ── 6. STFT → power spectrum → mel → log ───────────────────────────
+    const features = new Float32Array(nMels * totalFrames);
 
-    for (let frame = 0; frame < nFrames; frame++) {
-        const start = frame * hopSize;
+    for (let frame = 0; frame < totalFrames; frame++) {
+        const start = frame * hopLength;
 
-        // Windowed frame
-        const real = new Float32Array(fftSize);
-        const imag = new Float32Array(fftSize);
-        for (let i = 0; i < windowSize && (start + i) < paddedLength; i++) {
+        // Apply centered window to n_fft-sized frame
+        const real = new Float32Array(nFft);
+        const imag = new Float32Array(nFft);
+        for (let i = 0; i < nFft && (start + i) < paddedLength; i++) {
             real[i] = padded[start + i] * window[i];
         }
 
-        // FFT
-        fft(real, imag, fftSize);
+        fft(real, imag, nFft);
 
-        // Power spectrum (magnitude squared / fftSize for energy normalization)
+        // Power spectrum: |X|^2  (no division by n_fft — matches reference)
         const power = new Float32Array(nBins);
         for (let i = 0; i < nBins; i++) {
-            power[i] = (real[i] * real[i] + imag[i] * imag[i]);
+            power[i] = real[i] * real[i] + imag[i] * imag[i];
         }
 
-        // Apply mel filterbank and log
+        // mel → log
         for (let m = 0; m < nMels; m++) {
             let energy = 0;
             for (let i = 0; i < nBins; i++) {
                 energy += melFilters[m * nBins + i] * power[i];
             }
-            // Kaldi-style log with floor (log_energy_floor_value)
-            features[m * nFrames + frame] = Math.log(Math.max(energy, 1.1920929e-7));
+            // features stored [C, T]: mel channel m at frame t
+            features[m * totalFrames + frame] = Math.log(energy + logZeroGuard);
         }
     }
 
-    // Per-feature normalization (NeMo normalize_type="per_feature")
-    // Matching sherpa-onnx NemoNormalizePerFeature: inv_std = 1/(sqrt(var) + 1e-5)
+    // ── 7. Per-feature CMVN with masking & Bessel's correction ──────────
+    // Reference: onnx-asr numpy_preprocessor.py:174-186
+    // Only valid frames (< validFrames) participate in mean/var.
+    // Non-valid frames are set to 0 after normalization.
     for (let m = 0; m < nMels; m++) {
-        let sum = 0, sumSq = 0;
-        for (let t = 0; t < nFrames; t++) {
-            const v = features[m * nFrames + t];
-            sum += v;
-            sumSq += v * v;
+        // Compute mean over valid frames only
+        let sum = 0;
+        for (let t = 0; t < validFrames; t++) {
+            sum += features[m * totalFrames + t];
         }
-        const mean = sum / nFrames;
-        const variance = Math.max(sumSq / nFrames - mean * mean, 0);
-        const std = Math.sqrt(variance) + 1e-5; // sherpa-onnx: additive epsilon
+        const mean = sum / validFrames;
 
-        for (let t = 0; t < nFrames; t++) {
-            features[m * nFrames + t] = (features[m * nFrames + t] - mean) / std;
+        // Compute variance with Bessel's correction (N-1)
+        let sumSqDev = 0;
+        for (let t = 0; t < validFrames; t++) {
+            const d = features[m * totalFrames + t] - mean;
+            sumSqDev += d * d;
+        }
+        const variance = validFrames > 1 ? sumSqDev / (validFrames - 1) : 0;
+        const std = Math.sqrt(variance) + 1e-5;
+
+        // Normalize valid frames
+        for (let t = 0; t < validFrames; t++) {
+            features[m * totalFrames + t] = (features[m * totalFrames + t] - mean) / std;
+        }
+        // Zero out non-valid frames (padding artifacts)
+        for (let t = validFrames; t < totalFrames; t++) {
+            features[m * totalFrames + t] = 0;
         }
     }
 
-    return { features, nFrames };
+    return { features, nFrames: totalFrames, validFrames };
 }
 
-function createMelFilterbank(sampleRate: number, fftSize: number, nMels: number, lowFreq: number = 20, highFreq: number = 7600): Float32Array {
+/**
+ * Create Slaney-scale mel filterbank with Slaney area normalization.
+ *
+ * Matches onnx-asr preprocessors/fbanks.py melscale_fbanks() called with:
+ *   melscale_fbanks(257, 0, 8000, 128, 16000, "slaney", "slaney")
+ *
+ * Slaney mel scale: linear below 1000 Hz (3 mels per 200 Hz),
+ * logarithmic above (27 mels per octave from 1000 Hz).
+ * Slaney normalization: each filter is divided by its bandwidth in Hz
+ * so that all filters have unit area (constant energy per mel band).
+ */
+function createMelFilterbank(
+    sampleRate: number, fftSize: number, nMels: number,
+    lowFreq: number = 0, highFreq: number = 8000
+): Float32Array {
     const nBins = fftSize / 2 + 1;
+    const eps = 1.1920929e-7; // float32 eps for log guard
 
-    // HTK mel scale (matching Kaldi)
-    const hzToMel = (hz: number) => 2595 * Math.log10(1 + hz / 700);
-    const melToHz = (mel: number) => 700 * (Math.pow(10, mel / 2595) - 1);
+    // Slaney mel scale
+    const hzToMel = (hz: number): number => {
+        if (hz < 1000) return 3 * hz / 200.0;
+        return 15 + 27 * Math.log(hz / 1000.0 + eps) / Math.log(6.4);
+    };
+    const melToHz = (mel: number): number => {
+        if (mel < 15) return 200 * mel / 3.0;
+        return 1000 * Math.pow(6.4, (mel - 15) / 27.0);
+    };
 
-    const melMin = hzToMel(lowFreq);
-    const melMax = hzToMel(highFreq);
-
-    // Uniformly spaced mel points
-    const melPoints = new Float32Array(nMels + 2);
-    for (let i = 0; i < nMels + 2; i++) {
-        melPoints[i] = melToHz(melMin + (melMax - melMin) * i / (nMels + 1));
+    // Linearly spaced frequency bins (all_freqs in reference)
+    const allFreqs = new Float64Array(nBins);
+    for (let i = 0; i < nBins; i++) {
+        allFreqs[i] = (sampleRate / 2) * i / (nBins - 1);
     }
 
-    // Convert to FFT bin indices
-    const bins = new Float32Array(nMels + 2);
+    // Uniformly spaced mel points → convert back to Hz
+    const mMin = hzToMel(lowFreq);
+    const mMax = hzToMel(highFreq);
+    const mPts = new Float64Array(nMels + 2);
     for (let i = 0; i < nMels + 2; i++) {
-        bins[i] = Math.floor((fftSize + 1) * melPoints[i] / sampleRate);
+        mPts[i] = melToHz(mMin + (mMax - mMin) * i / (nMels + 1));
     }
 
+    // Triangular filters on Hz scale with Slaney normalization
+    // Reference: fbanks.py:54-59
     const filters = new Float32Array(nMels * nBins);
     for (let m = 0; m < nMels; m++) {
+        const fLow = mPts[m];
+        const fCenter = mPts[m + 1];
+        const fHigh = mPts[m + 2];
+        // Slaney normalization: 2 / (fHigh - fLow)
+        const norm = 2.0 / (fHigh - fLow);
+
         for (let i = 0; i < nBins; i++) {
-            if (i >= bins[m] && i < bins[m + 1]) {
-                filters[m * nBins + i] = (i - bins[m]) / Math.max(bins[m + 1] - bins[m], 1);
-            } else if (i >= bins[m + 1] && i <= bins[m + 2]) {
-                filters[m * nBins + i] = (bins[m + 2] - i) / Math.max(bins[m + 2] - bins[m + 1], 1);
-            }
+            const f = allFreqs[i];
+            const upSlope = (fCenter - fLow) > 0 ? (f - fLow) / (fCenter - fLow) : 0;
+            const downSlope = (fHigh - fCenter) > 0 ? (fHigh - f) / (fHigh - fCenter) : 0;
+            const val = Math.max(0, Math.min(upSlope, downSlope));
+            filters[m * nBins + i] = val * norm;
         }
     }
     return filters;
@@ -733,6 +788,11 @@ function fft(real: Float32Array, imag: Float32Array, n: number): void {
 /**
  * Single-pass encode + decode for one audio segment.
  * Handles mel spectrogram, encoder, and TDT decoder in one call.
+ *
+ * No artificial tail padding is applied. The VAD's speechPadMs provides
+ * natural trailing audio context. The encoder length tensor uses the valid
+ * frame count (excluding STFT edge-padding frames) to match the reference
+ * onnx-asr pipeline exactly.
  */
 async function transcribeSinglePass(audioData: Float32Array): Promise<{
     text: string;
@@ -740,37 +800,15 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     encTime: number;
     decTime: number;
 }> {
-    // 1. Compute mel spectrogram strictly on the original unpadded array 
-    // to guarantee flawless mathematical CMVN statistics (no zero-padding distortion)
     const melStart = Date.now();
-    const { features: rawFeatures, nFrames: rawFrames } = computeMelSpectrogram(audioData, 16000);
-
-    // 2. Feature Replication Padding
-    // Append 50 frames (~0.5s at 10ms hop size) of acoustic lookahead context
-    // by replicating the final unpadded mel frame.
-    // This provides steady-state background noise for the TDT decoder to flush tokens
-    // without ruining the mean/variance statistics during feature extraction.
-    const PAD_FRAMES = 50; 
-    const nFrames = rawFrames + PAD_FRAMES;
-    const features = new Float32Array(128 * nFrames);
-
-    // Copy raw features slice by slice (nMels = 128)
-    for (let m = 0; m < 128; m++) {
-        // Copy the raw frames
-        for (let t = 0; t < rawFrames; t++) {
-            features[m * nFrames + t] = rawFeatures[m * rawFrames + t];
-        }
-        // Replicate the final frame for padding
-        const lastVal = rawFeatures[m * rawFrames + rawFrames - 1];
-        for (let t = rawFrames; t < nFrames; t++) {
-            features[m * nFrames + t] = lastVal;
-        }
-    }
+    const { features, nFrames, validFrames } = computeMelSpectrogram(audioData, 16000);
     const melTime = Date.now() - melStart;
 
-    // audio_signal: [1, 128, nFrames]
+    // audio_signal: [1, 128, totalFrames] — full spectrogram including edge frames
     const audioTensor = new ort.Tensor('float32', features, [1, 128, nFrames]);
-    const lengthTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(nFrames)]), [1]);
+    // length: valid frame count only — encoder ignores padding-contaminated edge frames
+    // Reference: onnx-asr numpy_preprocessor.py:174 (features_lens = waveforms_lens // hop_length)
+    const lengthTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(validFrames)]), [1]);
 
     // Run encoder
     const encoderInputs: Record<string, ort.Tensor> = {};
