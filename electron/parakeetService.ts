@@ -534,11 +534,16 @@ function tokensToText(tokenIds: number[]): string {
             const token = vocabulary[id];
             // Skip special tokens
             if (token.startsWith('<') && token.endsWith('>')) continue;
-            parts.push(token);
+            // Replace SentencePiece ▁ with space (matching onnx-asr vocab load: line 127)
+            parts.push(token.replace(/▁/g, ' '));
         }
     }
     let text = parts.join('');
-    text = text.replace(/▁/g, ' ');  // SentencePiece word boundary
+    // Clean up spaces at subword boundaries (matching onnx-asr DECODE_SPACE_PATTERN)
+    // Reference: asr.py:113 — re.compile(r"\A\s|\s\B|(\s)\b")
+    // Removes: leading whitespace, spaces before non-word-boundaries (e.g. "'s ay" → "'say")
+    // Keeps: spaces at real word boundaries
+    text = text.replace(/^\s|(\s)(?=\B)/g, (match, captured) => captured ? '' : '');
 
     // Clean up artifacts from silence/noise at start
     text = text.replace(/^[\s.]+/, '');          // Strip leading dots/whitespace from silence
