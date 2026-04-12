@@ -34,8 +34,8 @@ const FILLER_PATTERN = new RegExp(
 const STUTTER_PATTERN = /\b(\w{1,3})-(?:\1-)*\1\b/gi;
 
 // False-start fragments: short syllable before the full word it starts ("tr truncated" → "truncated")
-// Only matches fragments of 1-3 chars to avoid false positives on legitimate word pairs
-const FALSE_START_PATTERN = /\b([a-zA-Z]{1,3})\s+(\1[a-zA-Z]+)\b/gi;
+// Minimum 2-char fragment to avoid matching contractions ("let's say" → "'s" + "say" was a false positive)
+const FALSE_START_PATTERN = /\b([a-zA-Z]{2,3})\s+(\1[a-zA-Z]+)\b/gi;
 
 // Repeated words: "the the", "I I", "and and"
 const REPEATED_WORD_PATTERN = /\b(\w+)\s+\1\b/gi;
