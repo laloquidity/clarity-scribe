@@ -33,6 +33,10 @@ const FILLER_PATTERN = new RegExp(
 // Stutters: repeated syllable with optional hyphen (t-t-the, w-w-what, I I I)
 const STUTTER_PATTERN = /\b(\w{1,3})-(?:\1-)*\1\b/gi;
 
+// False-start fragments: short syllable before the full word it starts ("tr truncated" → "truncated")
+// Only matches fragments of 1-3 chars to avoid false positives on legitimate word pairs
+const FALSE_START_PATTERN = /\b([a-zA-Z]{1,3})\s+(\1[a-zA-Z]+)\b/gi;
+
 // Repeated words: "the the", "I I", "and and"
 const REPEATED_WORD_PATTERN = /\b(\w+)\s+\1\b/gi;
 
@@ -50,6 +54,9 @@ export function cleanTranscription(text: string): string {
 
     // 2. Remove stutters (t-t-the → the)
     cleaned = cleaned.replace(STUTTER_PATTERN, '$1');
+
+    // 2b. Remove false-start fragments (tr truncated → truncated)
+    cleaned = cleaned.replace(FALSE_START_PATTERN, '$2');
 
     // 3. Remove repeated words (the the → the)
     cleaned = cleaned.replace(REPEATED_WORD_PATTERN, '$1');

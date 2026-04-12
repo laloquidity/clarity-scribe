@@ -420,7 +420,17 @@ async function transducerGreedyDecode(
     let tokensThisFrame = 0;
     let skip = 0; // frames to advance
 
+    // Diagnostic counters for truncation investigation
+    let totalBlanks = 0;
+    let totalIterations = 0;
+    let lastTokenFrame = 0;
+    let maxSkipSeen = 0;
+    let consecutiveBlanks = 0;
+    let maxConsecutiveBlanks = 0;
+
     for (let t = 0; t < encoderOutLen; t += skip) {
+        totalIterations++;
+
         // Extract encoder output at timestep t: shape [1, D, 1]
         // Data layout [B, D, T]: data[d * T + t] for feature d at timestep t
         const encSlice = new Float32Array(D);
@@ -472,7 +482,17 @@ async function transducerGreedyDecode(
             prevToken = y;
             decoderStates = nextStates;
             tokensThisFrame += 1;
+            lastTokenFrame = t;
+            consecutiveBlanks = 0;
+        } else {
+            totalBlanks++;
+            consecutiveBlanks++;
+            if (consecutiveBlanks > maxConsecutiveBlanks) {
+                maxConsecutiveBlanks = consecutiveBlanks;
+            }
         }
+
+        if (skip > maxSkipSeen) maxSkipSeen = skip;
 
         // Frame advancement logic — three SEPARATE if-blocks, NOT else-if
         // This exactly matches sherpa-onnx DecodeOneTDT() reference:
@@ -492,7 +512,12 @@ async function transducerGreedyDecode(
         }
     }
 
-    console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames`);
+    // Diagnostic: frame-level decode summary
+    const blankRatio = totalIterations > 0 ? (totalBlanks / totalIterations * 100).toFixed(1) : '0';
+    const lastTokenTimeSec = (lastTokenFrame * 0.08).toFixed(1); // ~80ms per encoder frame
+    const totalTimeSec = (encoderOutLen * 0.08).toFixed(1);
+    const unusedFrames = encoderOutLen - lastTokenFrame;
+    console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames | blanks: ${totalBlanks}/${totalIterations} (${blankRatio}%) | maxSkip: ${maxSkipSeen} | maxConsecBlanks: ${maxConsecutiveBlanks} | lastToken: frame ${lastTokenFrame} (${lastTokenTimeSec}s/${totalTimeSec}s) | unusedTail: ${unusedFrames} frames`);
     return tokensToText(tokens);
 }
 
