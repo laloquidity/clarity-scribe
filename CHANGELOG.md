@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.5.0 — Feature Extraction Hardening & Post-Processing Fixes (2026-04-12)
+
+### 🛡️ Quality Improvements
+
+- **Feature Extraction Pipeline — 6 Bugs Fixed** — Line-by-line audit against the [onnx-asr `NemoPreprocessorNumpy`](https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/preprocessors/numpy_preprocessor.py) reference implementation revealed six deviations from the model's training-time feature extraction. All six corrected:
+  1. **Missing preemphasis** — Added 0.97 first-order high-pass filter (`y[n] = x[n] - 0.97·x[n-1]`). Boosts consonant energy; without it every frame had wrong spectral tilt
+  2. **Wrong mel filterbank scale** — Replaced HTK mel scale (20–7600 Hz) with Slaney mel scale + Slaney area normalization (0–8000 Hz). Every one of 128 mel channels was mapping to the wrong frequency band
+  3. **Wrong window type** — Replaced periodic Hann with symmetric Hann (`cos(2πn/(N-1))`) centered in a 512-sample FFT frame (56 zero-padded samples each side), matching `np.hanning(400)` in the reference
+  4. **Wrong zero-padding** — Replaced reflect-padding by `windowSize/2` with zero-padding by `n_fft/2 = 256` on each side, matching `np.pad(..., n_fft // 2)` in the reference
+  5. **Wrong CMVN variance** — Replaced population variance (`/ N`) with Bessel's correction (`/ (N-1)`), with frame masking that excludes STFT edge-padding frames from statistics and zeros non-valid frames post-normalization
+  6. **Wrong log guard** — Corrected `2^-23` to `2^-24 ≈ 5.96e-8`, matching the NeMo reference exactly
+- **Correct encoder length tensor** — Encoder input length now uses `validFrames = audio.length // hopLength` (matching reference `features_lens` calculation) instead of total spectrogram frames including edge-padding
+- **Removed replication padding hack** — Artificial 50-frame tail replication removed from `transcribeSinglePass`. Was distorting encoder attention on the final tokens; VAD `speechPadMs` provides natural trailing context
+
+### 🐛 Bug Fixes
+
+- **Token-to-text subword space handling** — Ported [onnx-asr `DECODE_SPACE_PATTERN`](https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/asr.py#L113) regex to fix spaces being incorrectly inserted at subword boundaries. Spaces are now stripped before non-word-boundaries and preserved only at real word boundaries
+- **Contraction corruption** — `FALSE_START_PATTERN` (stutter removal) was matching single-character fragments from contractions: `'s` + `say` → `'say`, producing output like `let'say`. Fixed by requiring minimum 2-character fragment length
+- **Rogue mid-sentence capitalization** — Removed per-segment force-capitalization from `tokensToText()`. The model produces correctly-cased output from training; force-capitalizing each VAD segment caused spurious capitals after every thinking pause (e.g. `toggle the question Open`, `Into A toggle list`). `cleanTranscription` handles first-letter capitalization of the final joined output
+
+---
+
 ## v2.4.0 — Hold-to-Talk & Post-Processing (2026-04-06)
 
 ### 🚀 New Features
