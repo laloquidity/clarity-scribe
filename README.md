@@ -8,7 +8,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 | Platform | Install |
 |----------|---------|
-| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.4.0/Clarity.Scribe.Setup.2.4.0.exe) (~912 MB) |
+| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.6.0/Clarity.Scribe.Setup.2.6.0.exe) (~912 MB) |
 | **macOS** (Apple Silicon) | Clone and run from source — see [Getting Started](#getting-started) |
 
 > On first launch, the app downloads the Whisper AI model (~1.5 GB). Parakeet TDT (~890 MB) is downloaded on first use when engine is set to Auto or Parakeet. Fully offline after model downloads.
@@ -16,10 +16,12 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 ## Features
 
 - **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to 53x real-time), Whisper for all others. Manual override available in settings.
-- **Hold-to-Talk Mode** — Hold a key to record, release to transcribe — or use the classic tap-to-toggle. Switch modes instantly in Settings with an Apple-style segmented control. Single function keys (F5–F12) for hold mode, modifier combos for toggle mode.
+- **Personal Dictionary** — Add custom word corrections that automatically apply to every transcription. Maps what was written to what you meant (e.g. `Chat GPT` to `ChatGPT`). Book icon in the widget bar opens a full CRUD panel with Add, Edit, batch Delete, Export JSON, and Import JSON. Each entry auto-generates ~12 case/hyphen/space variants for robust matching.
+- **Hold-to-Talk Mode** — Hold a key to record, release to transcribe — or use the classic tap-to-toggle. Switch modes instantly in Settings with an Apple-style segmented control. Single function keys (F5-F12) for hold mode, modifier combos for toggle mode.
 - **Filler Word Removal** — Automatically strips filled pauses (um, uh, ah, er) from transcriptions while preserving natural speech patterns
+- **No-Audio Auto-Stop** — Automatically stops recording if no meaningful audio is detected for 80% of a 30-second window. Catches wrong mic selection, muted mic, and forgotten recordings.
 - **Silero VAD Segmentation** — Intelligent voice activity detection splits audio at natural speech boundaries instead of arbitrary time intervals
-- **Hallucination Detection** — Detects and corrects Whisper's looping/repetition artifacts with automatic retry
+- **Hallucination Detection** — Detects and corrects Whisper looping/repetition artifacts with automatic retry. Also suppresses the cold-start Thank You hallucination on short silent clips.
 - **Context Prompting** — Maintains coherent transcription across long recordings by passing context between chunks
 - **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
 - **Transcription Progress** — Real-time progress percentage shown during long recordings
@@ -151,17 +153,18 @@ clarity-scribe/
 │   ├── tdtDecoder.ts      # Token-and-Duration Transducer beam search
 │   └── preload.ts         # Context bridge (IPC API)
 ├── src/                   # Renderer (React)
-│   ├── App.tsx            # Main shell with setup/widget/history/settings
+│   ├── App.tsx            # Main shell with setup/widget/history/settings/dictionary
 │   ├── components/
-│   │   ├── Widget.tsx         # Floating bar with mic, waveform, progress
-│   │   ├── HistoryPanel.tsx   # Transcription history with delete
-│   │   ├── SettingsPanel.tsx  # Recording mode, hotkey, mic, language, auto-stop
-│   │   └── SetupScreen.tsx    # First-run download + permissions
+│   │   ├── Widget.tsx             # Floating bar with mic, waveform, progress
+│   │   ├── HistoryPanel.tsx       # Transcription history with delete
+│   │   ├── SettingsPanel.tsx      # Recording mode, hotkey, mic, language, auto-stop
+│   │   ├── PersonalDictionary.tsx # Word correction CRUD panel
+│   │   └── SetupScreen.tsx        # First-run download + permissions
 │   ├── hooks/
-│   │   ├── useAudioRecording.ts  # AudioWorklet recording pipeline
-│   │   └── useSettings.ts       # Settings state management
+│   │   ├── useAudioRecording.ts  # AudioWorklet recording pipeline + no-audio guard
+│   │   └── useSettings.ts        # Settings state management
 │   ├── utils/
-│   │   └── cleanTranscription.ts # Filler word removal post-processing
+│   │   └── cleanTranscription.ts # Filler removal + personal dictionary post-processing
 │   └── styles/globals.css        # Dark glassmorphic theme
 ├── resources/
 │   ├── win-gpu/

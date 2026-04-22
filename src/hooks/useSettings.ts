@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS: Settings = {
     whisperLanguage: 'en',
     silenceDuration: 0,
     transcriptionEngine: 'auto',
+    personalDictionary: [],
 };
 
 export function useSettings() {

@@ -540,6 +540,28 @@ function setupIpcHandlers(): void {
     ipcMain.handle('clear-history', () => clearHistory());
     ipcMain.handle('delete-history-entry', (_, id: string) => deleteHistoryEntry(id));
 
+    // Personal Dictionary
+    ipcMain.handle('get-dictionary', () => {
+        const raw = store.get('personalDictionary') as any;
+        if (!raw) return [];
+        // Migration guard: convert old string[] format to DictionaryEntry[]
+        if (Array.isArray(raw) && raw.length > 0 && typeof raw[0] === 'string') {
+            const migrated = (raw as string[]).map((word: string) => ({
+                id: `migrated-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                original: word,
+                replacement: word,
+                variants: [],
+                createdAt: Date.now(),
+            }));
+            store.set('personalDictionary', migrated);
+            return migrated;
+        }
+        return raw;
+    });
+    ipcMain.handle('save-dictionary', (_, dictionary: any[]) => {
+        store.set('personalDictionary', dictionary);
+    });
+
     // Window
     ipcMain.handle('quit-app', () => { (app as any).isQuitting = true; app.quit(); });
     ipcMain.handle('minimize-to-tray', () => {

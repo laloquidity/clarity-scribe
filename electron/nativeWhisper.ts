@@ -404,12 +404,17 @@ export async function transcribe(
         parakeetService.isParakeetAvailable()
     );
 
+    // Track if we fell through from Parakeet-empty → Whisper on a short clip.
+    // Used to suppress Whisper "thank you" hallucinations (see below).
+    let parakeetWasEmpty = false;
+
     if (useParakeet) {
         try {
             console.log('[Engine] Using Parakeet TDT');
             const text = await parakeetService.transcribeParakeet(audioData, options);
             if (text) return text;
             console.warn('[Engine] Parakeet returned empty, falling back to Whisper');
+            parakeetWasEmpty = true;
         } catch (error) {
             console.warn('[Engine] Parakeet failed, falling back to Whisper:', error);
         }
@@ -426,11 +431,37 @@ export async function transcribe(
     }
 
     try {
+        let result: string;
         if (IS_WINDOWS) {
-            return await transcribeSmartWhisper(audioData, options, durationSeconds, startTime);
+            result = await transcribeSmartWhisper(audioData, options, durationSeconds, startTime);
         } else {
-            return await transcribeNapi(audioData, options, durationSeconds, startTime);
+            result = await transcribeNapi(audioData, options, durationSeconds, startTime);
         }
+
+        // Hallucination guard: Whisper commonly hallucinates "Thank you." (and variants)
+        // on short silent clips when Parakeet returns empty and Whisper lazy-loads cold.
+        // Only suppress when:
+        //   1. Parakeet was the intended engine and returned nothing (empty clip fallback)
+        //   2. The clip was under 2 seconds (too short to contain real speech + "thank you")
+        //   3. The entire Whisper output is just a thank-you variant (nothing else)
+        if (parakeetWasEmpty && durationSeconds < 2) {
+            const normalized = result.trim().toLowerCase().replace(/[.,!?]+$/, '').trim();
+            const THANK_YOU_HALLUCINATIONS = new Set([
+                'thank you',
+                'thanks',
+                'thank you so much',
+                'thank you very much',
+                'thanks so much',
+                'thank you.',
+                'thanks.',
+            ]);
+            if (THANK_YOU_HALLUCINATIONS.has(normalized)) {
+                console.warn(`[Engine] Suppressed Whisper hallucination on ${durationSeconds.toFixed(2)}s clip: "${result}"`);
+                return '';
+            }
+        }
+
+        return result;
     } catch (error) {
         console.error('[Whisper] Transcription failed:', error);
         throw error;

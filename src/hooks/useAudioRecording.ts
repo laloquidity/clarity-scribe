@@ -31,8 +31,15 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     const maxDurationTimeoutRef = useRef<number | null>(null);
     const silenceSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
     const silenceAnalyserRef = useRef<AnalyserNode | null>(null);
+    const noAudioCheckRef = useRef<number | null>(null);
+    const noAudioStartRef = useRef<number>(0);
+    const noAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+    const noAudioAnalyserRef = useRef<AnalyserNode | null>(null);
 
     const MAX_RECORDING_DURATION_MS = 30 * 60 * 1000;
+    const NO_AUDIO_WINDOW_MS = 30_000;     // Check window: 30 seconds
+    const NO_AUDIO_THRESHOLD = 0.80;        // 80% silence triggers auto-stop
+    const NO_AUDIO_ENERGY_THRESHOLD = 10;   // Frequency-domain avg below this = silence (same as existing silence detection)
 
     // Initialize worker
     useEffect(() => {
@@ -72,6 +79,18 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
         if (maxDurationTimeoutRef.current) {
             window.clearTimeout(maxDurationTimeoutRef.current);
             maxDurationTimeoutRef.current = null;
+        }
+        if (noAudioCheckRef.current) {
+            window.clearInterval(noAudioCheckRef.current);
+            noAudioCheckRef.current = null;
+        }
+        if (noAudioSourceRef.current) {
+            noAudioSourceRef.current.disconnect();
+            noAudioSourceRef.current = null;
+        }
+        if (noAudioAnalyserRef.current) {
+            noAudioAnalyserRef.current.disconnect();
+            noAudioAnalyserRef.current = null;
         }
         if (silenceSourceRef.current) {
             silenceSourceRef.current.disconnect();
@@ -262,6 +281,51 @@ registerProcessor('audio-recorder-processor', AudioRecorderProcessor);
             onStateChange('RECORDING');
             if (!skipSilenceDetection) {
                 startSilenceDetection(stream, settingsRef.current.silenceDuration, stopRecording);
+            }
+
+            // No-audio safety net: if >80% of 30 seconds is silence, auto-stop.
+            // Uses AnalyserNode frequency-domain energy (same proven approach as existing
+            // silence detection, avg > 10 threshold). Independent of the per-pause silence
+            // detection which checks continuous silence. This catches: wrong mic, mic muted,
+            // user walked away, etc.
+            noAudioStartRef.current = Date.now();
+            let noAudioTotalChecks = 0;
+            let noAudioSilentChecks = 0;
+
+            // Create dedicated analyser for no-audio detection
+            // (can't share with silence detection — that may not be initialized in hold mode)
+            const noAudioCtx = soundContextRef.current;
+            if (noAudioCtx) {
+                if (noAudioCtx.state === 'suspended') noAudioCtx.resume();
+                const noAudioSource = noAudioCtx.createMediaStreamSource(stream);
+                const noAudioAnalyser = noAudioCtx.createAnalyser();
+                noAudioAnalyser.fftSize = 256;
+                noAudioSource.connect(noAudioAnalyser);
+                noAudioSourceRef.current = noAudioSource;
+                noAudioAnalyserRef.current = noAudioAnalyser;
+
+                const bufLen = noAudioAnalyser.frequencyBinCount;
+                const dataArr = new Uint8Array(bufLen);
+
+                noAudioCheckRef.current = window.setInterval(() => {
+                    if (!isRecordingRef.current) return;
+
+                    // Sample current energy level
+                    noAudioAnalyser.getByteFrequencyData(dataArr);
+                    const avg = dataArr.reduce((a, b) => a + b, 0) / bufLen;
+                    noAudioTotalChecks++;
+                    if (avg <= NO_AUDIO_ENERGY_THRESHOLD) noAudioSilentChecks++;
+
+                    // Only evaluate after the full 30s window
+                    const elapsed = Date.now() - noAudioStartRef.current;
+                    if (elapsed >= NO_AUDIO_WINDOW_MS && noAudioTotalChecks > 0) {
+                        const silenceRatio = noAudioSilentChecks / noAudioTotalChecks;
+                        if (silenceRatio >= NO_AUDIO_THRESHOLD) {
+                            onError('No audio detected \u2014 Stopped recording');
+                            stopRecording();
+                        }
+                    }
+                }, 200); // Check 5x/sec for good granularity (~150 samples over 30s)
             }
 
             maxDurationTimeoutRef.current = window.setTimeout(() => {

@@ -13,6 +13,8 @@
  * (e.g. "human" contains "um", "plumbing" contains "um").
  */
 
+import type { DictionaryEntry } from '../types';
+
 // Filler words to remove — ordered by frequency in natural speech
 // Word-boundary (\b) anchored to prevent partial matches
 const FILLER_WORDS = [
@@ -43,8 +45,9 @@ const REPEATED_WORD_PATTERN = /\b(\w+)\s+\1\b/gi;
 /**
  * Clean up a transcription by removing filler words, stutters,
  * and fixing resulting punctuation/spacing artifacts.
+ * Optionally applies personal dictionary corrections.
  */
-export function cleanTranscription(text: string): string {
+export function cleanTranscription(text: string, personalDictionary?: DictionaryEntry[]): string {
     if (!text || text.trim().length === 0) return text;
 
     let cleaned = text;
@@ -71,14 +74,34 @@ export function cleanTranscription(text: string): string {
     cleaned = cleaned.replace(/([.,;:!?…])\s*(?=[A-Z])/g, '$1 '); // Ensure space after punctuation before capital
     cleaned = cleaned.replace(/…/g, '...');             // Convert unicode ellipsis back to three dots
 
-    // 5. Clean up whitespace
+    // 5. Apply personal dictionary corrections (original + variants → replacement)
+    if (personalDictionary && personalDictionary.length > 0) {
+        for (const entry of personalDictionary) {
+            if (entry.replacement && entry.replacement.trim()) {
+                // Create list of all patterns to match (original + all variants)
+                const patterns = [entry.original, ...(entry.variants || [])];
+                for (const pattern of patterns) {
+                    if (pattern && pattern.trim()) {
+                        // Escape regex special characters
+                        const escapedPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        // Match with word boundaries, case-insensitive
+                        const wordRegex = new RegExp(`\\b${escapedPattern}\\b`, 'gi');
+                        cleaned = cleaned.replace(wordRegex, entry.replacement);
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Clean up whitespace
     cleaned = cleaned.replace(/\s{2,}/g, ' ');          // Collapse multiple spaces
     cleaned = cleaned.trim();
 
-    // 6. Ensure first letter is capitalized (may have been a filler)
+    // 7. Ensure first letter is capitalized (may have been a filler)
     if (cleaned.length > 0) {
         cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
     }
 
     return cleaned;
 }
+

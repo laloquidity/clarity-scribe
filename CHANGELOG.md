@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.6.0 — Personal Dictionary, No-Audio Auto-Stop & Whisper Hallucination Guard (2026-04-22)
+
+### 🚀 New Features
+
+- **Personal Dictionary** — Add custom word corrections that apply automatically to every transcription. Maps "what was written" → "what you meant" (e.g. `Chat GPT` → `ChatGPT`). Accessible via the new Book icon in the widget bar, which opens a full CRUD panel with Add, Edit, batch Delete, Select All, Export JSON, and Import JSON. Each entry auto-generates ~12 case/hyphen/space variants using the built-in variant engine so corrections match regardless of how the ASR chose to capitalize or hyphenate the word. Persisted to disk via `electron-store` with a migration guard for any previously stored legacy formats. Dictionary corrections are applied in the post-processing pipeline after filler/stutter removal and before final capitalization.
+
+- **No-Audio Auto-Stop** — If a recording exceeds 30 seconds and more than 80% of that time contains no meaningful audio (energy below the frequency-domain threshold), the recording automatically stops and the widget displays "No audio detected — Stopped recording". Uses the same AnalyserNode frequency-domain approach as the existing silence detection (`avg > 10` threshold), sampled 5× per second for ~150 data points over the 30-second window. Handles wrong mic selection, muted mic, and "forgot to stop" scenarios. Fully independent of the existing per-pause silence detection — both features coexist without conflict.
+
+### 🐛 Bug Fixes
+
+- **Whisper "Thank you" hallucination suppression** — When Parakeet returns empty on a clip shorter than 2 seconds and Whisper lazy-loads cold for the fallback, Whisper would frequently hallucinate "Thank you." as its entire output. Added a targeted guard in `nativeWhisper.ts` that detects this exact code path (`parakeetWasEmpty && durationSeconds < 2`) and suppresses the output if the entire result matches a known thank-you phrase variant. Genuine "thank you" at the end of a real utterance is unaffected because it would appear in a longer clip alongside other transcribed content.
+
+---
+
 ## v2.5.0 — Feature Extraction Hardening & Post-Processing Fixes (2026-04-12)
 
 ### 🛡️ Quality Improvements
