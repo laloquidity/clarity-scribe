@@ -12,6 +12,10 @@
 
 - **Whisper "Thank you" hallucination suppression** — When Parakeet returns empty on a clip shorter than 2 seconds and Whisper lazy-loads cold for the fallback, Whisper would frequently hallucinate "Thank you." as its entire output. Added a targeted guard in `nativeWhisper.ts` that detects this exact code path (`parakeetWasEmpty && durationSeconds < 2`) and suppresses the output if the entire result matches a known thank-you phrase variant. Genuine "thank you" at the end of a real utterance is unaffected because it would appear in a longer clip alongside other transcribed content.
 
+- **Non-ASCII script paste (Arabic, Chinese, Hebrew, Cyrillic, etc.)** — The punctuation guard introduced in v2.6.0 used `/[a-zA-Z0-9]/` to reject lone-punctuation noise from Parakeet. This inadvertently silently dropped any transcription containing zero ASCII characters — meaning Arabic, Chinese, Hebrew, Cyrillic, and all other non-Latin scripts were never pasted. Fixed by switching to the Unicode-aware `/\p{L}|\p{N}/u` which matches any letter or digit in any script.
+
+- **macOS Continuity Camera AVFoundation warning** — Added `NSCameraUseContinuityCameraDeviceType: true` to `extendInfo` in `electron-builder.yml` so it is injected into the app's `Info.plist` at build time. Eliminates the `WARNING: Add NSCameraUseContinuityCameraDeviceType to your Info.plist` log noise emitted by Electron's Plugin helper process when AVFoundation enumerates audio devices.
+
 ---
 
 ## v2.5.0 — Feature Extraction Hardening & Post-Processing Fixes (2026-04-12)
