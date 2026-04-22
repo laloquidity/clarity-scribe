@@ -79,6 +79,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clearHistory: () => ipcRenderer.invoke('clear-history'),
     deleteHistory: (id: string) => ipcRenderer.invoke('delete-history-entry', id),
 
+    // Personal Dictionary
+    getDictionary: () => ipcRenderer.invoke('get-dictionary'),
+    saveDictionary: (dictionary: any) => ipcRenderer.invoke('save-dictionary', dictionary),
+
     // Window
     quitApp: () => ipcRenderer.invoke('quit-app'),
     minimizeToTray: () => ipcRenderer.invoke('minimize-to-tray'),

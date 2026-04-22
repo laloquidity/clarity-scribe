@@ -5,16 +5,17 @@
  * Global hotkey toggles recording, transcription gets pasted to the active app.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ChevronDown, ChevronUp, Settings, Minus } from 'lucide-react';
+import { ChevronDown, ChevronUp, Settings, Minus, Book } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Widget from './components/Widget';
 import HistoryPanel from './components/HistoryPanel';
 import SettingsPanel from './components/SettingsPanel';
+import { PersonalDictionary } from './components/PersonalDictionary';
 import SetupScreen from './components/SetupScreen';
 import { useSettings } from './hooks/useSettings';
 import { useAudioRecording } from './hooks/useAudioRecording';
 import { cleanTranscription } from './utils/cleanTranscription';
-import type { AppState, HistoryEntry } from './types';
+import type { AppState, HistoryEntry, DictionaryEntry } from './types';
 
 const COLLAPSED_HEIGHT = 64;
 const EXPANDED_HEIGHT = 460;
@@ -24,6 +25,7 @@ const App: React.FC = () => {
     const [appState, setAppState] = useState<AppState>('IDLE');
     const [expanded, setExpanded] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
+    const [showDictionary, setShowDictionary] = useState(false);
     const [statusMessage, setStatusMessage] = useState<string | undefined>();
     const [history, setHistory] = useState<HistoryEntry[]>([]);
     const [whisperReady, setWhisperReady] = useState(false);
@@ -31,6 +33,11 @@ const App: React.FC = () => {
     const [whisperStatus, setWhisperStatus] = useState('Initializing...');
     const [copiedToast, setCopiedToast] = useState(false);
     const [setupDone, setSetupDone] = useState(false);
+    const [personalDictionary, setPersonalDictionary] = useState<DictionaryEntry[]>([]);
+
+    // Keep a ref to dictionary for use in the transcription callback (avoids stale closure)
+    const dictionaryRef = useRef<DictionaryEntry[]>([]);
+    useEffect(() => { dictionaryRef.current = personalDictionary; }, [personalDictionary]);
 
     const { settings, updateSetting, isLoaded } = useSettings();
 
@@ -40,7 +47,7 @@ const App: React.FC = () => {
         onStateChange: setAppState,
         onError: (msg) => {
             setStatusMessage(msg);
-            setTimeout(() => setStatusMessage(undefined), 3000);
+            setTimeout(() => setStatusMessage(undefined), 5000);
         },
         skipSilenceDetection: settings.hotkeyMode === 'hold',
     });
@@ -76,9 +83,10 @@ const App: React.FC = () => {
         stopRecording();
     }, [stopRecording, isRecordingRef]);
 
-    // Load history on mount + check if setup was already completed
+    // Load history + dictionary on mount + check if setup was already completed
     useEffect(() => {
         window.electronAPI?.getHistory().then(h => setHistory(h || []));
+        window.electronAPI?.getDictionary?.().then(d => setPersonalDictionary(d || []));
         window.electronAPI?.isSetupDone().then(done => {
             if (done) setSetupDone(true);
         });
@@ -93,6 +101,18 @@ const App: React.FC = () => {
             }
         });
     }, []);
+
+    // Save dictionary when it changes (debounced via the effect)
+    const dictionarySaveTimerRef = useRef<number | null>(null);
+    useEffect(() => {
+        // Skip saving on initial load (empty array)
+        if (!isLoaded) return;
+        if (dictionarySaveTimerRef.current) clearTimeout(dictionarySaveTimerRef.current);
+        dictionarySaveTimerRef.current = window.setTimeout(() => {
+            window.electronAPI?.saveDictionary?.(personalDictionary);
+        }, 500);
+        return () => { if (dictionarySaveTimerRef.current) clearTimeout(dictionarySaveTimerRef.current); };
+    }, [personalDictionary, isLoaded]);
 
     // Listen for hotkey events (toggle, start, stop)
     useEffect(() => {
@@ -151,8 +171,8 @@ const App: React.FC = () => {
                 return;
             }
 
-            // Post-processing: remove filler words, stutters, and clean up
-            let text = cleanTranscription(rawText);
+            // Post-processing: remove filler words, stutters, apply dictionary, and clean up
+            let text = cleanTranscription(rawText, dictionaryRef.current);
 
             if (!text || text.trim().length === 0) {
                 setAppState('IDLE');
@@ -231,6 +251,11 @@ const App: React.FC = () => {
         setHistory([]);
     }, []);
 
+    // Dictionary update handler
+    const handleDictionaryUpdate = useCallback((updated: DictionaryEntry[]) => {
+        setPersonalDictionary(updated);
+    }, []);
+
     if (!isLoaded) {
         return <div className="widget-shell" />;
     }
@@ -273,10 +298,32 @@ const App: React.FC = () => {
                         <Minus size={14} />
                     </button>
                     <button
+                        className={`gear-btn ${showDictionary ? 'active' : ''}`}
+                        onClick={() => {
+                            if (!expanded) setExpanded(true);
+                            if (showDictionary) {
+                                // Already showing dictionary — close it
+                                setShowDictionary(false);
+                            } else {
+                                // Open dictionary, close settings
+                                setShowSettings(false);
+                                setShowDictionary(true);
+                            }
+                        }}
+                        title="Personal Dictionary"
+                    >
+                        <Book size={14} />
+                    </button>
+                    <button
                         className="gear-btn"
                         onClick={() => {
                             if (!expanded) setExpanded(true);
-                            setShowSettings(!showSettings);
+                            if (showSettings) {
+                                setShowSettings(false);
+                            } else {
+                                setShowDictionary(false);
+                                setShowSettings(true);
+                            }
                         }}
                         title="Settings"
                     >
@@ -286,7 +333,10 @@ const App: React.FC = () => {
                         className="expand-btn"
                         onClick={() => {
                             setExpanded(!expanded);
-                            if (!expanded) setShowSettings(false);
+                            if (!expanded) {
+                                setShowSettings(false);
+                                setShowDictionary(false);
+                            }
                         }}
                         title={expanded ? 'Collapse' : 'Expand history'}
                     >
@@ -305,7 +355,14 @@ const App: React.FC = () => {
                         transition={{ duration: 0.15 }}
                         style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
                     >
-                        {showSettings ? (
+                        {showDictionary ? (
+                            <PersonalDictionary
+                                isOpen={showDictionary}
+                                onClose={() => setShowDictionary(false)}
+                                dictionary={personalDictionary}
+                                onUpdate={handleDictionaryUpdate}
+                            />
+                        ) : showSettings ? (
                             <SettingsPanel
                                 settings={settings}
                                 onUpdateSetting={updateSetting}
