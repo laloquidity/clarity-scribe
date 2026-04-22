@@ -180,9 +180,10 @@ const App: React.FC = () => {
                 return;
             }
 
-            // Guard: reject transcriptions that are only punctuation (no actual words)
-            // Parakeet can emit lone periods/commas from silence or background noise
-            if (!/[a-zA-Z0-9]/.test(text)) {
+            // Guard: reject transcriptions that contain no letters or digits at all
+            // (e.g. lone punctuation from silence/noise). Must be Unicode-aware so
+            // Arabic, Chinese, Hebrew, Cyrillic, etc. are not silently dropped.
+            if (!/\p{L}|\p{N}/u.test(text)) {
                 setAppState('IDLE');
                 isRecordingRef.current = false;
                 return;
