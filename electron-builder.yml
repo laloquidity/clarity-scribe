@@ -28,6 +28,12 @@ mac:
   hardenedRuntime: true
   entitlements: resources/entitlements.mac.plist
   entitlementsInherit: resources/entitlements.mac.plist
+  extendInfo:
+    # Suppresses "Add NSCameraUseContinuityCameraDeviceType to your Info.plist"
+    # warning from macOS AVFoundation when Electron's plugin helper enumerates
+    # audio/camera devices during mic access. Declares we are aware of and
+    # opt into Continuity Camera device type enumeration.
+    NSCameraUseContinuityCameraDeviceType: true
   files:
     - "!node_modules/koffi/build/koffi/win32_*"
 win:
