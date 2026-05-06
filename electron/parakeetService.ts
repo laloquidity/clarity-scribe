@@ -417,6 +417,7 @@ async function transducerGreedyDecode(
     // TDT greedy decode — matching sherpa-onnx reference implementation exactly
     // See: offline-transducer-greedy-search-nemo-decoder.cc DecodeOneTDT()
     const maxTokensPerFrame = 5; // Matches sherpa-onnx reference: max_tokens_per_frame
+    const COLLAPSE_BLANK_THRESHOLD = 15; // Consecutive blanks before LSTM state reset
     let tokensThisFrame = 0;
     let skip = 0; // frames to advance
 
@@ -427,6 +428,7 @@ async function transducerGreedyDecode(
     let maxSkipSeen = 0;
     let consecutiveBlanks = 0;
     let maxConsecutiveBlanks = 0;
+    let collapseRecoveries = 0;
 
     for (let t = 0; t < encoderOutLen; t += skip) {
         totalIterations++;
@@ -492,6 +494,24 @@ async function transducerGreedyDecode(
             }
         }
 
+        // Decoder collapse detection & recovery
+        // When the LSTM prediction network enters a degenerate state (blank-emitting
+        // fixed point), reset to fresh zero state. The encoder output is already
+        // computed and valid — only the decoder state needs recovery.
+        // Threshold of 15 consecutive blanks ≈ 3.6s of encoder time with no tokens.
+        // Normal speech never exceeds ~10 consecutive blanks (between-sentence pauses).
+        // Root cause: DirectML (Windows) encoder outputs differ from CPU (macOS) in
+        // floating-point precision, pushing marginal joiner logits across the
+        // blank/token decision boundary and triggering a self-reinforcing collapse.
+        if (consecutiveBlanks >= COLLAPSE_BLANK_THRESHOLD) {
+            collapseRecoveries++;
+            console.log(`[Parakeet] ⚠ Decoder collapse detected at frame ${t} (~${(t * 0.08).toFixed(1)}s). Resetting LSTM state (recovery #${collapseRecoveries}).`);
+            decoderStates = getDecoderInitStates();
+            prevToken = BLANK_ID;
+            consecutiveBlanks = 0;
+            tokensThisFrame = 0;
+        }
+
         if (skip > maxSkipSeen) maxSkipSeen = skip;
 
         // Frame advancement logic — three SEPARATE if-blocks, NOT else-if
@@ -517,7 +537,7 @@ async function transducerGreedyDecode(
     const lastTokenTimeSec = (lastTokenFrame * 0.08).toFixed(1); // ~80ms per encoder frame
     const totalTimeSec = (encoderOutLen * 0.08).toFixed(1);
     const unusedFrames = encoderOutLen - lastTokenFrame;
-    console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames | blanks: ${totalBlanks}/${totalIterations} (${blankRatio}%) | maxSkip: ${maxSkipSeen} | maxConsecBlanks: ${maxConsecutiveBlanks} | lastToken: frame ${lastTokenFrame} (${lastTokenTimeSec}s/${totalTimeSec}s) | unusedTail: ${unusedFrames} frames`);
+    console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames | blanks: ${totalBlanks}/${totalIterations} (${blankRatio}%) | maxSkip: ${maxSkipSeen} | maxConsecBlanks: ${maxConsecutiveBlanks} | lastToken: frame ${lastTokenFrame} (${lastTokenTimeSec}s/${totalTimeSec}s) | unusedTail: ${unusedFrames} frames${collapseRecoveries > 0 ? ` | ⚠ recoveries: ${collapseRecoveries}` : ''}`);
     return tokensToText(tokens);
 }
 
