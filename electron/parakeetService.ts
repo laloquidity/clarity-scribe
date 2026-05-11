@@ -269,12 +269,25 @@ export async function initParakeet(
         // Load encoder (largest model — use GPU acceleration)
         onProgress?.(85, 'Loading encoder (GPU)...');
         console.log('[Parakeet] Loading encoder...');
+        // DirectML (Windows) requires specific session options — see:
+        //   sherpa-onnx session.cc:311-312 (DisableMemPattern + ORT_SEQUENTIAL)
+        //   https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html
+        // Without these, stale GPU memory allocation patterns corrupt encoder outputs
+        // across invocations with different audio lengths, causing systematic decoder
+        // collapse (LSTM prediction network enters blank-emitting fixed point).
+        // Also use 'basic' graph optimization for INT8+DirectML to prevent aggressive
+        // QDQ operator fusion from corrupting quantization precision.
+        const isDml = process.platform === 'win32';
         encoderSession = await ort.InferenceSession.create(
             join(modelDir, 'encoder.int8.onnx'),
             {
                 executionProviders: providers,
                 logSeverityLevel: 3,
-                graphOptimizationLevel: 'all',
+                graphOptimizationLevel: isDml ? 'basic' : 'all',
+                ...(isDml ? {
+                    enableMemPattern: false,
+                    executionMode: 'sequential',
+                } : {}),
             }
         );
         console.log(`[Parakeet] ✓ Encoder loaded on ${gpuProvider.toUpperCase()} (inputs: ${encoderSession.inputNames}, outputs: ${encoderSession.outputNames})`);
