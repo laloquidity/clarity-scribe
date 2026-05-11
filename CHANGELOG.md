@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.7.0 — Parakeet DirectML Stability Fix (2026-05-11)
+
+### 🐛 Bug Fixes
+
+- **Parakeet systematic decoder collapse on Windows (DirectML)** — Identified and fixed the root cause of Parakeet producing near-zero transcriptions on Windows after multiple recordings. The encoder ONNX session was missing two settings that ONNX Runtime's DirectML execution provider **requires** per its official documentation — and that the sherpa-onnx reference implementation ([`session.cc:311-312`](https://github.com/k2-fsa/sherpa-onnx/blob/master/sherpa-onnx/csrc/session.cc)) sets unconditionally:
+  - **`enableMemPattern: false`** — Without this, ORT's memory pattern optimization pre-caches GPU allocation layouts from the first inference call and reuses them on subsequent calls. DirectML manages its own GPU memory pool with device-specific alignment, so stale cached layouts produce silently corrupted encoder output tensors on later invocations with different audio lengths. The corruption was non-deterministic (depended on prior call history), explaining why the bug was intermittent and worsened over multiple recordings in the same session.
+  - **`executionMode: 'sequential'`** — DirectML does not support parallel operator execution; the default parallel mode caused undefined behavior on the GPU.
+  - **`graphOptimizationLevel: 'basic'`** (was `'all'`) — Aggressive graph optimization on an INT8 quantized model with DirectML risks incorrect QDQ (Quantize/Dequantize) operator fusion, compounding precision errors. Reduced to `'basic'` on Windows only; macOS/Linux keep `'all'`.
+
+  **Before:** 10 decoder collapses in 58s (10 LSTM state resets), 82.5% blank rate, decoder stopped at 15.3s out of 58.1s, 535 unused tail frames — transcription truncated to ~25% of audio.
+  **After:** 0–1 decoder collapses on typical recordings, 25.7% blank rate, last token at 65.1s out of 65.4s, 3 unused tail frames — complete transcription.
+
+  All changes are Windows-only (`process.platform === 'win32'`). macOS and Linux sessions are completely unchanged.
+
+---
+
 ## v2.6.0 — Personal Dictionary, No-Audio Auto-Stop & Whisper Hallucination Guard (2026-04-22)
 
 ### 🚀 New Features
