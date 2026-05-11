@@ -2,6 +2,8 @@
     "name": "clarity-scribe",
     "version": "2.6.0",
     "description": "Lightweight standalone dictation app powered by Whisper AI",
+    "author": "laloquidity",
+    "license": "AGPL-3.0-only WITH Commons-Clause",
     "main": "dist-electron/main.js",
     "scripts": {
         "dev": "concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
