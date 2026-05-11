@@ -228,4 +228,4 @@ Uses CUDA, Vulkan, or Metal depending on platform. GPU DLLs are loaded automatic
 
 ## License
 
-MIT
+[AGPL v3 + Commons Clause](./LICENSE) — Free for personal use. Commercial use prohibited. Forks must remain open source under the same license.
