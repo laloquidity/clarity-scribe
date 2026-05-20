@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.8.0 — Parakeet Long-Recording Optimization (2026-05-20)
+
+### ⚡ Performance
+
+- **Try-fast-fallback transcription architecture (Windows)** — Parakeet now always attempts single-pass encoding first for maximum speed (~40-48x real-time). After completion, the decoder coverage is checked: if the last emitted token covers less than 85% of the audio (indicating DirectML encoder tail corruption), the recording is automatically retried using VAD-based batched encoding. This gives single-pass speed on the vast majority of recordings while guaranteeing complete transcription on the rare cases where the encoder output degrades.
+
+- **Batched encoder inference for segmented audio** — When the fallback triggers (or for audio >120s), VAD segments are now processed in batched encoder calls (up to 8 segments per GPU call), matching the [onnx-asr reference implementation](https://github.com/istupakov/onnx-asr/blob/main/src/onnx_asr/vad.py#L114-L124). This amortizes the ~300ms DirectML per-call GPU overhead across all segments in the batch, instead of paying it once per segment.
+
+### 🔧 Technical Details
+
+- `transducerGreedyDecode()` now returns coverage metadata (`lastTokenFrame`, `totalFrames`) alongside the transcribed text, enabling truncation detection without additional computation.
+- Single-pass limit raised from 20s to 120s on Windows (macOS retains 60s hard limit for CoreML SIGTRAP prevention). The coverage check replaces the conservative fixed threshold.
+- All changes are Windows-only. macOS behavior is completely unchanged.
+
+---
+
 ## v2.7.0 — Parakeet DirectML Stability Fix (2026-05-11)
 
 ### 🐛 Bug Fixes

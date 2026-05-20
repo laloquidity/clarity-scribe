@@ -411,7 +411,7 @@ async function runJoiner(
 async function transducerGreedyDecode(
     encoderOut: ort.Tensor,
     encoderOutLen: number,
-): Promise<string> {
+): Promise<{ text: string; lastTokenFrame: number; totalFrames: number }> {
     if (!decoderSession || !joinerSession) {
         throw new Error('Decoder/Joiner not initialized');
     }
@@ -551,7 +551,7 @@ async function transducerGreedyDecode(
     const totalTimeSec = (encoderOutLen * 0.08).toFixed(1);
     const unusedFrames = encoderOutLen - lastTokenFrame;
     console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames | blanks: ${totalBlanks}/${totalIterations} (${blankRatio}%) | maxSkip: ${maxSkipSeen} | maxConsecBlanks: ${maxConsecutiveBlanks} | lastToken: frame ${lastTokenFrame} (${lastTokenTimeSec}s/${totalTimeSec}s) | unusedTail: ${unusedFrames} frames${collapseRecoveries > 0 ? ` | ⚠ recoveries: ${collapseRecoveries}` : ''}`);
-    return tokensToText(tokens);
+    return { text: tokensToText(tokens), lastTokenFrame, totalFrames: encoderOutLen };
 }
 
 /**
@@ -832,6 +832,8 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     melTime: number;
     encTime: number;
     decTime: number;
+    lastTokenFrame: number;
+    totalFrames: number;
 }> {
     const melStart = Date.now();
     const { features, nFrames, validFrames } = computeMelSpectrogram(audioData, 16000);
@@ -858,10 +860,10 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
 
     // Transducer greedy decode
     const decStart = Date.now();
-    const text = await transducerGreedyDecode(encoderOut, encoderLen);
+    const { text, lastTokenFrame, totalFrames } = await transducerGreedyDecode(encoderOut, encoderLen);
     const decTime = Date.now() - decStart;
 
-    return { text, melTime, encTime, decTime };
+    return { text, melTime, encTime, decTime, lastTokenFrame, totalFrames };
 }
 
 /**
@@ -887,26 +889,40 @@ export async function transcribeParakeet(
     console.log(`[Parakeet] Transcribing ${durationSeconds.toFixed(1)}s...`);
 
     try {
-        // Single-pass threshold: platform-dependent
-        // Windows/Linux: encoder handles any length fine (DML/CUDA don't crash)
-        // macOS: CoreML/CPU crashes on audio >~60s (SIGTRAP), so segment longer audio
-        // Reference: vad_segmentation_handoff.md
-        const singlePassLimit = process.platform === 'darwin' ? 60 : Infinity;
+        // Try-fast-fallback architecture:
+        // 1. Try single-pass first (fastest: ~40-48x RT, ~1s for 35s audio)
+        // 2. After completion, check coverage: lastTokenFrame / totalFrames
+        // 3. If coverage < 85%, DirectML encoder tail corruption detected → retry
+        //    with batched encoding (reliable: small VAD segments = zero collapses)
+        // macOS: hard 60s limit due to CoreML SIGTRAP crash (not soft truncation)
+        // Windows: try single-pass up to 120s, fallback if truncated
+        const singlePassLimit = process.platform === 'darwin' ? 60 : 120;
+        const COVERAGE_THRESHOLD = 0.85; // 85% — below this, consider truncated
 
         if (durationSeconds <= singlePassLimit) {
-            const { text, melTime, encTime, decTime } = await transcribeSinglePass(audioData);
+            const { text, melTime, encTime, decTime, lastTokenFrame, totalFrames } = await transcribeSinglePass(audioData);
 
             const totalTime = Date.now() - startTime;
             const rtf = durationSeconds / (totalTime / 1000);
             console.log(`[Parakeet] ⏱ Mel: ${melTime}ms | Encoder: ${encTime}ms | Decoder: ${decTime}ms | Total: ${totalTime}ms (${rtf.toFixed(1)}x real-time)`);
-            console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
-            return text;
+
+            // Check for DirectML encoder tail truncation
+            const coverage = totalFrames > 0 ? lastTokenFrame / totalFrames : 1;
+            if (process.platform !== 'darwin' && coverage < COVERAGE_THRESHOLD && durationSeconds > 10) {
+                console.log(`[Parakeet] ⚠ Truncation detected: last token at ${(coverage * 100).toFixed(0)}% coverage (frame ${lastTokenFrame}/${totalFrames}). Retrying with batched encoding...`);
+                // Fall through to batched encoding below
+            } else {
+                console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
+                return text;
+            }
         }
 
-        // Long audio: VAD-based segmentation
-        // Split at silence boundaries, transcribe each segment independently, concatenate
-        // This is the approach used by onnx-asr and NeMo's buffered inference scripts
-        console.log(`[Parakeet] Long audio (${durationSeconds.toFixed(1)}s) — using VAD segmentation`);
+        // Long audio: VAD-based segmentation with BATCHED encoding
+        // Reference: onnx-asr vad.py:114-124 (pad_list + recognize_batch pattern)
+        // Instead of running the encoder once per segment (paying ~300ms DirectML
+        // overhead each time), we batch up to 8 segments into a single encoder call.
+        // This gives near-single-pass speed with segmented reliability.
+        console.log(`[Parakeet] Long audio (${durationSeconds.toFixed(1)}s) — using VAD segmentation + batched encoding`);
 
         let audioSegments: Float32Array[];
 
@@ -924,23 +940,88 @@ export async function transcribeParakeet(
             }
         }
 
-        // Transcribe each segment independently
+        // Batched encode + decode
+        // Reference: onnx-asr vad.py:114 — while batch := tuple(islice(segment, batch_size))
+        const BATCH_SIZE = 8; // onnx-asr default: batch_size=8
         const texts: string[] = [];
         let totalMel = 0, totalEnc = 0, totalDec = 0;
 
-        for (let i = 0; i < audioSegments.length; i++) {
-            const seg = audioSegments[i];
-            const segDur = seg.length / 16000;
-            console.log(`[Parakeet] Segment ${i + 1}/${audioSegments.length}: ${segDur.toFixed(1)}s`);
+        for (let batchStart = 0; batchStart < audioSegments.length; batchStart += BATCH_SIZE) {
+            const batch = audioSegments.slice(batchStart, batchStart + BATCH_SIZE);
+            const N = batch.length;
 
-            const { text, melTime, encTime, decTime } = await transcribeSinglePass(seg);
-            totalMel += melTime;
-            totalEnc += encTime;
-            totalDec += decTime;
+            // 1. Compute mel spectrograms for all segments in this batch
+            const melStart = Date.now();
+            const melResults = batch.map(seg => computeMelSpectrogram(seg, 16000));
+            totalMel += Date.now() - melStart;
 
-            if (text.trim()) {
-                texts.push(text.trim());
+            // 2. Pad to max frame count and stack into batch tensor [N, 128, maxFrames]
+            // Reference: onnx-asr utils.pad_list — pads variable-length arrays to equal length
+            const maxFrames = Math.max(...melResults.map(m => m.nFrames));
+            const batchedFeatures = new Float32Array(N * 128 * maxFrames); // zero-initialized
+            const validFramesList: bigint[] = [];
+
+            for (let i = 0; i < N; i++) {
+                const { features, nFrames, validFrames } = melResults[i];
+                validFramesList.push(BigInt(validFrames));
+                // Copy [128, nFrames] into batch position [i, 128, maxFrames]
+                // Layout is row-major: batch[i][mel][frame]
+                for (let mel = 0; mel < 128; mel++) {
+                    const srcOffset = mel * nFrames;
+                    const dstOffset = i * 128 * maxFrames + mel * maxFrames;
+                    batchedFeatures.set(
+                        features.subarray(srcOffset, srcOffset + nFrames),
+                        dstOffset
+                    );
+                    // Remaining positions already 0 (Float32Array default = zero-pad)
+                }
             }
+
+            // 3. Run encoder ONCE for the entire batch
+            const audioTensor = new ort.Tensor('float32', batchedFeatures, [N, 128, maxFrames]);
+            const lengthTensor = new ort.Tensor('int64', BigInt64Array.from(validFramesList), [N]);
+
+            const encoderInputs: Record<string, ort.Tensor> = {};
+            encoderInputs[encoderSession!.inputNames[0]] = audioTensor;
+            encoderInputs[encoderSession!.inputNames[1]] = lengthTensor;
+
+            const batchLabel = `batch ${Math.floor(batchStart / BATCH_SIZE) + 1}/${Math.ceil(audioSegments.length / BATCH_SIZE)}`;
+            console.log(`[Parakeet] Encoding ${batchLabel}: ${N} segments (${batch.map(s => (s.length / 16000).toFixed(1) + 's').join(', ')})`);
+
+            const encStart = Date.now();
+            const encoderResult = await encoderSession!.run(encoderInputs);
+            const encTime = Date.now() - encStart;
+            totalEnc += encTime;
+            console.log(`[Parakeet] Encoder ${batchLabel}: ${encTime}ms`);
+
+            const encoderOut = encoderResult[encoderSession!.outputNames[0]] as ort.Tensor;
+            const encoderOutLens = encoderResult[encoderSession!.outputNames[1]] as ort.Tensor;
+
+            // Encoder output shape: [N, D, T_max_out]
+            const D = encoderOut.dims[1] as number; // 1024
+            const T_out = encoderOut.dims[2] as number;
+            const encoderData = encoderOut.data as Float32Array;
+
+            // 4. Decode each batch element independently (decoder runs on CPU — negligible overhead)
+            const decStart = Date.now();
+            for (let i = 0; i < N; i++) {
+                const segLen = Number(encoderOutLens.data[i]);
+                const segIdx = batchStart + i;
+
+                // Extract this segment's encoder output: [1, D, T_out] slice from batch
+                // Batch layout [N, D, T]: element i starts at offset i * D * T_out
+                const segData = new Float32Array(D * T_out);
+                const batchOffset = i * D * T_out;
+                segData.set(encoderData.subarray(batchOffset, batchOffset + D * T_out));
+
+                const segEncoderOut = new ort.Tensor('float32', segData, [1, D, T_out]);
+                const { text } = await transducerGreedyDecode(segEncoderOut, segLen);
+
+                if (text.trim()) {
+                    texts.push(text.trim());
+                }
+            }
+            totalDec += Date.now() - decStart;
         }
 
         const fullText = texts.join(' ');
