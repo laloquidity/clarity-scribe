@@ -103,6 +103,22 @@ npm install
 npm run dev
 ```
 
+### macOS — CoreML ANE engine (Apple Silicon)
+
+The fast Apple Neural Engine engine uses a small native Swift sidecar. Build it
+once (requires Xcode 16+ / Swift 6); the CoreML models (~470 MB) download
+automatically on first use:
+
+```bash
+npm run build:sidecar:mac     # builds native/parakeet-sidecar/.build/release/parakeet-sidecar
+npm run dev
+```
+
+If the sidecar binary or models are missing, the app transparently falls back to
+the ONNX-CPU engine, then Whisper — so it still works without this step, just not
+on the ANE. `npm run build:mac` builds and bundles the sidecar into the app
+automatically.
+
 ### Windows GPU Setup (BYOL Rebuild)
 
 To enable GPU acceleration on Windows, the `smart-whisper` native addon must be rebuilt with [BYOL](https://github.com/nicholasgasior/smart-whisper#byol) linking against a CUDA-compiled `whisper.dll`:
