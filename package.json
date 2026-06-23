@@ -4,11 +4,12 @@
     "description": "Lightweight standalone dictation app powered by Whisper AI",
     "main": "dist-electron/main.js",
     "scripts": {
+        "predev": "node scripts/prepare-sidecar.js",
         "dev": "concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
         "dev:vite": "vite",
         "dev:electron": "tsc -p tsconfig.electron.json && wait-on http://localhost:5198 && electron .",
         "build": "tsc -p tsconfig.electron.json && vite build",
-        "build:sidecar:mac": "cd native/parakeet-sidecar && swift build -c release",
+        "build:sidecar:mac": "node scripts/prepare-sidecar.js",
         "build:mac": "npm run build:sidecar:mac && npm run build && electron-builder -c electron-builder.yml --mac",
         "build:win": "npm run build && electron-builder -c electron-builder.yml --win",
         "test": "vitest run",

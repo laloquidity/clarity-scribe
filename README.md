@@ -103,21 +103,9 @@ npm install
 npm run dev
 ```
 
-### macOS — CoreML ANE engine (Apple Silicon)
+That's the whole flow on **both macOS and Windows** — no extra steps. On **macOS (Apple Silicon)**, `npm run dev` automatically builds the native CoreML sidecar the first time (subsequent launches are instant), and the app uses the **Apple Neural Engine** engine, downloading the CoreML models (~470 MB) on the first transcription. On **Windows**, the Parakeet encoder runs on the **DirectML GPU** out of the box. If anything is missing, the app degrades gracefully (CoreML → ONNX → Whisper) and still runs — see [Transcription Engines](#transcription-engines).
 
-The fast Apple Neural Engine engine uses a small native Swift sidecar. Build it
-once (requires Xcode 16+ / Swift 6); the CoreML models (~470 MB) download
-automatically on first use:
-
-```bash
-npm run build:sidecar:mac     # builds native/parakeet-sidecar/.build/release/parakeet-sidecar
-npm run dev
-```
-
-If the sidecar binary or models are missing, the app transparently falls back to
-the ONNX-CPU engine, then Whisper — so it still works without this step, just not
-on the ANE. `npm run build:mac` builds and bundles the sidecar into the app
-automatically.
+> **macOS prerequisite for the ANE engine:** Xcode 16+ / Swift 6 (for the one-time sidecar build). Without it, `npm run dev` still launches and falls back to the ONNX engine automatically.
 
 ### Windows GPU Setup (BYOL Rebuild)
 
@@ -145,15 +133,19 @@ To enable GPU acceleration on Windows, the `smart-whisper` native addon must be 
 
 ### Build Installers
 
+Production installers that bundle everything and work after install (AI models download on first run):
+
 ```bash
-# macOS DMG
+# macOS .dmg (Apple Silicon) — also builds + bundles the CoreML ANE sidecar
 npm run build:mac
 
-# Windows NSIS installer (must be run on Windows)
+# Windows .exe installer (run on Windows)
 npm run build:win
 ```
 
 Build output goes to the `release/` directory.
+
+> The macOS build is **unsigned** (no Apple Developer account needed). A `.dmg` you build yourself opens normally on your own machine. If you hand the `.dmg` to someone else, they'll need to right-click → **Open** the first time — or run `xattr -dr com.apple.quarantine "/Applications/Clarity Scribe.app"` — because it isn't notarized.
 
 ## Architecture
 
