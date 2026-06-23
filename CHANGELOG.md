@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — Parakeet Speed Overhaul: CoreML/ANE Engine, Decoder Caching & ITN
+
+### 🚀 Performance
+
+- **CoreML Apple Neural Engine engine (macOS / Apple Silicon)** — New native Swift sidecar (`native/parakeet-sidecar/`) runs Parakeet TDT 0.6B v3 on the Apple Neural Engine via CoreML, becoming the **default** Parakeet engine on Apple Silicon. On an M-series Mac the encoder runs in **~30 ms** (vs ~1.4 s / 23 s on the ONNX-CPU path); end-to-end **~118× real-time vs ~45× for the tuned CPU path** on the 7.3 s test clip. It chunks long audio internally (15 s windows, 2 s overlap), stays warm across the session, and falls back automatically to ONNX-CPU → Whisper if unavailable. CoreML models (~470 MB) download on demand. Decode algorithm + ANE memory layout ported from [FluidInference/FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0). Toggle via `coreMLEnabled` setting (default on). Windows/Linux are unaffected (already GPU-accelerated via DirectML/CUDA).
+
+- **Decoder-output caching (all platforms)** — The TDT greedy decoder previously re-ran the prediction LSTM on every encoder frame, including blank (silence) frames where its inputs are unchanged. It now computes the decoder output once and reuses it until a non-blank token is emitted — matching the sherpa-onnx / FluidAudio reference. Decoder invocations now scale with emitted tokens instead of frames (e.g. 44 vs 57 on the test clip; larger savings on speech with more silence). Output is **bit-identical**, verified by a golden regression test.
+
+- **Mel frontend + decode-loop efficiency (all platforms)** — The mel filterbank and Hann window are now memoized at module scope (were rebuilt on every transcription), and the per-frame FFT/encoder-slice/decoder-target buffers are reused instead of reallocated thousands of times per clip. Byte-identical output.
+
+- **ONNX session tuning (all platforms)** — Encoder uses explicit CPU memory-arena/pattern reuse; the small decoder/joiner models run single-threaded with full graph optimization to avoid per-frame thread-pool overhead. Long audio with multiple speech segments processes with bounded, order-preserving concurrency on Windows/Linux. Verified output-identical.
+
+- **Engine warmup** — A one-time warmup pass on init removes the cold-start stall on the first dictation.
+
+### ✨ New Features
+
+- **Inverse Text Normalization (ITN)** — Optional, fully-offline "smart formatting" that converts spoken forms to written forms: numbers (`twenty three` → `23`), currency (`five dollars and fifty cents` → `$5.50`), times (`two thirty pm` → `2:30 PM`), dates (`january fifth` → `January 5`), ordinals, and explicit punctuation commands (`comma`, `period`, `new line`, …). Conservative and idempotent — already-written text passes through untouched. Strictly opt-in via the **Smart formatting** toggle (default off); when off, output is unchanged.
+
+### 🧪 Quality
+
+- **Regression test harness (vitest)** — New `npm test` suite locks transcription output (golden text + mel hash) so speed refactors are provably non-breaking, plus a live integration test driving the real CoreML sidecar and 51 ITN cases. Run benchmarks with `BENCH=1`.
+
+---
+
 ## v2.6.0 — Personal Dictionary, No-Audio Auto-Stop & Whisper Hallucination Guard (2026-04-22)
 
 ### 🚀 New Features

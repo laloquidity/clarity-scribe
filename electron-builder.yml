@@ -34,6 +34,14 @@ mac:
     # audio/camera devices during mic access. Declares we are aware of and
     # opt into Continuity Camera device type enumeration.
     NSCameraUseContinuityCameraDeviceType: true
+  # Bundle the native CoreML ANE Parakeet sidecar (Apple Silicon). Built by
+  # `npm run build:sidecar:mac` before packaging; lands at Contents/Resources/
+  # parakeet-sidecar, where parakeetSidecar.ts looks for it in production.
+  # electron-builder signs nested Mach-O executables with the app's hardened
+  # runtime + entitlements, which is required for notarization.
+  extraResources:
+    - from: "native/parakeet-sidecar/.build/release/parakeet-sidecar"
+      to: "parakeet-sidecar"
   files:
     - "!node_modules/koffi/build/koffi/win32_*"
 win:

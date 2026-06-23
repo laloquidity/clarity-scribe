@@ -10,6 +10,9 @@ export interface Settings {
     silenceDuration: number;
     transcriptionEngine: 'auto' | 'whisper' | 'parakeet';
     personalDictionary: DictionaryEntry[];
+    // Opt-in Inverse Text Normalization (spoken-form → written-form, e.g.
+    // "two thirty pm" → "2:30 PM"). Default OFF; applied after cleanTranscription.
+    itnEnabled: boolean;
 }
 
 export interface HistoryEntry {

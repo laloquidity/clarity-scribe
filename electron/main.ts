@@ -466,6 +466,8 @@ function setupIpcHandlers(): void {
         return true;
     });
     ipcMain.handle('init-parakeet', async () => {
+        const s = store.get('settings') as any || {};
+        nativeWhisper.setCoreMLEnabled(s.coreMLEnabled !== false); // default on (Apple Silicon)
         return nativeWhisper.initParakeetEngine((percent, status) => {
             mainWindow?.webContents.send('whisper-progress', percent, status);
         });
@@ -686,6 +688,8 @@ app.whenReady().then(async () => {
 
         // Step 3: Parakeet (for English — the default language)
         if (!needsWhisperNow) {
+            const pkSettings = store.get('settings') as any || {};
+            nativeWhisper.setCoreMLEnabled(pkSettings.coreMLEnabled !== false); // default on (Apple Silicon)
             nativeWhisper.setTranscriptionEngine('parakeet' as any);
             sendStep('parakeet', 'Parakeet Engine', 0, 'Downloading...');
             try {

@@ -26,7 +26,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 - **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
 - **Transcription Progress** — Real-time progress percentage shown during long recordings
 - **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows)
-- **GPU-Accelerated Transcription** — Hybrid hardware routing: DirectML GPU encoder + CPU decoder for Parakeet on Windows, CPU-optimized on Apple Silicon, with automatic fallback
+- **Hardware-Accelerated Transcription** — Hybrid hardware routing: Parakeet runs on the **Apple Neural Engine** (CoreML) on Apple Silicon — ~118× real-time, encoder in ~30 ms — and on the **DirectML GPU** (encoder) on Windows, each with automatic fallback to an optimized CPU path
 - **Native Paste-to-Target** — Transcriptions instantly pasted into your active app via native Win32 FFI (11ms on Windows) or consolidated AppleScript (~50ms on Mac)
 - **Transcription History** — Timestamped log of all dictations with click-to-copy, individual delete, and clear all
 - **Always-on-Top Widget** — Minimal floating bar with mic button, waveform visualization, and expandable history panel
@@ -75,7 +75,7 @@ Long recordings are processed through a hardened pipeline:
 2. **TDT Decoding** — Token-and-Duration Transducer greedy decode
 3. **Result Assembly** — Clean, continuous transcription output
 
-> **Windows/Linux**: Always single-pass — the encoder handles any audio length with no segmentation overhead (53x real-time at 78s). **macOS**: Single-pass ≤60s; longer audio uses Silero VAD segmentation (CoreML encoder limit).
+> **macOS (Apple Silicon)**: The default engine is a native **CoreML sidecar running the encoder on the Apple Neural Engine** (~118× real-time), which chunks long audio internally (15 s windows, 2 s overlap). It falls back to the ONNX-CPU path (single-pass ≤60 s, then Silero VAD segmentation) → Whisper. **Windows/Linux**: Single-pass ONNX with a DirectML/CUDA GPU encoder — handles any audio length with no segmentation overhead.
 
 **Whisper:**
 1. **Silero VAD** — Same speech boundary detection
@@ -148,10 +148,14 @@ clarity-scribe/
 │   ├── hotkeyService.ts   # Unified hotkey handler (toggle + hold-to-talk)
 │   ├── nativeWhisper.ts   # Engine router, Whisper, GPU detection, chunking
 │   ├── vadService.ts      # Silero VAD speech detection (ONNX Runtime)
-│   ├── parakeetService.ts # Parakeet TDT 0.6B-v3 engine (ONNX Runtime)
+│   ├── parakeetService.ts # Parakeet engine router (CoreML sidecar / ONNX) + long-audio segmentation
+│   ├── parakeetCore.ts    # Pure DSP + TDT greedy decode (mel/FFT, decoder caching) — unit-tested
+│   ├── parakeetSidecar.ts # CoreML ANE sidecar manager (spawn/protocol/model download, macOS)
 │   ├── winPaste.ts        # Native Win32 paste via koffi FFI (Windows)
 │   ├── tdtDecoder.ts      # Token-and-Duration Transducer beam search
 │   └── preload.ts         # Context bridge (IPC API)
+├── native/
+│   └── parakeet-sidecar/  # Swift CoreML/ANE Parakeet sidecar (built for macOS bundles)
 ├── src/                   # Renderer (React)
 │   ├── App.tsx            # Main shell with setup/widget/history/settings/dictionary
 │   ├── components/
