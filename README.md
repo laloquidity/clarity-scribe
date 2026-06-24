@@ -1,8 +1,8 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using — up to **53x faster than real-time**. Transcribe 8 minutes of audio in 11 seconds.
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using — up to **~118x faster than real-time** on Apple Silicon (Apple Neural Engine) and ~19–53x on Windows (GPU). Transcribe 8 minutes of audio in about 4 seconds on a Mac.
 
-Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated speech-to-text.
+Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ONNX Runtime (DirectML GPU) on Windows, for fully offline, hardware-accelerated speech-to-text.
 
 ## ⬇️ Download
 
@@ -15,7 +15,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 
 ## Features
 
-- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to 53x real-time), Whisper for all others. Manual override available in settings.
+- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to ~118x real-time on Apple Silicon), Whisper for all others. Manual override available in settings.
 - **Personal Dictionary** — Add custom word corrections that automatically apply to every transcription. Maps what was written to what you meant (e.g. `Chat GPT` to `ChatGPT`). Book icon in the widget bar opens a full CRUD panel with Add, Edit, batch Delete, Export JSON, and Import JSON. Each entry auto-generates ~12 case/hyphen/space variants for robust matching.
 - **Hold-to-Talk Mode** — Hold a key to record, release to transcribe — or use the classic tap-to-toggle. Switch modes instantly in Settings with an Apple-style segmented control. Single function keys (F5-F12) for hold mode, modifier combos for toggle mode.
 - **Filler Word Removal** — Automatically strips filled pauses (um, uh, ah, er) from transcriptions while preserving natural speech patterns
@@ -53,8 +53,8 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | 19–53x real-time (Windows), 37–44x real-time (Mac) |
-| Model Size | ~890 MB (INT8 quantized ONNX) |
+| Speed | ~118x real-time (Mac, Apple Neural Engine), 19–53x (Windows GPU) |
+| Model Size | ~470 MB (CoreML, macOS) / ~890 MB (INT8 ONNX, Windows & fallback) |
 
 ### Whisper Large V3 Turbo
 
@@ -71,11 +71,11 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 Long recordings are processed through a hardened pipeline:
 
 **Parakeet TDT:**
-1. **Single-Pass Encoding** — Full audio encoded at once via FastConformer (Windows/Linux)
-2. **TDT Decoding** — Token-and-Duration Transducer greedy decode
+1. **Encoding** — FastConformer encoder. macOS runs it on the Apple Neural Engine (CoreML); Windows runs it on the DirectML GPU; both fall back to CPU.
+2. **TDT Decoding** — Token-and-Duration Transducer greedy decode, with the prediction network cached across silence frames and DirectML collapse recovery.
 3. **Result Assembly** — Clean, continuous transcription output
 
-> **Windows/Linux**: Always single-pass — the encoder handles any audio length with no segmentation overhead (53x real-time at 78s). **macOS**: Single-pass ≤60s; longer audio uses Silero VAD segmentation (CoreML encoder limit).
+> **macOS (Apple Silicon)**: the CoreML Neural Engine sidecar is the default and chunks long audio internally (15s windows, 2s overlap). It falls back to ONNX-CPU (single-pass ≤60s, then Silero VAD segmentation), then Whisper. **Windows/Linux**: single-pass on the GPU first, with batched VAD-segment encoding as an automatic fallback for very long or truncated audio.
 
 **Whisper:**
 1. **Silero VAD** — Same speech boundary detection
@@ -194,7 +194,7 @@ The app uses a **hybrid hardware routing** strategy, assigning each stage of the
 
 ### Parakeet TDT (ONNX Runtime)
 
-The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU. This hybrid approach was benchmarked to be faster than running everything on any single provider:
+This is the engine used on Windows, and the fallback on macOS. The Parakeet encoder runs on the GPU (DirectML on Windows) while the decoder/joiner run on CPU. On macOS the default is instead the CoreML sidecar with the encoder on the Apple Neural Engine (see Performance above). The hybrid ONNX routing was benchmarked faster than running everything on any single provider:
 
 **Windows (RTX 3090):**
 
@@ -205,18 +205,18 @@ The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU.
 | CPU (all) | — | 1,268ms (17.2x) | 4,731ms (13.5x) | — |
 | CUDA custom build (all GPU) | — | 1,971ms (12.3x) | 5,126ms (13.1x) | — |
 
-*Paste latency: 2–3ms (native Win32 FFI via koffi). Always single-pass on Windows — no VAD segmentation overhead.*
+*Paste latency: 2–3ms (native Win32 FFI via koffi). Windows tries single-pass first, with batched VAD-segment encoding as an automatic fallback for very long or truncated audio.*
 
 **macOS (Apple Silicon M-series):**
 
-| Audio | Total | RTF | Method | Paste |
-|-------|-------|-----|--------|-------|
-| 4.2s | **111ms** | **37.4x** | Single-pass | ~50ms |
-| 15.9s | **404ms** | **39.2x** | Single-pass | ~50ms |
-| 74.0s | **1,922ms** | **38.5x** | 15 VAD segments | ~50ms |
-| 486.4s | **11,073ms** | **43.9x** | 85 VAD segments | ~50ms |
+The default engine is the CoreML sidecar with the encoder on the Apple Neural Engine. Measured on a 7.3s clip (warm):
 
-*CPU encoder. Short audio (≤60s) uses single-pass. Long audio uses Silero VAD segmentation.*
+| Engine | Total | RTF | Encoder |
+|--------|-------|-----|---------|
+| **CoreML ANE (default)** | **62ms** | **~118x** | **~30ms (ANE)** |
+| ONNX-CPU (fallback) | 162ms | ~45x | ~114ms (CPU) |
+
+*The ANE sidecar chunks long audio internally (15s windows, 2s overlap). The ONNX-CPU fallback uses single-pass ≤60s, then Silero VAD segmentation.*
 
 **Why hybrid wins on Windows:** The encoder benefits from GPU parallelism (processes entire audio at once), but the decoder runs hundreds of sequential inference calls per transcription — GPU kernel launch overhead dominates for these tiny operations, making CPU 3–6x faster for the decoder.
 
@@ -224,7 +224,7 @@ The Parakeet encoder runs on GPU (DirectML) while the decoder/joiner run on CPU.
 |----------|---------|----------------|
 | Windows (NVIDIA/AMD/Intel GPU) | DirectML | CPU |
 | Windows (no GPU) | CPU | CPU |
-| macOS (Apple Silicon) | CPU | CPU |
+| macOS (Apple Silicon) | Apple Neural Engine (CoreML) → CPU | CPU |
 | Linux | CUDA / CPU | CPU |
 
 ### Whisper Large V3 Turbo (whisper.cpp)
