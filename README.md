@@ -103,33 +103,55 @@ npm install
 npm run dev
 ```
 
-That's the whole flow on **both macOS and Windows** — no extra steps. On **macOS (Apple Silicon)**, `npm run dev` automatically builds the native CoreML sidecar the first time (subsequent launches are instant), and the app uses the **Apple Neural Engine** engine, downloading the CoreML models (~470 MB) on the first transcription. On **Windows**, the Parakeet encoder runs on the **DirectML GPU** out of the box. If anything is missing the app degrades gracefully (CoreML → ONNX → Whisper) and still runs.
+That's the whole flow on **both macOS and Windows** — no extra steps, **no compiler or CUDA toolkit required**, and **both engines work out of the box**. On **Windows**, `npm install` drops in a committed prebuilt `smart-whisper` binary (no Visual Studio needed) and auto-downloads the Whisper GPU backend DLLs (~17 MB Vulkan bundle, works on any GPU); the Parakeet encoder runs on the **DirectML GPU**. On **macOS (Apple Silicon)**, `npm run dev` automatically builds the native CoreML sidecar the first time (subsequent launches are instant), and the app uses the **Apple Neural Engine** engine. The AI models (~470 MB CoreML / ~1.5 GB Whisper / ~890 MB Parakeet) download on first use. If anything is missing the app degrades gracefully (CoreML → ONNX → Whisper) and still runs.
 
 > **macOS prerequisite for the ANE engine:** Xcode 16+ / Swift 6 (for the one-time sidecar build). Without it, `npm run dev` still launches and falls back to the ONNX engine automatically.
 
-### Windows GPU Setup (BYOL Rebuild)
+### Windows GPU DLLs (for the Whisper engine)
 
-To enable GPU acceleration on Windows, the `smart-whisper` native addon must be rebuilt with [BYOL](https://github.com/nicholasgasior/smart-whisper#byol) linking against a CUDA-compiled `whisper.dll`:
+The Whisper engine needs the whisper.cpp GPU backend DLLs. These are gitignored (the CUDA set is ~570 MB — too large for git), so `npm install` **downloads them automatically** from the [`win-gpu-dlls`](https://github.com/laloquidity/clarity-scribe/releases/tag/win-gpu-dlls) release into `resources/win-gpu/`. By default it pulls the **Vulkan** bundle (~17 MB, works on NVIDIA/AMD/Intel, no toolkit). Nothing to do — it just works.
 
-1. **Build whisper.cpp with CUDA** (requires [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) and Visual Studio Build Tools):
-   ```powershell
-   git clone https://github.com/ggerganov/whisper.cpp C:\whisper-build
-   cd C:\whisper-build
-   cmake -B build-cuda -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=ON
-   cmake --build build-cuda --config Release
-   ```
+**Optional — NVIDIA CUDA backend** (marginally faster on NVIDIA; requires the [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) installed for `nvrtc`/`nvJitLink`):
 
-2. **Copy GPU DLLs** to `resources/win-gpu/cuda/`:
-   ```
-   whisper.dll, ggml.dll, ggml-base.dll, ggml-cpu.dll, ggml-cuda.dll
-   ```
-   Also copy CUDA runtime DLLs from the CUDA Toolkit (`cublas64_*.dll`, `cublasLt64_*.dll`, `cudart64_*.dll`).
+```powershell
+node scripts/download-win-gpu.js cuda
+```
 
-3. **Rebuild smart-whisper**:
-   ```powershell
-   $env:BYOL = "C:/whisper-build/build-cuda/src/Release/whisper.lib"
-   npx node-gyp rebuild --directory=node_modules/smart-whisper --nodedir=$env:USERPROFILE/.electron-gyp/39.8.3 --arch=x64
-   ```
+<details>
+<summary>Building the GPU DLLs from source instead (maintainers)</summary>
+
+```powershell
+# Build whisper.cpp with CUDA (requires CUDA Toolkit + Visual Studio Build Tools)
+git clone https://github.com/ggerganov/whisper.cpp C:\whisper-build
+cd C:\whisper-build
+cmake -B build-cuda -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=ON
+cmake --build build-cuda --config Release
+```
+
+Copy `whisper.dll, ggml.dll, ggml-base.dll, ggml-cpu.dll, ggml-cuda.dll` plus the CUDA runtime DLLs (`cublas64_*.dll, cublasLt64_*.dll, cudart64_*.dll`) into `resources/win-gpu/cuda/`. Re-host the bundles with `scripts/upload-win-gpu-dlls.sh`.
+
+</details>
+
+### Regenerating the prebuilt `smart-whisper` binary (maintainers)
+
+End users never need this — they get the committed `prebuilt/win32-x64/smart-whisper.node` automatically via `postinstall`. Regenerate it only after bumping Electron or refreshing the CUDA `whisper.dll`. After step 1 above produces `whisper.lib`:
+
+```powershell
+$env:BYOL = "C:/whisper-build/build-cuda/src/Release/whisper.lib"
+npm run build:prebuilt:win   # patches headers, BYOL-rebuilds, updates prebuilt/win32-x64/ — then commit it
+```
+
+<details>
+<summary>Manual equivalent (if you'd rather run the steps yourself)</summary>
+
+```powershell
+$env:BYOL = "C:/whisper-build/build-cuda/src/Release/whisper.lib"
+node scripts/patch-smart-whisper.js
+# use your installed Electron version for the headers dir:
+npx node-gyp rebuild --directory=node_modules/smart-whisper --nodedir=$env:USERPROFILE/.electron-gyp/<electron-version> --arch=x64
+```
+
+</details>
 
 ### Build Installers
 
