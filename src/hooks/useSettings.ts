@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS: Settings = {
     silenceDuration: 0,
     transcriptionEngine: 'auto',
     personalDictionary: [],
+    itnEnabled: false,
 };
 
 export function useSettings() {

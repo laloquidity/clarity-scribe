@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.9.0 — CoreML ANE Engine, Decoder Caching & Smart Formatting
+
+### ⚡ Performance
+
+- **CoreML Apple Neural Engine engine (macOS / Apple Silicon)** — A native Swift sidecar (`native/parakeet-sidecar/`) runs Parakeet TDT 0.6B v3 on the Apple Neural Engine via CoreML, becoming the **default** Parakeet engine on Apple Silicon. The encoder runs in **~30 ms** (vs ~114 ms on the ONNX-CPU path for the same 7.3 s clip); end-to-end **~118× real-time vs ~45× for the CPU path**. It chunks long audio internally (15 s windows, 2 s overlap), stays warm across the session, and falls back automatically to ONNX-CPU → Whisper. CoreML models (~470 MB) download on demand from the `parakeet-coreml-models` release. Decode algorithm + ANE memory layout ported from [FluidInference/FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0). Toggle via `coreMLEnabled` (default on). `npm run dev` builds the sidecar automatically on macOS.
+
+- **Decoder-output caching (all platforms)** — The TDT decoder no longer re-runs the prediction LSTM on blank (silence) frames where its inputs are unchanged. It computes the decoder output once and refreshes it only after a non-blank emission, matching the sherpa-onnx / FluidAudio reference. Decoder invocations now scale with emitted tokens rather than frames (e.g. 44 vs 57 on the test clip; larger savings on speech with more silence). Output is bit-identical, verified by a golden regression test. Coexists with the v2.8 DirectML decoder-collapse recovery.
+
+- **Mel frontend + decode-loop efficiency (all platforms)** — The mel filterbank and Hann window are memoized at module scope (were rebuilt per call), and per-frame FFT/encoder-slice/decoder-target buffers are reused instead of reallocated thousands of times per clip. Byte-identical output. The decoder/joiner sessions run single-threaded with full graph optimization; the v2.7 Windows DirectML encoder settings (`basic` graph opt, mem-pattern off, sequential) are preserved.
+
+- **Engine warmup** — A one-time warmup pass on init removes the cold-start stall on the first dictation.
+
+### ✨ New Features
+
+- **Inverse Text Normalization (ITN / "Smart formatting")** — Optional, fully-offline conversion of spoken forms to written forms: numbers (`twenty three` → `23`), currency (`five dollars and fifty cents` → `$5.50`), times (`two thirty pm` → `2:30 PM`), dates, ordinals, and explicit punctuation commands (`comma`, `period`, `new line`, …). Conservative and idempotent. Strictly opt-in via the **Smart formatting** toggle (default off); when off, output is unchanged.
+
+### 🧱 Internal
+
+- The Parakeet DSP + TDT decode were extracted into `electron/parakeetCore.ts` (no Electron dependency) so `parakeetService.ts` delegates to one canonical, unit-tested implementation. The v2.8 try-fast-fallback + batched encoder inference path is unchanged on the ONNX engine.
+- **Regression test harness (vitest)** — `npm test` locks transcription output (golden text + mel hash), drives the real CoreML sidecar in an integration test, and covers 51 ITN cases. `BENCH=1` runs the ONNX-vs-ANE benchmark.
+
+---
+
 ## v2.8.0 — Parakeet Long-Recording Optimization (2026-05-20)
 
 ### ⚡ Performance

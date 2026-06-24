@@ -15,6 +15,7 @@ import SetupScreen from './components/SetupScreen';
 import { useSettings } from './hooks/useSettings';
 import { useAudioRecording } from './hooks/useAudioRecording';
 import { cleanTranscription } from './utils/cleanTranscription';
+import { applyITN } from './utils/itn';
 import type { AppState, HistoryEntry, DictionaryEntry } from './types';
 
 const COLLAPSED_HEIGHT = 64;
@@ -40,6 +41,12 @@ const App: React.FC = () => {
     useEffect(() => { dictionaryRef.current = personalDictionary; }, [personalDictionary]);
 
     const { settings, updateSetting, isLoaded } = useSettings();
+
+    // Keep a ref to the ITN toggle for use in the transcription callback
+    // (the result handler is registered once, so reading settings directly would
+    // capture a stale value). Default OFF — feature is strictly opt-in.
+    const itnEnabledRef = useRef<boolean>(false);
+    useEffect(() => { itnEnabledRef.current = settings.itnEnabled; }, [settings.itnEnabled]);
 
     // Audio recording — disable silence detection in hold-to-talk mode
     const { startRecording, stopRecording, isRecordingRef } = useAudioRecording({
@@ -173,6 +180,12 @@ const App: React.FC = () => {
 
             // Post-processing: remove filler words, stutters, apply dictionary, and clean up
             let text = cleanTranscription(rawText, dictionaryRef.current);
+
+            // Optional Inverse Text Normalization (spoken-form → written-form).
+            // Strictly opt-in: when disabled, output is byte-identical to before.
+            if (itnEnabledRef.current) {
+                text = applyITN(text);
+            }
 
             if (!text || text.trim().length === 0) {
                 setAppState('IDLE');

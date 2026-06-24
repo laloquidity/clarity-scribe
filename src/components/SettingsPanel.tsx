@@ -456,6 +456,22 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                     </div>
                 )}
 
+                {/* Smart formatting (Inverse Text Normalization) — opt-in, default OFF */}
+                <div className="settings-group">
+                    <span className="settings-label" style={{ marginBottom: 2 }}>Smart formatting</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 6 }}>
+                        Convert spoken form to written form (e.g. "two thirty pm" → "2:30 PM", "five dollars" → "$5").
+                    </span>
+                    <label className="settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={settings.itnEnabled}
+                            onChange={e => onUpdateSetting('itnEnabled', e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
+
                 {/* Launch on Login */}
                 <LaunchOnLogin />
             </div>

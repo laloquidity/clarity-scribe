@@ -29,6 +29,8 @@ import { join } from 'path';
 import { app } from 'electron';
 import https from 'https';
 import { detectSpeechSegments, isVADReady } from './vadService';
+import * as core from './parakeetCore';
+import * as sidecar from './parakeetSidecar';
 
 // Self-hosted on GitHub releases (reliable CDN, full control)
 // Original source: csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 (INT8 quantized)
@@ -42,14 +44,37 @@ const MODEL_FILES = [
 
 const TOTAL_SIZE = MODEL_FILES.reduce((s, f) => s + f.size, 0);
 
-// NeMo convention: blank token is the LAST token in vocabulary
-const BLANK_ID = 8192;
+// NeMo convention: blank token is the LAST token in vocabulary (from core)
+const BLANK_ID = core.BLANK_ID;
 
 let encoderSession: ort.InferenceSession | null = null;
 let decoderSession: ort.InferenceSession | null = null;
 let joinerSession: ort.InferenceSession | null = null;
 let vocabulary: string[] = [];
 let isInitialized = false;
+
+// CoreML ANE sidecar (macOS/Apple Silicon) — the default Parakeet engine when
+// available. useSidecar flips on once initialized; sidecarEnabled is the
+// user-facing toggle (default on).
+let useSidecar = false;
+let sidecarEnabled = true;
+
+/** Enable/disable the CoreML ANE sidecar engine (macOS). Call before initParakeet. */
+export function setCoreMLEnabled(enabled: boolean): void {
+    sidecarEnabled = enabled;
+}
+
+/** Decode context passed to the shared core TDT decoder. */
+function decodeCtx(): core.DecodeContext {
+    return {
+        decoderSession: decoderSession!,
+        joinerSession: joinerSession!,
+        vocabulary,
+        blankId: BLANK_ID,
+        predRnnLayers,
+        predHidden,
+    };
+}
 
 // Decoder state dimensions (read from encoder metadata at init)
 let predRnnLayers = 1;
@@ -59,31 +84,6 @@ function getModelDir(): string {
     const dir = join(app.getPath('home'), '.smart-whisper', 'models', 'parakeet-tdt-0.6b-v3');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     return dir;
-}
-
-/**
- * Load vocabulary from tokens.txt
- * Format: <token> <id> (one per line)
- */
-function loadTokens(path: string): string[] {
-    const content = readFileSync(path, 'utf-8');
-    const lines = content.trim().split('\n');
-    const tokens: string[] = [];
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const lastSpace = trimmed.lastIndexOf(' ');
-        if (lastSpace > 0) {
-            const token = trimmed.substring(0, lastSpace);
-            const id = parseInt(trimmed.substring(lastSpace + 1), 10);
-            if (!isNaN(id)) {
-                tokens[id] = token;
-                continue;
-            }
-        }
-        tokens.push(trimmed);
-    }
-    return tokens;
 }
 
 /**
@@ -248,6 +248,35 @@ export async function initParakeet(
 ): Promise<boolean> {
     if (isInitialized) return true;
 
+    // Apple Silicon: try the CoreML ANE sidecar first (default, fastest engine).
+    if (sidecarEnabled && sidecar.isSupportedPlatform()) {
+        try {
+            const ok = await sidecar.init(onProgress);
+            if (ok) {
+                useSidecar = true;
+                isInitialized = true;
+                console.log('[Parakeet] ✓ Using CoreML ANE sidecar (default engine on Apple Silicon)');
+                return true;
+            }
+            console.warn('[Parakeet] CoreML sidecar unavailable — falling back to ONNX');
+        } catch (e) {
+            console.warn('[Parakeet] CoreML sidecar init failed — falling back to ONNX:', e);
+        }
+    }
+
+    return initParakeetOnnx(onProgress);
+}
+
+/**
+ * Initialize the ONNX engine (encoder/decoder/joiner). Cross-platform path
+ * (GPU on Windows/Linux, CPU on macOS) and the macOS fallback when the CoreML
+ * sidecar is unavailable.
+ */
+async function initParakeetOnnx(
+    onProgress?: (percent: number, status: string) => void
+): Promise<boolean> {
+    if (encoderSession && decoderSession && joinerSession) return true;
+
     // Ensure CUDA/cuDNN DLLs are discoverable before loading ORT sessions
     setupGpuDllPath();
 
@@ -266,29 +295,14 @@ export async function initParakeet(
         const gpuProvider = providers[0]; // dml on Windows, cuda on Linux, coreml on macOS
         console.log(`[Parakeet] Loading with providers: ${providers.join(' → ')} (GPU tier: ${gpuProvider.toUpperCase()})`);
 
-        // Load encoder (largest model — use GPU acceleration)
-        onProgress?.(85, 'Loading encoder (GPU)...');
+        // Load encoder (largest model — GPU on Win/Linux, CPU on macOS).
+        // Session options (incl. the Windows DirectML stability settings) come
+        // from core.encoderSessionOptions so production and tests share them.
+        onProgress?.(85, 'Loading encoder...');
         console.log('[Parakeet] Loading encoder...');
-        // DirectML (Windows) requires specific session options — see:
-        //   sherpa-onnx session.cc:311-312 (DisableMemPattern + ORT_SEQUENTIAL)
-        //   https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html
-        // Without these, stale GPU memory allocation patterns corrupt encoder outputs
-        // across invocations with different audio lengths, causing systematic decoder
-        // collapse (LSTM prediction network enters blank-emitting fixed point).
-        // Also use 'basic' graph optimization for INT8+DirectML to prevent aggressive
-        // QDQ operator fusion from corrupting quantization precision.
-        const isDml = process.platform === 'win32';
         encoderSession = await ort.InferenceSession.create(
             join(modelDir, 'encoder.int8.onnx'),
-            {
-                executionProviders: providers,
-                logSeverityLevel: 3,
-                graphOptimizationLevel: isDml ? 'basic' : 'all',
-                ...(isDml ? {
-                    enableMemPattern: false,
-                    executionMode: 'sequential',
-                } : {}),
-            }
+            core.encoderSessionOptions(providers)
         );
         console.log(`[Parakeet] ✓ Encoder loaded on ${gpuProvider.toUpperCase()} (inputs: ${encoderSession.inputNames}, outputs: ${encoderSession.outputNames})`);
 
@@ -299,10 +313,7 @@ export async function initParakeet(
         onProgress?.(90, 'Loading decoder...');
         decoderSession = await ort.InferenceSession.create(
             join(modelDir, 'decoder.int8.onnx'),
-            {
-                executionProviders: ['cpu'],
-                logSeverityLevel: 3,
-            }
+            core.smallModelSessionOptions()
         );
         console.log(`[Parakeet] ✓ Decoder loaded on CPU (inputs: ${decoderSession.inputNames}, outputs: ${decoderSession.outputNames})`);
 
@@ -310,19 +321,28 @@ export async function initParakeet(
         onProgress?.(93, 'Loading joiner...');
         joinerSession = await ort.InferenceSession.create(
             join(modelDir, 'joiner.int8.onnx'),
-            {
-                executionProviders: ['cpu'],
-                logSeverityLevel: 3,
-            }
+            core.smallModelSessionOptions()
         );
         console.log(`[Parakeet] ✓ Joiner loaded on CPU (inputs: ${joinerSession.inputNames}, outputs: ${joinerSession.outputNames})`);
 
         // Load vocabulary
         onProgress?.(96, 'Loading vocabulary...');
-        vocabulary = loadTokens(join(modelDir, 'tokens.txt'));
+        vocabulary = core.loadTokens(join(modelDir, 'tokens.txt'));
         console.log(`[Parakeet] ✓ Vocabulary loaded: ${vocabulary.length} tokens (blank=${BLANK_ID})`);
 
         isInitialized = true;
+
+        // Warm up the graphs so the FIRST dictation doesn't pay cold-start cost
+        // (kernel init, CPU memory-arena allocation). Non-fatal on failure.
+        try {
+            onProgress?.(98, 'Warming up...');
+            const warmupStart = Date.now();
+            await transcribeSinglePass(new Float32Array(8000)); // 0.5s @ 16kHz
+            console.log(`[Parakeet] ✓ Warmup complete (${Date.now() - warmupStart}ms)`);
+        } catch (e) {
+            console.warn('[Parakeet] Warmup failed (non-fatal):', e);
+        }
+
         onProgress?.(100, 'Parakeet ready');
         console.log('[Parakeet] ✓ Initialized successfully');
         return true;
@@ -333,488 +353,6 @@ export async function initParakeet(
         joinerSession = null;
         isInitialized = false;
         return false;
-    }
-}
-
-/**
- * Create initial decoder LSTM states (all zeros)
- * Shape: [pred_rnn_layers, batch_size, pred_hidden] — two state tensors (h, c)
- */
-function getDecoderInitStates(): ort.Tensor[] {
-    const size = predRnnLayers * 1 * predHidden;
-    const s0 = new ort.Tensor('float32', new Float32Array(size), [predRnnLayers, 1, predHidden]);
-    const s1 = new ort.Tensor('float32', new Float32Array(size), [predRnnLayers, 1, predHidden]);
-    return [s0, s1];
-}
-
-/**
- * Run decoder: targets + target_length + states → output + next_states
- *
- * Verified tensor names (from model inspection):
- *   inputs:  targets, target_length, states.1, onnx::Slice_3
- *   outputs: outputs, prednet_lengths, states, 162
- */
-async function runDecoder(
-    targets: ort.Tensor,
-    targetLength: ort.Tensor,
-    states: ort.Tensor[]
-): Promise<{ output: ort.Tensor; nextStates: ort.Tensor[] }> {
-    const result = await decoderSession!.run({
-        'targets': targets,
-        'target_length': targetLength,
-        'states.1': states[0],
-        'onnx::Slice_3': states[1],
-    });
-
-    // outputs: [0]=decoder_output, [1]=prednet_lengths, [2:]=next_states
-    const outputNames = decoderSession!.outputNames;
-    const decoderOutput = result[outputNames[0]] as ort.Tensor;
-    const nextStates: ort.Tensor[] = [];
-    for (let i = 2; i < outputNames.length; i++) {
-        nextStates.push(result[outputNames[i]] as ort.Tensor);
-    }
-
-    return { output: decoderOutput, nextStates };
-}
-
-/**
- * Run joiner: encoder_out + decoder_out → logits
- *
- * Verified tensor names (from model inspection):
- *   inputs:  encoder_outputs, decoder_outputs
- *   outputs: outputs
- */
-async function runJoiner(
-    encoderOut: ort.Tensor,
-    decoderOut: ort.Tensor
-): Promise<ort.Tensor> {
-    const result = await joinerSession!.run({
-        'encoder_outputs': encoderOut,
-        'decoder_outputs': decoderOut,
-    });
-    return result[joinerSession!.outputNames[0]] as ort.Tensor;
-}
-
-/**
- * Transducer greedy search decoding (TDT variant)
- *
- * Standard RNN-T / TDT algorithm from sherpa-onnx:
- * 1. Initialize decoder with blank token + zero states
- * 2. For each encoder timestep t:
- *    a. Run decoder(prev_token, states) → prediction + new_states
- *    b. Run joiner(encoder[t], prediction) → logits
- *    c. For TDT: logits has vocab_size + num_durations values
- *    d. Pick argmax from vocab portion
- *    e. If not blank → emit token, advance decoder state
- *    f. If blank → pick duration from duration portion, skip frames
- */
-async function transducerGreedyDecode(
-    encoderOut: ort.Tensor,
-    encoderOutLen: number,
-): Promise<{ text: string; lastTokenFrame: number; totalFrames: number }> {
-    if (!decoderSession || !joinerSession) {
-        throw new Error('Decoder/Joiner not initialized');
-    }
-
-    const vocabSize = vocabulary.length; // 8193 (including blank at 8192)
-    // Encoder output is [B, D, T] = [1, 1024, T] (verified by automated test)
-    const D = encoderOut.dims[1] as number; // 1024 (feature dim)
-    const T = encoderOut.dims[2] as number; // time frames
-    const encoderData = encoderOut.data as Float32Array;
-    const tokens: number[] = [];
-
-    // Initialize decoder state
-    let decoderStates = getDecoderInitStates();
-    let prevToken = BLANK_ID;
-
-    // TDT greedy decode — matching sherpa-onnx reference implementation exactly
-    // See: offline-transducer-greedy-search-nemo-decoder.cc DecodeOneTDT()
-    const maxTokensPerFrame = 5; // Matches sherpa-onnx reference: max_tokens_per_frame
-    const COLLAPSE_BLANK_THRESHOLD = 15; // Consecutive blanks before LSTM state reset
-    let tokensThisFrame = 0;
-    let skip = 0; // frames to advance
-
-    // Diagnostic counters for truncation investigation
-    let totalBlanks = 0;
-    let totalIterations = 0;
-    let lastTokenFrame = 0;
-    let maxSkipSeen = 0;
-    let consecutiveBlanks = 0;
-    let maxConsecutiveBlanks = 0;
-    let collapseRecoveries = 0;
-
-    for (let t = 0; t < encoderOutLen; t += skip) {
-        totalIterations++;
-
-        // Extract encoder output at timestep t: shape [1, D, 1]
-        // Data layout [B, D, T]: data[d * T + t] for feature d at timestep t
-        const encSlice = new Float32Array(D);
-        for (let d = 0; d < D; d++) {
-            encSlice[d] = encoderData[d * T + t];
-        }
-        const encTensor = new ort.Tensor('float32', encSlice, [1, D, 1]);
-
-        // Create decoder input: previous token (NeMo expects int32)
-        const targets = new ort.Tensor('int32', Int32Array.from([prevToken]), [1, 1]);
-        const targetLen = new ort.Tensor('int32', Int32Array.from([1]), [1]);
-
-        // Run decoder
-        const { output: decoderOut, nextStates } = await runDecoder(targets, targetLen, decoderStates);
-
-        // Run joiner
-        const logits = await runJoiner(encTensor, decoderOut);
-        const logitsData = logits.data as Float32Array;
-
-        // TDT: joiner output = [vocab_size + num_durations]
-        const numDurations = logitsData.length - vocabSize;
-
-        // Argmax over vocab portion (token logits)
-        let y = 0;
-        let maxVal = logitsData[0];
-        for (let i = 1; i < vocabSize; i++) {
-            if (logitsData[i] > maxVal) {
-                maxVal = logitsData[i];
-                y = i;
-            }
-        }
-
-        // Argmax over duration portion (duration logits)
-        // Note: skip can be 0 (stay on same frame)
-        skip = 0;
-        if (numDurations > 0) {
-            let durMax = logitsData[vocabSize];
-            for (let i = 1; i < numDurations; i++) {
-                if (logitsData[vocabSize + i] > durMax) {
-                    durMax = logitsData[vocabSize + i];
-                    skip = i;
-                }
-            }
-        }
-
-        if (y !== BLANK_ID) {
-            // Non-blank token: emit and update decoder state
-            tokens.push(y);
-            prevToken = y;
-            decoderStates = nextStates;
-            tokensThisFrame += 1;
-            lastTokenFrame = t;
-            consecutiveBlanks = 0;
-        } else {
-            totalBlanks++;
-            consecutiveBlanks++;
-            if (consecutiveBlanks > maxConsecutiveBlanks) {
-                maxConsecutiveBlanks = consecutiveBlanks;
-            }
-        }
-
-        // Decoder collapse detection & recovery
-        // When the LSTM prediction network enters a degenerate state (blank-emitting
-        // fixed point), reset to fresh zero state. The encoder output is already
-        // computed and valid — only the decoder state needs recovery.
-        // Threshold of 15 consecutive blanks ≈ 3.6s of encoder time with no tokens.
-        // Normal speech never exceeds ~10 consecutive blanks (between-sentence pauses).
-        // Root cause: DirectML (Windows) encoder outputs differ from CPU (macOS) in
-        // floating-point precision, pushing marginal joiner logits across the
-        // blank/token decision boundary and triggering a self-reinforcing collapse.
-        if (consecutiveBlanks >= COLLAPSE_BLANK_THRESHOLD) {
-            collapseRecoveries++;
-            console.log(`[Parakeet] ⚠ Decoder collapse detected at frame ${t} (~${(t * 0.08).toFixed(1)}s). Resetting LSTM state (recovery #${collapseRecoveries}).`);
-            decoderStates = getDecoderInitStates();
-            prevToken = BLANK_ID;
-            consecutiveBlanks = 0;
-            tokensThisFrame = 0;
-        }
-
-        if (skip > maxSkipSeen) maxSkipSeen = skip;
-
-        // Frame advancement logic — three SEPARATE if-blocks, NOT else-if
-        // This exactly matches sherpa-onnx DecodeOneTDT() reference:
-        // https://github.com/k2-fsa/sherpa-onnx offline-transducer-greedy-search-nemo-decoder.cc
-        if (skip > 0) {
-            tokensThisFrame = 0;
-        }
-
-        if (tokensThisFrame >= maxTokensPerFrame) {
-            tokensThisFrame = 0;
-            skip = 1;
-        }
-
-        if (y === BLANK_ID && skip === 0) {
-            tokensThisFrame = 0;
-            skip = 1;
-        }
-    }
-
-    // Diagnostic: frame-level decode summary
-    const blankRatio = totalIterations > 0 ? (totalBlanks / totalIterations * 100).toFixed(1) : '0';
-    const lastTokenTimeSec = (lastTokenFrame * 0.08).toFixed(1); // ~80ms per encoder frame
-    const totalTimeSec = (encoderOutLen * 0.08).toFixed(1);
-    const unusedFrames = encoderOutLen - lastTokenFrame;
-    console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames | blanks: ${totalBlanks}/${totalIterations} (${blankRatio}%) | maxSkip: ${maxSkipSeen} | maxConsecBlanks: ${maxConsecutiveBlanks} | lastToken: frame ${lastTokenFrame} (${lastTokenTimeSec}s/${totalTimeSec}s) | unusedTail: ${unusedFrames} frames${collapseRecoveries > 0 ? ` | ⚠ recoveries: ${collapseRecoveries}` : ''}`);
-    return { text: tokensToText(tokens), lastTokenFrame, totalFrames: encoderOutLen };
-}
-
-/**
- * Convert token IDs to readable text
- * NeMo uses SentencePiece-style tokens: ▁ = word boundary (space)
- * Special tokens (< >) are filtered out
- * Post-processing: clean up leading/trailing dots from silence
- */
-function tokensToText(tokenIds: number[]): string {
-    const parts: string[] = [];
-    for (const id of tokenIds) {
-        if (id >= 0 && id < vocabulary.length) {
-            const token = vocabulary[id];
-            // Skip special tokens
-            if (token.startsWith('<') && token.endsWith('>')) continue;
-            // Replace SentencePiece ▁ with space (matching onnx-asr vocab load: line 127)
-            parts.push(token.replace(/▁/g, ' '));
-        }
-    }
-    let text = parts.join('');
-    // Clean up spaces at subword boundaries (matching onnx-asr DECODE_SPACE_PATTERN)
-    // Reference: asr.py:113 — re.compile(r"\A\s|\s\B|(\s)\b")
-    // Removes: leading whitespace, spaces before non-word-boundaries (e.g. "'s ay" → "'say")
-    // Keeps: spaces at real word boundaries
-    text = text.replace(/^\s|(\s)(?=\B)/g, (match, captured) => captured ? '' : '');
-
-    // Clean up artifacts from silence/noise at start
-    text = text.replace(/^[\s.]+/, '');          // Strip leading dots/whitespace from silence
-    text = text.replace(/\.{3,}/g, '...');       // Collapse excessive dots but preserve ellipsis
-    text = text.trim();
-
-    // Casing: trust the model's SentencePiece casing decisions.
-    // cleanTranscription handles first-letter capitalization of the final joined text.
-
-    return text;
-}
-
-/**
- * Compute 128-channel log-mel spectrogram for NeMo FastConformer encoder.
- *
- * Matches onnx-asr NemoPreprocessorNumpy (numpy_preprocessor.py:144-187)
- * and the ONNX builder (preprocessors/nemo.py) line-by-line:
- *   - Preemphasis coefficient 0.97
- *   - Zero-pad by n_fft/2 = 256 on each side
- *   - Symmetric Hann window (400 samples) centered in 512-pt FFT frame
- *   - 128 Slaney-scale mel filterbanks, 0–8000 Hz, Slaney area normalization
- *   - Log compression with guard value 2^-24
- *   - Per-feature CMVN with Bessel's correction (N-1), masked to valid frames
- *   - Audio samples in [-1,1] range
- *
- * Returns features in [nMels, totalFrames] layout (C, T) and the valid
- * frame count. The encoder length tensor should use validFrames, not
- * totalFrames, so that padding-contaminated edge frames are ignored.
- */
-function computeMelSpectrogram(
-    audio: Float32Array,
-    sampleRate: number = 16000
-): { features: Float32Array; nFrames: number; validFrames: number } {
-    const nMels = 128;
-    const winLength = 400;   // 25ms at 16kHz
-    const hopLength = 160;   // 10ms at 16kHz
-    const nFft = 512;
-    const nBins = nFft / 2 + 1; // 257
-    const preemph = 0.97;
-    const logZeroGuard = 5.960464477539063e-8; // 2^-24, matching NeMo/onnx-asr
-
-    // ── 1. Preemphasis ──────────────────────────────────────────────────
-    // y[n] = x[n] - 0.97 * x[n-1], with x[-1] = 0
-    // Reference: onnx-asr numpy_preprocessor.py:161-163
-    const preemphasized = new Float32Array(audio.length);
-    preemphasized[0] = audio[0]; // x[-1] = 0, so y[0] = x[0]
-    for (let i = 1; i < audio.length; i++) {
-        preemphasized[i] = audio[i] - preemph * audio[i - 1];
-    }
-
-    // ── 2. Zero-pad by n_fft/2 on each side ─────────────────────────────
-    // Reference: onnx-asr numpy_preprocessor.py:165
-    const padSize = nFft / 2; // 256
-    const paddedLength = preemphasized.length + 2 * padSize;
-    const padded = new Float32Array(paddedLength); // zeros by default
-    padded.set(preemphasized, padSize);
-
-    // ── 3. Compute valid frame count (BEFORE computing total frames) ────
-    // Reference: onnx-asr numpy_preprocessor.py:174
-    // features_lens = waveforms_lens // hop_length
-    const validFrames = Math.floor(audio.length / hopLength);
-
-    // Total spectrogram frames from sliding_window_view
-    const totalFrames = Math.floor((paddedLength - nFft) / hopLength) + 1;
-
-    // ── 4. Symmetric Hann window, centered in n_fft frame ──────────────
-    // Reference: onnx-asr preprocessors/nemo.py:56-58, numpy_preprocessor.py:167-169
-    // np.hanning(win_length) padded to n_fft with (n_fft-win_length)/2 zeros each side
-    // np.hanning(N) = 0.5 * (1 - cos(2*pi*n / (N-1))) for n=0..N-1 (symmetric)
-    const windowPad = (nFft - winLength) / 2; // 56
-    const window = new Float32Array(nFft); // zeros by default
-    for (let i = 0; i < winLength; i++) {
-        window[windowPad + i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (winLength - 1)));
-    }
-
-    // ── 5. Mel filterbank (Slaney scale, Slaney norm, 0–8000 Hz) ───────
-    const melFilters = createMelFilterbank(sampleRate, nFft, nMels, 0, sampleRate / 2);
-
-    // ── 6. STFT → power spectrum → mel → log ───────────────────────────
-    const features = new Float32Array(nMels * totalFrames);
-
-    for (let frame = 0; frame < totalFrames; frame++) {
-        const start = frame * hopLength;
-
-        // Apply centered window to n_fft-sized frame
-        const real = new Float32Array(nFft);
-        const imag = new Float32Array(nFft);
-        for (let i = 0; i < nFft && (start + i) < paddedLength; i++) {
-            real[i] = padded[start + i] * window[i];
-        }
-
-        fft(real, imag, nFft);
-
-        // Power spectrum: |X|^2  (no division by n_fft — matches reference)
-        const power = new Float32Array(nBins);
-        for (let i = 0; i < nBins; i++) {
-            power[i] = real[i] * real[i] + imag[i] * imag[i];
-        }
-
-        // mel → log
-        for (let m = 0; m < nMels; m++) {
-            let energy = 0;
-            for (let i = 0; i < nBins; i++) {
-                energy += melFilters[m * nBins + i] * power[i];
-            }
-            // features stored [C, T]: mel channel m at frame t
-            features[m * totalFrames + frame] = Math.log(energy + logZeroGuard);
-        }
-    }
-
-    // ── 7. Per-feature CMVN with masking & Bessel's correction ──────────
-    // Reference: onnx-asr numpy_preprocessor.py:174-186
-    // Only valid frames (< validFrames) participate in mean/var.
-    // Non-valid frames are set to 0 after normalization.
-    for (let m = 0; m < nMels; m++) {
-        // Compute mean over valid frames only
-        let sum = 0;
-        for (let t = 0; t < validFrames; t++) {
-            sum += features[m * totalFrames + t];
-        }
-        const mean = sum / validFrames;
-
-        // Compute variance with Bessel's correction (N-1)
-        let sumSqDev = 0;
-        for (let t = 0; t < validFrames; t++) {
-            const d = features[m * totalFrames + t] - mean;
-            sumSqDev += d * d;
-        }
-        const variance = validFrames > 1 ? sumSqDev / (validFrames - 1) : 0;
-        const std = Math.sqrt(variance) + 1e-5;
-
-        // Normalize valid frames
-        for (let t = 0; t < validFrames; t++) {
-            features[m * totalFrames + t] = (features[m * totalFrames + t] - mean) / std;
-        }
-        // Zero out non-valid frames (padding artifacts)
-        for (let t = validFrames; t < totalFrames; t++) {
-            features[m * totalFrames + t] = 0;
-        }
-    }
-
-    return { features, nFrames: totalFrames, validFrames };
-}
-
-/**
- * Create Slaney-scale mel filterbank with Slaney area normalization.
- *
- * Matches onnx-asr preprocessors/fbanks.py melscale_fbanks() called with:
- *   melscale_fbanks(257, 0, 8000, 128, 16000, "slaney", "slaney")
- *
- * Slaney mel scale: linear below 1000 Hz (3 mels per 200 Hz),
- * logarithmic above (27 mels per octave from 1000 Hz).
- * Slaney normalization: each filter is divided by its bandwidth in Hz
- * so that all filters have unit area (constant energy per mel band).
- */
-function createMelFilterbank(
-    sampleRate: number, fftSize: number, nMels: number,
-    lowFreq: number = 0, highFreq: number = 8000
-): Float32Array {
-    const nBins = fftSize / 2 + 1;
-    const eps = 1.1920929e-7; // float32 eps for log guard
-
-    // Slaney mel scale
-    const hzToMel = (hz: number): number => {
-        if (hz < 1000) return 3 * hz / 200.0;
-        return 15 + 27 * Math.log(hz / 1000.0 + eps) / Math.log(6.4);
-    };
-    const melToHz = (mel: number): number => {
-        if (mel < 15) return 200 * mel / 3.0;
-        return 1000 * Math.pow(6.4, (mel - 15) / 27.0);
-    };
-
-    // Linearly spaced frequency bins (all_freqs in reference)
-    const allFreqs = new Float64Array(nBins);
-    for (let i = 0; i < nBins; i++) {
-        allFreqs[i] = (sampleRate / 2) * i / (nBins - 1);
-    }
-
-    // Uniformly spaced mel points → convert back to Hz
-    const mMin = hzToMel(lowFreq);
-    const mMax = hzToMel(highFreq);
-    const mPts = new Float64Array(nMels + 2);
-    for (let i = 0; i < nMels + 2; i++) {
-        mPts[i] = melToHz(mMin + (mMax - mMin) * i / (nMels + 1));
-    }
-
-    // Triangular filters on Hz scale with Slaney normalization
-    // Reference: fbanks.py:54-59
-    const filters = new Float32Array(nMels * nBins);
-    for (let m = 0; m < nMels; m++) {
-        const fLow = mPts[m];
-        const fCenter = mPts[m + 1];
-        const fHigh = mPts[m + 2];
-        // Slaney normalization: 2 / (fHigh - fLow)
-        const norm = 2.0 / (fHigh - fLow);
-
-        for (let i = 0; i < nBins; i++) {
-            const f = allFreqs[i];
-            const upSlope = (fCenter - fLow) > 0 ? (f - fLow) / (fCenter - fLow) : 0;
-            const downSlope = (fHigh - fCenter) > 0 ? (fHigh - f) / (fHigh - fCenter) : 0;
-            const val = Math.max(0, Math.min(upSlope, downSlope));
-            filters[m * nBins + i] = val * norm;
-        }
-    }
-    return filters;
-}
-
-function fft(real: Float32Array, imag: Float32Array, n: number): void {
-    // Bit reversal
-    for (let i = 1, j = 0; i < n; i++) {
-        let bit = n >> 1;
-        for (; j & bit; bit >>= 1) j ^= bit;
-        j ^= bit;
-        if (i < j) {
-            [real[i], real[j]] = [real[j], real[i]];
-            [imag[i], imag[j]] = [imag[j], imag[i]];
-        }
-    }
-    // Cooley-Tukey
-    for (let size = 2; size <= n; size <<= 1) {
-        const halfsize = size >> 1;
-        const angle = -2 * Math.PI / size;
-        const wReal = Math.cos(angle);
-        const wImag = Math.sin(angle);
-        for (let i = 0; i < n; i += size) {
-            let curReal = 1, curImag = 0;
-            for (let j = 0; j < halfsize; j++) {
-                const tReal = curReal * real[i + j + halfsize] - curImag * imag[i + j + halfsize];
-                const tImag = curReal * imag[i + j + halfsize] + curImag * real[i + j + halfsize];
-                real[i + j + halfsize] = real[i + j] - tReal;
-                imag[i + j + halfsize] = imag[i + j] - tImag;
-                real[i + j] += tReal;
-                imag[i + j] += tImag;
-                const newCurReal = curReal * wReal - curImag * wImag;
-                curImag = curReal * wImag + curImag * wReal;
-                curReal = newCurReal;
-            }
-        }
     }
 }
 
@@ -836,7 +374,7 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     totalFrames: number;
 }> {
     const melStart = Date.now();
-    const { features, nFrames, validFrames } = computeMelSpectrogram(audioData, 16000);
+    const { features, nFrames, validFrames } = core.computeMelSpectrogram(audioData, 16000);
     const melTime = Date.now() - melStart;
 
     // audio_signal: [1, 128, totalFrames] — full spectrogram including edge frames
@@ -860,7 +398,7 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
 
     // Transducer greedy decode
     const decStart = Date.now();
-    const { text, lastTokenFrame, totalFrames } = await transducerGreedyDecode(encoderOut, encoderLen);
+    const { text, lastTokenFrame, totalFrames } = await core.transducerGreedyDecode(encoderOut, encoderLen, decodeCtx());
     const decTime = Date.now() - decStart;
 
     return { text, melTime, encTime, decTime, lastTokenFrame, totalFrames };
@@ -880,12 +418,35 @@ export async function transcribeParakeet(
     audioData: Float32Array,
     options: { language?: string; onProgress?: (progress: number) => void } = {}
 ): Promise<string> {
-    if (!isInitialized || !encoderSession || !decoderSession || !joinerSession) {
+    if (!isInitialized) {
         throw new Error('Parakeet not initialized');
     }
 
-    const startTime = Date.now();
     const durationSeconds = audioData.length / 16000;
+
+    // CoreML ANE sidecar path (default on Apple Silicon). It handles its own 15s
+    // chunking internally. On any failure, drop to the ONNX path for the rest of
+    // the session (lazy-loading the ONNX sessions if they were never loaded).
+    if (useSidecar) {
+        try {
+            const sStart = Date.now();
+            console.log(`[Parakeet] Transcribing ${durationSeconds.toFixed(1)}s via CoreML ANE sidecar...`);
+            const text = await sidecar.transcribe(audioData);
+            const ms = Date.now() - sStart;
+            console.log(`[Parakeet] \u2713 CoreML sidecar: ${ms}ms (${(durationSeconds / (ms / 1000)).toFixed(1)}x real-time): "${text.substring(0, 80)}"`);
+            return text;
+        } catch (e) {
+            console.warn('[Parakeet] CoreML sidecar failed \u2014 falling back to ONNX for this session:', e);
+            useSidecar = false;
+            await initParakeetOnnx();
+        }
+    }
+
+    if (!encoderSession || !decoderSession || !joinerSession) {
+        throw new Error('Parakeet not initialized (ONNX sessions unavailable)');
+    }
+
+    const startTime = Date.now();
     console.log(`[Parakeet] Transcribing ${durationSeconds.toFixed(1)}s...`);
 
     try {
@@ -952,7 +513,7 @@ export async function transcribeParakeet(
 
             // 1. Compute mel spectrograms for all segments in this batch
             const melStart = Date.now();
-            const melResults = batch.map(seg => computeMelSpectrogram(seg, 16000));
+            const melResults = batch.map(seg => core.computeMelSpectrogram(seg, 16000));
             totalMel += Date.now() - melStart;
 
             // 2. Pad to max frame count and stack into batch tensor [N, 128, maxFrames]
@@ -1015,7 +576,7 @@ export async function transcribeParakeet(
                 segData.set(encoderData.subarray(batchOffset, batchOffset + D * T_out));
 
                 const segEncoderOut = new ort.Tensor('float32', segData, [1, D, T_out]);
-                const { text } = await transducerGreedyDecode(segEncoderOut, segLen);
+                const { text } = await core.transducerGreedyDecode(segEncoderOut, segLen, decodeCtx());
 
                 if (text.trim()) {
                     texts.push(text.trim());
@@ -1050,15 +611,18 @@ export function isLanguageSupported(language: string): boolean {
     return SUPPORTED.includes(language);
 }
 
-export function getParakeetInfo(): { available: boolean; model: string; languages: number } {
+export function getParakeetInfo(): { available: boolean; model: string; languages: number; engine: string } {
     return {
         available: isInitialized,
-        model: 'Parakeet TDT 0.6B-v3 (INT8)',
+        model: useSidecar ? 'Parakeet TDT 0.6B-v3 (CoreML/ANE)' : 'Parakeet TDT 0.6B-v3 (INT8)',
         languages: 25,
+        engine: useSidecar ? 'coreml-ane' : 'onnx',
     };
 }
 
 export function cleanupParakeet(): void {
+    if (useSidecar) sidecar.cleanup();
+    useSidecar = false;
     encoderSession = null;
     decoderSession = null;
     joinerSession = null;
