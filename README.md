@@ -26,7 +26,7 @@ Built with Electron, React, and ONNX Runtime for fully offline, GPU-accelerated 
 - **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
 - **Transcription Progress** — Real-time progress percentage shown during long recordings
 - **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows)
-- **GPU-Accelerated Transcription** — Hybrid hardware routing: DirectML GPU encoder + CPU decoder for Parakeet on Windows, CPU-optimized on Apple Silicon, with automatic fallback
+- **Hardware-Accelerated Transcription** — Parakeet runs on the **Apple Neural Engine** (CoreML) on Apple Silicon (~118× real-time, encoder ~30 ms) and on the **DirectML GPU** on Windows, each with automatic fallback to an optimized CPU path, then Whisper
 - **Native Paste-to-Target** — Transcriptions instantly pasted into your active app via native Win32 FFI (11ms on Windows) or consolidated AppleScript (~50ms on Mac)
 - **Transcription History** — Timestamped log of all dictations with click-to-copy, individual delete, and clear all
 - **Always-on-Top Widget** — Minimal floating bar with mic button, waveform visualization, and expandable history panel
@@ -103,6 +103,10 @@ npm install
 npm run dev
 ```
 
+That's the whole flow on **both macOS and Windows** — no extra steps. On **macOS (Apple Silicon)**, `npm run dev` automatically builds the native CoreML sidecar the first time (subsequent launches are instant), and the app uses the **Apple Neural Engine** engine, downloading the CoreML models (~470 MB) on the first transcription. On **Windows**, the Parakeet encoder runs on the **DirectML GPU** out of the box. If anything is missing the app degrades gracefully (CoreML → ONNX → Whisper) and still runs.
+
+> **macOS prerequisite for the ANE engine:** Xcode 16+ / Swift 6 (for the one-time sidecar build). Without it, `npm run dev` still launches and falls back to the ONNX engine automatically.
+
 ### Windows GPU Setup (BYOL Rebuild)
 
 To enable GPU acceleration on Windows, the `smart-whisper` native addon must be rebuilt with [BYOL](https://github.com/nicholasgasior/smart-whisper#byol) linking against a CUDA-compiled `whisper.dll`:
@@ -129,15 +133,19 @@ To enable GPU acceleration on Windows, the `smart-whisper` native addon must be 
 
 ### Build Installers
 
+Production installers that bundle everything and work after install (AI models download on first run):
+
 ```bash
-# macOS DMG
+# macOS .dmg (Apple Silicon) — also builds + bundles the CoreML ANE sidecar
 npm run build:mac
 
-# Windows NSIS installer (must be run on Windows)
+# Windows .exe installer (run on Windows)
 npm run build:win
 ```
 
 Build output goes to the `release/` directory.
+
+> The macOS build is **unsigned** (no Apple Developer account needed). A `.dmg` you build yourself opens normally on your own machine. If you hand the `.dmg` to someone else, they'll need to right-click → **Open** the first time — or run `xattr -dr com.apple.quarantine "/Applications/Clarity Scribe.app"` — because it isn't notarized.
 
 ## Architecture
 
@@ -148,10 +156,14 @@ clarity-scribe/
 │   ├── hotkeyService.ts   # Unified hotkey handler (toggle + hold-to-talk)
 │   ├── nativeWhisper.ts   # Engine router, Whisper, GPU detection, chunking
 │   ├── vadService.ts      # Silero VAD speech detection (ONNX Runtime)
-│   ├── parakeetService.ts # Parakeet TDT 0.6B-v3 engine (ONNX Runtime)
+│   ├── parakeetService.ts # Parakeet engine router (CoreML sidecar / ONNX) + batched long-audio path
+│   ├── parakeetCore.ts    # Pure DSP + TDT decode (mel/FFT, decoder caching, collapse recovery) — unit-tested
+│   ├── parakeetSidecar.ts # CoreML ANE sidecar manager (spawn/protocol/model download, macOS)
 │   ├── winPaste.ts        # Native Win32 paste via koffi FFI (Windows)
 │   ├── tdtDecoder.ts      # Token-and-Duration Transducer beam search
 │   └── preload.ts         # Context bridge (IPC API)
+├── native/
+│   └── parakeet-sidecar/  # Swift CoreML/ANE Parakeet sidecar (built for macOS bundles)
 ├── src/                   # Renderer (React)
 │   ├── App.tsx            # Main shell with setup/widget/history/settings/dictionary
 │   ├── components/

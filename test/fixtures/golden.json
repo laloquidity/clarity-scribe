@@ -1,0 +1,12 @@
+{
+  "melSha": "3d6f9b7d7d0da7aad20a12207e0d9d52dce9e5a61bc4e9fddf56bbe663220830",
+  "nFrames": 733,
+  "validFrames": 732,
+  "text": "The quick brown fox jumps over the lazy dog, testing 12345. Speech recognition speed and accuracy matter.",
+  "encDims": [
+    1,
+    1024,
+    92
+  ],
+  "encLen": 92
+}

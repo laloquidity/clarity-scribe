@@ -366,6 +366,14 @@ export function getTranscriptionEngine(): TranscriptionEngine {
     return currentEngine;
 }
 
+/**
+ * Enable/disable the macOS CoreML ANE Parakeet sidecar (default engine on Apple
+ * Silicon). Call before initParakeetEngine. No effect on Windows/Linux.
+ */
+export function setCoreMLEnabled(enabled: boolean): void {
+    parakeetService.setCoreMLEnabled(enabled);
+}
+
 export async function initParakeetEngine(
     onProgress?: (percent: number, status: string) => void
 ): Promise<boolean> {
