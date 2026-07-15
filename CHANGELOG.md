@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v3.1.0 — Paste Reliability, Live Capsule & Dictation Stats
 
 ### 🐛 Fixes
 
