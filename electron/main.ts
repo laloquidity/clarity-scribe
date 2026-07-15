@@ -670,9 +670,14 @@ function setupIpcHandlers(): void {
     ipcMain.handle('set-window-size', (_, { width, height }: { width: number; height: number }) => {
         if (mainWindow) {
             // Use setBounds to resize, preserving current position
-            // This is more reliable than setSize on Windows with transparent windows
+            // This is more reliable than setSize on Windows with transparent windows.
+            // macOS refuses programmatic resizes on a resizable:false window, so
+            // briefly lift the flag around the resize (no-op on Windows).
             const [x, y] = mainWindow.getPosition();
+            const wasResizable = mainWindow.isResizable();
+            if (!wasResizable) mainWindow.setResizable(true);
             mainWindow.setBounds({ x, y, width, height }, true);
+            if (!wasResizable) mainWindow.setResizable(false);
         }
     });
 

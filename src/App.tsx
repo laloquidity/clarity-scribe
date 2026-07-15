@@ -14,6 +14,7 @@ import { PersonalDictionary } from './components/PersonalDictionary';
 import SetupScreen from './components/SetupScreen';
 import { useSettings } from './hooks/useSettings';
 import { useAudioRecording } from './hooks/useAudioRecording';
+import { retainAudioContext, releaseAudioContext } from './utils/audioContextManager';
 import { cleanTranscription } from './utils/cleanTranscription';
 import { applyITN } from './utils/itn';
 import { applySpokenPunctuation } from './utils/spokenPunctuation';
@@ -212,6 +213,10 @@ const App: React.FC = () => {
     }, [partialText, liveVisible]);
 
     // Subtle generated sound cues on record start/stop (no audio assets).
+    // Uses the app's SHARED AudioContext: a per-cue `new AudioContext()` is
+    // silently unreliable on macOS, where CoreAudio output-stream startup for
+    // a fresh context takes longer than the blip itself. The shared context is
+    // already warm (it drives mic monitoring), so the cue plays immediately.
     const soundCuesRef = useRef(false);
     useEffect(() => { soundCuesRef.current = settings.soundCues; }, [settings.soundCues]);
     const prevStateRef = useRef<AppState>('IDLE');
@@ -221,18 +226,27 @@ const App: React.FC = () => {
         if (!soundCuesRef.current) return;
         const cue = (freq: number, durMs: number) => {
             try {
-                const ctx = new AudioContext();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.frequency.value = freq;
-                osc.type = 'sine';
-                gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.06, ctx.currentTime + 0.01);
-                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + durMs / 1000);
-                osc.connect(gain).connect(ctx.destination);
-                osc.start();
-                osc.stop(ctx.currentTime + durMs / 1000 + 0.02);
-                osc.onended = () => ctx.close();
+                const ctx = retainAudioContext(); // shared, warm; resumes if suspended
+                const play = () => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.frequency.value = freq;
+                    osc.type = 'sine';
+                    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.06, ctx.currentTime + 0.01);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + durMs / 1000);
+                    osc.connect(gain).connect(ctx.destination);
+                    osc.start();
+                    osc.stop(ctx.currentTime + durMs / 1000 + 0.02);
+                    osc.onended = () => {
+                        try { osc.disconnect(); gain.disconnect(); } catch { /* ignore */ }
+                        releaseAudioContext();
+                    };
+                };
+                // If a release just suspended the context (stop cue fires right
+                // as the mic pipeline tears down), resume before playing.
+                if (ctx.state === 'suspended') ctx.resume().then(play).catch(() => releaseAudioContext());
+                else play();
             } catch { /* audio unavailable — never block recording */ }
         };
         if (prev !== 'RECORDING' && appState === 'RECORDING') cue(880, 90);        // start: high blip

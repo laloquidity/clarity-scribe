@@ -17,6 +17,14 @@ function voiced(ms: number): Float32Array {
     for (let i = 0; i < n; i++) out[i] = 0.15 * Math.sin((2 * Math.PI * 220 * i) / SR);
     return out;
 }
+/** Quiet-mic speech: amplitude 0.008 → RMS ≈ 0.0057, BELOW the old fixed 0.006
+ *  gate (the macOS no-input-boost case) but above the adaptive floor. */
+function quietVoiced(ms: number): Float32Array {
+    const n = Math.round((ms / 1000) * SR);
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = 0.008 * Math.sin((2 * Math.PI * 220 * i) / SR);
+    return out;
+}
 function silence(ms: number): Float32Array {
     return new Float32Array(Math.round((ms / 1000) * SR));
 }
@@ -134,6 +142,21 @@ describe('streamingTranscriber', () => {
     it('finalize with no session reports unhealthy', async () => {
         const result = await finalizeSession();
         expect(result.healthy).toBe(false);
+    });
+
+    it('quiet-mic speech (below the old fixed gate) still closes segments', async () => {
+        // Regression for macOS: input levels without mic boost sat below the
+        // fixed 0.006 RMS gate, so no segment ever closed and the live preview
+        // never appeared. The adaptive gate must classify this as voiced.
+        const partials: string[] = [];
+        onPartial((text) => partials.push(text));
+        startSession(SR);
+        pushAll(concat(quietVoiced(1500), silence(900), quietVoiced(1200)));
+        const result = await finalizeSession();
+        expect(result.healthy).toBe(true);
+        expect(result.segments).toBe(2); // pause-closed + tail
+        expect(result.text).toBe('seg1 seg2');
+        expect(partials.length).toBeGreaterThan(0); // live preview events fired
     });
 
     it('resampleCubic 48k→16k yields 1/3 length and preserves a sine', () => {

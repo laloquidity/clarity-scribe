@@ -24,7 +24,17 @@ type SegmentTranscriber = (audio16k: Float32Array) => Promise<string>;
 type PartialListener = (fullTextSoFar: string, segmentIndex: number) => void;
 
 // ── Tunables ────────────────────────────────────────────────────────────────
-const SILENCE_RMS = 0.006;          // below this RMS a 32ms window counts as silence
+// Voice gate: ADAPTIVE. Microphone input levels differ wildly across
+// platforms (macOS applies no input boost, so speech RMS can sit far below a
+// Windows-calibrated constant — which silently disabled streaming on quiet
+// mics: no window ever counted as voiced, no segment ever closed). The
+// effective threshold scales with the loudest window seen this session,
+// clamped to [floor, ceil]:
+//   loud setup  (peak ≈ 0.1+) → 0.006 (identical to the old constant)
+//   quiet setup (peak ≈ 0.02) → 0.003
+const SILENCE_RMS_FLOOR = 0.0025;   // never gate below this (true silence)
+const SILENCE_RMS_CEIL = 0.006;     // never require more than the old constant
+const PEAK_RATIO = 0.15;            // threshold = peakRms × this, clamped
 const SILENCE_CLOSE_MS = 650;       // continuous silence that closes a segment
 const MIN_VOICED_MS = 550;          // don't close segments with less voiced audio than this
 const SOFT_CAP_MS = 15_000;         // no-pause talkers: split at the quietest recent window
@@ -72,11 +82,17 @@ interface Session {
     silenceRunMs: number;           // trailing continuous silence
     windowCarry: Float32Array | null; // partial RMS window across chunk boundaries
     rmsHistory: RmsWindow[];        // per-window RMS of the open segment (for quietest-split)
+    peakRms: number;                // loudest window this session (adaptive voice gate)
     texts: string[];                // completed segment texts, in order
     queue: Promise<void>;           // serializes segment transcriptions
     segmentsQueued: number;
     healthy: boolean;
     finalized: boolean;
+}
+
+/** Adaptive voice gate: scales with the session's loudest window, clamped. */
+function voiceGate(s: Session): number {
+    return Math.min(SILENCE_RMS_CEIL, Math.max(SILENCE_RMS_FLOOR, s.peakRms * PEAK_RATIO));
 }
 
 let transcriberFn: SegmentTranscriber | null = null;
@@ -111,6 +127,7 @@ export function startSession(sampleRate: number): boolean {
         silenceRunMs: 0,
         windowCarry: null,
         rmsHistory: [],
+        peakRms: 0,
         texts: [],
         queue: Promise.resolve(),
         segmentsQueued: 0,
@@ -159,7 +176,8 @@ export function pushChunk(chunk: Float32Array): void {
         }
         const rms = Math.sqrt(sum / windowSamples);
         s.rmsHistory.push({ startSample: Math.max(0, firstWindowStart + off), rms });
-        if (rms >= SILENCE_RMS) {
+        if (rms > s.peakRms) s.peakRms = rms;
+        if (rms >= voiceGate(s)) {
             s.voicedMsInSegment += WINDOW_MS;
             s.silenceRunMs = 0;
         } else {
@@ -215,10 +233,11 @@ function closeOpenSegment(s: Session, splitAt?: number): void {
         // Rebase RMS history onto the remainder and recompute its voiced time.
         const rebased: RmsWindow[] = [];
         let voicedMs = 0;
+        const gate = voiceGate(s);
         for (const w of s.rmsHistory) {
             if (w.startSample >= cut) {
                 rebased.push({ startSample: w.startSample - cut, rms: w.rms });
-                if (w.rms >= SILENCE_RMS) voicedMs += WINDOW_MS;
+                if (w.rms >= gate) voicedMs += WINDOW_MS;
             }
         }
         s.rmsHistory = rebased;
@@ -275,6 +294,9 @@ export async function finalizeSession(): Promise<{ healthy: boolean; text: strin
 
     await s.queue;
     const result = { healthy: s.healthy, text: joinedText(s), segments: s.segmentsQueued };
+    // Diagnostic: peak/gate reveal mic-level issues (a session whose peak never
+    // cleared the gate produced zero segments — the classic quiet-mic symptom).
+    console.log(`[Stream] Finalized: ${result.segments} segments | peakRms ${s.peakRms.toFixed(4)} | gate ${voiceGate(s).toFixed(4)} | healthy ${s.healthy}`);
     session = null;
     return result;
 }
