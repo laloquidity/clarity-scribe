@@ -22,6 +22,11 @@ import type { AppState, HistoryEntry, DictionaryEntry } from './types';
 const COLLAPSED_HEIGHT = 64;
 const EXPANDED_HEIGHT = 460;
 const SETUP_HEIGHT = 300;
+// Live transcript box: content grows with speech up to this cap, then the
+// newest lines stay pinned into view (so a long dictation never runs the
+// window off the screen).
+const LIVE_BOX_MAX_CONTENT = 96;
+const LIVE_BOX_CHROME = 26; // padding + margins around the content
 
 const App: React.FC = () => {
     const [appState, setAppState] = useState<AppState>('IDLE');
@@ -37,6 +42,8 @@ const App: React.FC = () => {
     const [setupDone, setSetupDone] = useState(false);
     const [personalDictionary, setPersonalDictionary] = useState<DictionaryEntry[]>([]);
     const [partialText, setPartialText] = useState('');
+    const [liveExtra, setLiveExtra] = useState(0);
+    const liveBoxRef = useRef<HTMLDivElement | null>(null);
 
     // Keep a ref to dictionary for use in the transcription callback (avoids stale closure)
     const dictionaryRef = useRef<DictionaryEntry[]>([]);
@@ -187,6 +194,23 @@ const App: React.FC = () => {
         if (appState === 'RECORDING') setPartialText('');
     }, [appState]);
 
+    // The live box is visible while dictating (and during the brief finalize).
+    const liveVisible = (appState === 'RECORDING' || appState === 'PROCESSING') && partialText.length > 0;
+
+    // Measure the live transcript content whenever it changes: grow the box
+    // (and the window, below) to fit, up to the cap — then pin to the newest
+    // lines so the latest words are always visible.
+    useEffect(() => {
+        const el = liveBoxRef.current;
+        if (!liveVisible || !el) {
+            setLiveExtra(0);
+            return;
+        }
+        const content = Math.min(el.scrollHeight, LIVE_BOX_MAX_CONTENT);
+        setLiveExtra(content + LIVE_BOX_CHROME);
+        el.scrollTop = el.scrollHeight; // keep newest words in view
+    }, [partialText, liveVisible]);
+
     // Subtle generated sound cues on record start/stop (no audio assets).
     const soundCuesRef = useRef(false);
     useEffect(() => { soundCuesRef.current = settings.soundCues; }, [settings.soundCues]);
@@ -295,7 +319,9 @@ const App: React.FC = () => {
         return () => { unsubResult?.(); };
     }, []);
 
-    // Resize window based on state
+    // Resize window based on state. The live transcript box adds its measured
+    // height on top of whatever base state the widget is in — collapsed bar,
+    // expanded history, or settings — so it never covers or clips them.
     useEffect(() => {
         const api = window.electronAPI;
         if (!api) return;
@@ -306,9 +332,12 @@ const App: React.FC = () => {
         } else if (expanded) {
             height = EXPANDED_HEIGHT;
         }
+        if (setupDone && liveVisible) {
+            height += liveExtra;
+        }
 
         api.setWindowSize({ width: 340, height });
-    }, [expanded, setupDone]);
+    }, [expanded, setupDone, liveVisible, liveExtra]);
 
     // Copy entry to clipboard
     const handleCopyEntry = useCallback((text: string) => {
@@ -365,7 +394,6 @@ const App: React.FC = () => {
                         whisperStatus={whisperStatus}
                         hotkey={settings.hotkey}
                         hotkeyMode={settings.hotkeyMode}
-                        partialText={partialText}
                     />
                 </div>
                 <div className="no-drag" style={{ display: 'flex', gap: 4, paddingRight: 12 }}>
@@ -423,6 +451,23 @@ const App: React.FC = () => {
                     </button>
                 </div>
             </div>
+
+            {/* Live transcript (streaming mode) — grows with speech up to a cap */}
+            <AnimatePresence>
+                {liveVisible && (
+                    <motion.div
+                        className="live-transcript-box"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                    >
+                        <div className="live-transcript-content" ref={liveBoxRef}>
+                            {partialText}
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
             {/* Expandable area */}
             <AnimatePresence>

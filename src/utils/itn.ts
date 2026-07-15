@@ -274,10 +274,15 @@ const ATTACHED_PUNCT: Array<[RegExp, string]> = [
     [/\bcolon\b/gi, ':'],
 ];
 
+// Line-break commands absorb punctuation the ASR attached to the SPOKEN
+// command itself ("…thing. New line. I added" — the period after "line"
+// belongs to the command, not the text) — otherwise it survives as a stray
+// "." or "," at the start of the new line. Punctuation BEFORE the command is
+// kept: it legitimately ends the previous sentence.
 const NEWLINE_PUNCT: Array<[RegExp, string]> = [
-    [/\bnew paragraph\b/gi, '\n\n'],
-    [/\bnew line\b/gi, '\n'],
-    [/\bnewline\b/gi, '\n'],
+    [/\bnew paragraph\b[ \t]*[.,;:!?]*/gi, '\n\n'],
+    [/\bnew line\b[ \t]*[.,;:!?]*/gi, '\n'],
+    [/\bnewline\b[ \t]*[.,;:!?]*/gi, '\n'],
 ];
 
 // Sentinels for quote sides (control chars that never appear in transcripts).
@@ -616,11 +621,44 @@ export function applyITN(text: string): string {
     out = applyDates(out);
     out = applyOrdinals(out);
     out = applyCardinals(out);
+    out = applyDigitGrouping(out);
 
     // Final light spacing tidy (mirrors only spaces ITN may have introduced).
     out = out.replace(/[ \t]+([,.;:!?])/g, '$1');
     out = out.replace(/[ \t]{2,}/g, ' ');
 
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Transform 7: Thousands separators  (runs LAST — covers both digits the
+// transforms above emitted AND digits the ASR model wrote directly)
+// ---------------------------------------------------------------------------
+
+/** "50000000" → "50,000,000" */
+function groupDigits(digits: string): string {
+    return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/**
+ * Insert thousands separators into large plain integers:
+ *   "$50000000"  → "$50,000,000"   (currency: grouped from 4 digits up — the
+ *                                    symbol makes "quantity" unambiguous)
+ *   "5000000"    → "5,000,000"     (bare: grouped from 6 digits up — 4-5 digit
+ *                                    runs stay untouched because they're often
+ *                                    years, PINs, ZIP codes, or spoken digit
+ *                                    strings like "12345")
+ *   "3.1415926"  → unchanged        (never groups a fraction)
+ *   "$50000.25"  → "$50,000.25"     (integer part only)
+ * Idempotent: a grouped number contains commas, so neither pattern rematches.
+ */
+function applyDigitGrouping(text: string): string {
+    let out = text;
+    // Currency-prefixed: $/€/£ then 4+ digits (not already separated, not a
+    // fraction part). Lookbehind excludes digit/dot/comma so "1.5000" stays.
+    out = out.replace(/([$€£])(\d{4,})(?![\d])(?!,\d)/g, (_m, sym: string, num: string) => sym + groupDigits(num));
+    // Bare integers of 6+ digits standing alone.
+    out = out.replace(/(?<![\d.,€£$])(\d{6,})(?![\d])(?!,\d)/g, (_m, num: string) => groupDigits(num));
     return out;
 }
 
@@ -632,6 +670,7 @@ export const __itnInternals = {
     applyDates,
     applyOrdinals,
     applyCardinals,
+    applyDigitGrouping,
     parseCardinal,
     ordinalSuffix,
 };
