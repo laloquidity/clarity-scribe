@@ -11,6 +11,12 @@ interface UseAudioRecordingOptions {
     onStateChange: (state: AppState) => void;
     onError: (message: string) => void;
     skipSilenceDetection?: boolean;
+    /**
+     * Fired once per recording, when audio is handed to the engine. `stoppedAt`
+     * is the instant the user stopped recording, so the consumer can measure
+     * true stop→pasted latency once the result lands.
+     */
+    onRecordingComplete?: (metrics: { audioMs: number; stoppedAt: number }) => void;
 }
 
 export function useAudioRecording(options: UseAudioRecordingOptions) {
@@ -18,6 +24,11 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     const settingsRef = useRef(settings);
 
     useEffect(() => { settingsRef.current = settings; }, [settings]);
+
+    // Held in a ref so callback identity never invalidates the memoized
+    // start/stop handlers below.
+    const onRecordingCompleteRef = useRef(options.onRecordingComplete);
+    useEffect(() => { onRecordingCompleteRef.current = options.onRecordingComplete; });
 
     const audioContextRef = useRef<AudioContext | null>(null);
     const processorRef = useRef<AudioWorkletNode | null>(null);
@@ -39,6 +50,7 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     const streamPendingRef = useRef<Float32Array[]>([]);
     const streamPendingSamplesRef = useRef(0);
     const flushResolveRef = useRef<(() => void) | null>(null);
+    const stoppedAtRef = useRef(0);
 
     const MAX_RECORDING_DURATION_MS = 30 * 60 * 1000;
     const STREAM_CHUNK_MS = 250; // batch worklet frames into ~250ms IPC chunks
@@ -181,6 +193,13 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
 
                     const api = window.electronAPI;
                     if (api?.transcribe) {
+                        // Report what the engine actually receives (post-resample),
+                        // paired with the stop instant, so the consumer can show
+                        // audio length / latency / speed for this dictation.
+                        onRecordingCompleteRef.current?.({
+                            audioMs: Math.round((processedAudio.length / 16000) * 1000),
+                            stoppedAt: stoppedAtRef.current,
+                        });
                         // If a streaming session ran during recording, the main
                         // process finalizes it inside 'transcribe' (tail only);
                         // the full buffer is the batch-path fallback.
@@ -207,6 +226,9 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
             return;
         }
 
+        // Stamp the stop instant before any async work — this is the "user
+        // stopped talking" reference point for the latency figure.
+        stoppedAtRef.current = Date.now();
         onStateChange('PROCESSING');
         const ctx = audioContextRef.current;
 

@@ -28,6 +28,10 @@ export interface HistoryEntry {
     text: string;
     timestamp: number;
     app: string;
+    /** Recorded audio duration in ms. Optional — entries saved before v3.1 lack it. */
+    audioMs?: number;
+    /** Stop→pasted latency in ms (transcription + paste). Optional for the same reason. */
+    latencyMs?: number;
 }
 
 /**

@@ -31,6 +31,8 @@ interface HistoryEntry {
     text: string;
     timestamp: number;
     app: string;
+    audioMs?: number;   // recorded audio duration
+    latencyMs?: number; // stop→pasted (transcription + paste)
 }
 
 function getHistory(): HistoryEntry[] {
