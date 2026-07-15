@@ -2,9 +2,16 @@
 
 ## Unreleased
 
+### 🐛 Fixes
+
+- **False-success paste after switching apps mid-recording** — three compounding defects fixed: (1) Windows paste now **verifies the target window actually reached the foreground** before sending Ctrl+V (previously a denied `SetForegroundWindow` was ignored and the keystroke fired blind at whatever was focused, while the UI reported success); (2) the clipboard is **never cleared** after a paste — if it was empty beforehand the transcription stays on it as a safety net, so text can no longer be silently destroyed; (3) hotkey-stop now **retargets to the app under the user at stop time** (via instant FFI foreground query, off the hot path) instead of pasting at the recording-start app — switching from Claude to Telegram mid-dictation now pastes into Telegram. Widget-click stop keeps the pre-click capture (clicking the widget focuses Scribe itself). When focus can't be verified, the UI honestly reports "Copied" with the text on the clipboard.
+- **Stray "." / "," after line-break commands (Smart formatting)** — "…one more thing. New line. I added…" produced `thing.\n. I added`: the ASR's punctuation attached to the *spoken command* survived the replacement. Line-break commands now absorb trailing punctuation (sentence-final punctuation before the command is kept).
+
 ### ✨ New Features
 
-- **Per-dictation stats in history** — each history row now shows, next to the date/time: the **audio length**, the **transcription + paste time** (measured from the moment you stop to text on screen), and the **speed vs real time** (e.g. `12.4s · 380ms · 33×`). Entries recorded before this change simply omit the figures.
+- **Per-dictation stats in history** — each history row shows the **audio length**, the **transcription + paste time** (stop → text on screen), and the **speed vs real time**, now with inline labels on their own line: `45.3s audio · 396ms transcribe · 114× real-time`. Entries recorded before this change simply omit the figures.
+- **Expanding live-transcript capsule** — the live preview is no longer a one-line tail: while dictating, a highlighted transcript box grows under the widget bar as segments complete (window resizes with it), capped at ~5 lines with the newest words pinned into view. Works with the history/settings panel open (the window grows by the same amount on top), and collapses when the text is pasted.
+- **Thousands separators (Smart formatting)** — `$50000000` → `$50,000,000` (currency grouped from 4 digits; bare integers from 6 digits, so years/PINs/ZIPs/spoken codes like `12345` stay untouched; fractions never grouped). Applies both to numbers ITN builds from words and digits the model emits directly.
 
 ## v3.0.0 — Live Streaming Transcription & Windows Engine Tune-Up
 

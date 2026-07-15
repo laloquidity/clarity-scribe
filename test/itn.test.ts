@@ -199,3 +199,46 @@ describe('applyITN — combined / realistic sentences', () => {
         expect(applyITN('one new line two new line three')).toBe('one\ntwo\nthree');
     });
 });
+
+describe('applyITN — line-break commands absorb ASR punctuation', () => {
+    it('drops the period the ASR attached to the spoken command', () => {
+        // Real artifact from dictation: "…thing. New line. I added" produced
+        // "thing.\n. I added" — the "." after the command must be absorbed.
+        expect(applyITN('one more thing. New line. I added the feature'))
+            .toBe('one more thing.\nI added the feature');
+    });
+    it('drops a comma attached to the command', () => {
+        expect(applyITN('when I tell you new line, it actually works'))
+            .toBe('when I tell you\nit actually works');
+    });
+    it('keeps the sentence-final punctuation BEFORE the command', () => {
+        expect(applyITN('done. new paragraph. Next topic'))
+            .toBe('done.\n\nNext topic');
+    });
+});
+
+describe('applyITN — thousands separators', () => {
+    it('groups model-emitted currency digits', () => {
+        expect(applyITN('my payment of $50000000')).toBe('my payment of $50,000,000');
+        expect(applyITN('$5000')).toBe('$5,000');
+        expect(applyITN('€1234567')).toBe('€1,234,567');
+    });
+    it('groups large bare integers (6+ digits)', () => {
+        expect(applyITN('need to pay 5000000.')).toBe('need to pay 5,000,000.');
+        expect(applyITN('about 123456789 rows')).toBe('about 123,456,789 rows');
+    });
+    it('groups spoken currency end-to-end', () => {
+        expect(applyITN('fifty million dollars')).toBe('$50,000,000');
+    });
+    it('leaves years, codes, ZIPs, and fractions alone', () => {
+        expect(applyITN('back in 2026 it was fine')).toBe('back in 2026 it was fine');
+        expect(applyITN('the code is 12345')).toBe('the code is 12345');
+        expect(applyITN('PIN 1234')).toBe('PIN 1234');
+        expect(applyITN('pi is 3.1415926')).toBe('pi is 3.1415926');
+        expect(applyITN('$50000.25')).toBe('$50,000.25');
+    });
+    it('is idempotent on grouped output', () => {
+        expect(applyITN('$50,000,000')).toBe('$50,000,000');
+        expect(applyITN(applyITN('my payment of $50000000'))).toBe('my payment of $50,000,000');
+    });
+});

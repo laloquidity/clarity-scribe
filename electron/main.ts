@@ -11,7 +11,7 @@ import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
 import * as streaming from './streamingTranscriber';
 import { transcribeParakeet } from './parakeetService';
-import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow } from './winPaste';
+import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow, getForegroundPid } from './winPaste';
 import { initHotkeyService, registerHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
 
 const store = new Store();
@@ -249,13 +249,13 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
             if (isNativePasteAvailable()) {
                 const ok = focusAndPaste(targetApp.pid);
                 if (!ok) {
-                    console.error('[Main] Native paste failed, falling back to PowerShell');
-                    // Fallback to PowerShell if native fails
-                    const focusCmd = 'powershell -NoProfile -Command "Add-Type -MemberDefinition \'[DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr hWnd);\' -Name WF -Namespace Temp -ErrorAction SilentlyContinue; $p=Get-Process -Id ' + targetApp.pid + ' -ErrorAction SilentlyContinue; if($p -and $p.MainWindowHandle){[Temp.WF]::SetForegroundWindow($p.MainWindowHandle)|Out-Null}"';
-                    await execPromise(focusCmd);
-                    await delay(150);
-                    const pasteCmd = 'powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^v\')"';
-                    await execPromise(pasteCmd);
+                    // Focus verification failed — the target window could not
+                    // be brought foreground, so NO keystroke was sent. Don't
+                    // blind-fire a PowerShell SendKeys at whatever IS focused;
+                    // leave the transcription on the clipboard and say so.
+                    console.warn('[Main] Native paste could not verify focus — leaving text on clipboard');
+                    targetAppBeforeRecording = null;
+                    return { success: false, fallback: 'clipboard', reason: 'focus-failed' };
                 }
             } else {
                 // Fallback: PowerShell when koffi is unavailable
@@ -269,18 +269,23 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
 
         await delay(50); // Min safe delay — target app must read clipboard before restore
 
-        // Restore original clipboard
+        // Restore original clipboard — but NEVER clear: if the clipboard was
+        // empty before, leave the transcription on it. If a paste ever lands
+        // somewhere unexpected, the text stays one Ctrl+V away instead of
+        // being destroyed (history is the other recovery path).
         if (hadOriginalContent) {
             clipboard.writeText(originalClipboard);
             console.log('[Main] Pasted to ' + targetApp.name + ', clipboard restored');
         } else {
-            clipboard.clear();
+            console.log('[Main] Pasted to ' + targetApp.name + ' (clipboard kept as safety net)');
         }
 
         targetAppBeforeRecording = null;
         return { success: true, app: targetApp.name };
     } catch (e) {
-        if (hadOriginalContent) clipboard.writeText(originalClipboard);
+        // We report a clipboard fallback, so the clipboard must actually hold
+        // the transcription (not the restored original).
+        clipboard.writeText(text);
         console.error('[Main] Paste failed:', e);
         return { success: false, fallback: 'clipboard' };
     }
@@ -393,6 +398,61 @@ function captureTargetBeforeRecording(): void {
     }
 }
 
+/**
+ * Hotkey-stop retarget: the user pressed the stop hotkey while some app was
+ * foreground — THAT app is where they expect the text, even if they switched
+ * apps mid-recording (the start-time capture would be stale, and pasting into
+ * it used to blind-fire Ctrl+V at the wrong window). Only hotkey stop paths
+ * call this — the widget-click stop keeps the recording-start capture,
+ * because clicking the widget focuses Scribe itself.
+ *
+ * Must be FAST (runs in the hotkey handler): the foreground pid comes from
+ * direct FFI (µs). The human-readable app name is resolved from the poller
+ * cache when it matches, else asynchronously — the paste itself targets the
+ * HWND/pid, so a late name only affects the history label, never the paste.
+ */
+function retargetAtStop(): void {
+    if (process.platform === 'win32') {
+        const fgPid = getForegroundPid();
+        if (fgPid && fgPid !== process.pid) {
+            captureTargetWindow(); // fresh HWND — the actual paste destination
+            const cachedName = lastKnownFrontApp?.pid === fgPid ? lastKnownFrontApp.name : null;
+            if (targetAppBeforeRecording?.pid !== fgPid) {
+                console.log(`[Main] Retargeted at stop: ${targetAppBeforeRecording?.name ?? 'none'} → pid ${fgPid}${cachedName ? ` (${cachedName})` : ''}`);
+            }
+            targetAppBeforeRecording = {
+                name: cachedName ?? targetAppBeforeRecording?.name ?? 'app',
+                pid: fgPid,
+            };
+            targetAppConfidence = 'confirmed';
+            if (!cachedName) {
+                // Resolve the real name off the hot path; update if still current.
+                exec(`powershell -NoProfile -Command "(Get-Process -Id ${fgPid} -ErrorAction SilentlyContinue).ProcessName"`,
+                    { timeout: 3000, windowsHide: true }, (err, stdout) => {
+                        const name = stdout?.trim();
+                        if (!err && name && targetAppBeforeRecording?.pid === fgPid) {
+                            targetAppBeforeRecording = { ...targetAppBeforeRecording, name };
+                        }
+                    });
+            }
+            return;
+        }
+    } else if (lastKnownFrontApp && Date.now() - lastKnownFrontApp.timestamp < 3000
+               && lastKnownFrontApp.pid !== targetAppBeforeRecording?.pid) {
+        // macOS: no cheap synchronous foreground query — trust a fresh poller
+        // cache entry (poller already excludes Scribe itself).
+        console.log(`[Main] Retargeted at stop: ${targetAppBeforeRecording?.name ?? 'none'} → ${lastKnownFrontApp.name}`);
+        targetAppBeforeRecording = lastKnownFrontApp;
+        targetAppConfidence = 'confirmed';
+        return;
+    }
+    // Foreground is us / detection unavailable — keep the start-time capture,
+    // dropping it only if that process has since died.
+    if (targetAppBeforeRecording && !isProcessAlive(targetAppBeforeRecording.pid)) {
+        targetAppBeforeRecording = null;
+    }
+}
+
 function setupHotkeyCallbacks(): void {
     initHotkeyService({
         // Toggle mode: single press toggles recording on/off
@@ -402,9 +462,10 @@ function setupHotkeyCallbacks(): void {
                 captureTargetBeforeRecording();
                 isCurrentlyRecording = true;
             } else {
-                if (targetAppBeforeRecording && !isProcessAlive(targetAppBeforeRecording.pid)) {
-                    targetAppBeforeRecording = null;
-                }
+                // Hotkey stop: the app under the user's fingers RIGHT NOW is
+                // where they want the text — retarget in case they switched
+                // apps mid-recording (start-time capture would be stale).
+                retargetAtStop();
                 isCurrentlyRecording = false;
             }
             mainWindow?.webContents.send('toggle-recording');
@@ -421,9 +482,7 @@ function setupHotkeyCallbacks(): void {
         onKeyUp: () => {
             console.log('[Main] PTT key up — stop recording');
             if (!isCurrentlyRecording) return;
-            if (targetAppBeforeRecording && !isProcessAlive(targetAppBeforeRecording.pid)) {
-                targetAppBeforeRecording = null;
-            }
+            retargetAtStop();
             isCurrentlyRecording = false;
             mainWindow?.webContents.send('stop-recording');
         },
