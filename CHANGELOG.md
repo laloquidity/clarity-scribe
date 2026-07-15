@@ -1,5 +1,32 @@
 # Changelog
 
+## v3.0.0 — Live Streaming Transcription & Windows Engine Tune-Up
+
+### ⚡ Performance
+
+- **Live streaming transcription (transcribe-while-recording)** — Speech segments are now transcribed **while you're still talking**: the renderer streams raw audio to the main process, an RMS segmenter closes segments at natural pauses (soft-cap split at the quietest window for no-pause talkers, hard cap 28 s), and each segment runs through Parakeet immediately. At stop, only the small tail remains, so **stop→text is ~100–380 ms regardless of recording length** (previously the entire clip was processed after stop — 1 s+ for a minute of audio). Fully fault-tolerant: any streaming failure falls back to the classic full-buffer batch path, which is preserved untouched. Default on ("Live transcription" toggle); Parakeet engine only.
+
+- **Sparse mel filterbank (all platforms)** — Each of the 128 mel filters is only nonzero over a narrow bin band; the mel matmul now skips guaranteed-zero terms. **2.9× faster mel** (337 ms → 118 ms for 60 s of audio on the bench machine), bit-identical output (verified by the golden regression tests).
+
+- **Parallel segment decode (long audio)** — The VAD-batched path now decodes all segments in a batch concurrently instead of serially (ONNX Runtime sessions are safe for concurrent `run()`); long-recording decode wall-time drops proportionally to segment count.
+
+- **Faster stop path** — The fixed 50 ms yield before snapshotting the recording was replaced with an ordered flush handshake with the AudioWorklet (typically <5 ms, 100 ms safety timeout).
+
+- **Windows engine A/B verdict (RTX 3090, documented)** — Measured on real hardware: the INT8 encoder on DirectML runs 60 s of audio in ~420 ms (encoder-only ~142× RT) — the encoder was *not* the Windows bottleneck; mel + the per-frame decode loop were, and both are addressed above. FP16 and FP32 encoder variants were benchmarked on DML (FP16: ~15% faster than INT8, 2× the download) and **rejected**; INT8 stays. CUDA EP remains unavailable in `onnxruntime-node` on Windows (Linux-only per the official support matrix), so DirectML stays the GPU path with its documented mandatory settings.
+
+### ✨ New Features
+
+- **Live preview in the widget** — While recording, the widget shows the transcript so far (tail of the text), updating as each segment completes.
+- **Spoken punctuation (opt-in)** — Say "comma", "period", "question mark", "new line", "new paragraph", "hyphen", "at sign" — and context-aware "dot" that only joins in URLs ("google dot com" → "google.com", prose "dot" untouched). Token-walk state machine, unit-tested. Default off.
+- **Sound cues (opt-in)** — Subtle generated blips on recording start/stop (no audio assets). Default off.
+
+### 🧱 Internal
+
+- New `electron/streamingTranscriber.ts` — session management, RMS segmenter with quietest-window soft-cap splitting, serialized segment queue, partial-transcript events; unit-tested without models (10 tests). New IPC: `stream-start` / `stream-chunk` / `stream-abort` + `transcription-partial` event.
+- `test/streaming.test.ts` (segmenter + session lifecycle) and `test/spoken-punctuation.test.ts` (8 cases) added; suite is now 71 tests.
+
+---
+
 ## v2.9.0 — CoreML ANE Engine, Decoder Caching & Smart Formatting
 
 ### ⚡ Performance

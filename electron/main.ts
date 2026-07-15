@@ -9,6 +9,8 @@ import { exec, execSync } from 'child_process';
 import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
+import * as streaming from './streamingTranscriber';
+import { transcribeParakeet } from './parakeetService';
 import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow } from './winPaste';
 import { initHotkeyService, registerHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
 
@@ -437,6 +439,22 @@ function setupIpcHandlers(): void {
         if (!isWhisperReady) return { success: false, error: 'Whisper not ready' };
         try {
             const audioBuffer = audioData instanceof Float32Array ? audioData : new Float32Array(audioData);
+
+            // Streaming-first: if a live session transcribed segments during
+            // recording, its finalize only has the tail left — near-instant.
+            // Unhealthy or empty results fall through to the classic batch path
+            // (full buffer, includes Whisper fallback + hallucination guards).
+            if (streaming.isSessionActive()) {
+                const t0 = Date.now();
+                const result = await streaming.finalizeSession();
+                if (result.healthy && result.text) {
+                    console.log(`[Main] Streamed transcription finalized in ${Date.now() - t0}ms (${result.segments} segments): "${result.text.substring(0, 80)}"`);
+                    mainWindow?.webContents.send('transcription-result', result.text);
+                    return { success: true, text: result.text };
+                }
+                console.log(`[Main] Streaming session ${result.healthy ? 'empty' : 'unhealthy'} — falling back to batch transcription`);
+            }
+
             const settings = store.get('settings') as any;
             const language = settings?.whisperLanguage || 'en';
             const text = await nativeWhisper.transcribe(audioBuffer, {
@@ -453,6 +471,22 @@ function setupIpcHandlers(): void {
             return { success: false, error: error.message };
         }
     });
+
+    // --- Streaming transcription (transcribe-while-recording) ---
+    // Renderer streams raw audio chunks during recording; segments transcribe
+    // at natural pauses so stop→text is just the tail. Parakeet engine only.
+    ipcMain.handle('stream-start', (_, sampleRate: number) => {
+        const engineInfo = nativeWhisper.getEngineInfo();
+        if (engineInfo.currentEngine !== 'parakeet' || !engineInfo.parakeet) {
+            return { streaming: false };
+        }
+        const started = streaming.startSession(sampleRate);
+        return { streaming: started };
+    });
+    ipcMain.handle('stream-chunk', (_, chunk: Float32Array | number[]) => {
+        streaming.pushChunk(chunk instanceof Float32Array ? chunk : new Float32Array(chunk));
+    });
+    ipcMain.handle('stream-abort', () => { streaming.abortSession(); });
 
     ipcMain.handle('is-whisper-ready', () => isWhisperReady);
 
@@ -698,6 +732,14 @@ app.whenReady().then(async () => {
                 });
                 sendStep('parakeet', 'Parakeet Engine', 100, 'Ready');
                 console.log(`[Main] ✓ Parakeet ready`);
+
+                // Enable transcribe-while-recording: segments (≤28s, cut at
+                // pauses) go straight through the Parakeet single-pass path.
+                streaming.configureStreaming((audio16k) => transcribeParakeet(audio16k));
+                streaming.onPartial((text) => {
+                    mainWindow?.webContents.send('transcription-partial', text);
+                });
+                console.log('[Main] ✓ Live streaming transcription enabled');
             } catch (e) {
                 console.warn('[Main] Parakeet init failed, falling back to Whisper:', e);
                 sendStep('parakeet', 'Parakeet Engine', 100, 'Skipped');

@@ -13,6 +13,14 @@ export interface Settings {
     // Opt-in Inverse Text Normalization (spoken-form → written-form, e.g.
     // "two thirty pm" → "2:30 PM"). Default OFF; applied after cleanTranscription.
     itnEnabled: boolean;
+    // Live transcription: transcribe speech segments while still recording so
+    // stop→text is near-instant, with a live preview in the widget. Default ON.
+    liveTranscription: boolean;
+    // Audible cues on recording start/stop (subtle, generated — no assets).
+    soundCues: boolean;
+    // Spoken punctuation commands ("comma", "period", "new line", URL-aware
+    // "dot", …) converted to symbols. Default OFF (opt-in, like ITN).
+    spokenPunctuation: boolean;
 }
 
 export interface HistoryEntry {
@@ -93,6 +101,12 @@ export interface ElectronAPI {
     transcribe: (audio: Float32Array, sampleRate: number) => Promise<any>;
     isWhisperReady: () => Promise<boolean>;
     copyToClipboard: (text: string) => Promise<boolean>;
+
+    // Streaming transcription (transcribe-while-recording)
+    streamStart: (sampleRate: number) => Promise<{ streaming: boolean }>;
+    streamChunk: (chunk: Float32Array) => Promise<void>;
+    streamAbort: () => Promise<void>;
+    onTranscriptionPartial: (cb: (text: string) => void) => () => void;
 
     onWhisperReady: (cb: (info?: { acceleration: string }) => void) => () => void;
     onWhisperProgress: (cb: (p: number, m: string) => void) => () => void;

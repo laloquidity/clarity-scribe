@@ -16,6 +16,8 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 ## Features
 
 - **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to ~150x real-time on Apple Silicon), Whisper for all others. Manual override available in settings.
+- **Live Streaming Transcription** — Speech is transcribed *while you talk*: segments are processed at natural pauses in the background, a live preview shows in the widget, and at stop only the last phrase remains — **text lands ~100–380 ms after you stop, no matter how long you spoke**. Automatic fallback to classic batch processing if anything fails. (Parakeet engine; toggle in Settings.)
+- **Spoken Punctuation** (opt-in) — Say "comma", "period", "new line", "question mark" — with context-aware "dot" that only activates in URLs ("google dot com" → "google.com").
 - **Personal Dictionary** — Add custom word corrections that automatically apply to every transcription. Maps what was written to what you meant (e.g. `Chat GPT` to `ChatGPT`). Book icon in the widget bar opens a full CRUD panel with Add, Edit, batch Delete, Export JSON, and Import JSON. Each entry auto-generates ~12 case/hyphen/space variants for robust matching.
 - **Hold-to-Talk Mode** — Hold a key to record, release to transcribe — or use the classic tap-to-toggle. Switch modes instantly in Settings with an Apple-style segmented control. Single function keys (F5-F12) for hold mode, modifier combos for toggle mode.
 - **Filler Word Removal** — Automatically strips filled pauses (um, uh, ah, er) from transcriptions while preserving natural speech patterns
@@ -220,14 +222,15 @@ This is the engine used on Windows, and the fallback on macOS. The Parakeet enco
 
 **Windows (RTX 3090):**
 
-| Config | 14s Audio | 23s Audio | 60s Audio | 78s Audio |
-|--------|-----------|-----------|-----------|----------|
-| **Hybrid (DML encoder + CPU decoder)** | **747ms (19.1x)** | **854ms (26.6x)** | **1,313ms (46.2x)** | **1,460ms (53.2x)** |
-| DML (all GPU) | — | 1,457ms (15.6x) | 2,283ms (28.1x) | — |
-| CPU (all) | — | 1,268ms (17.2x) | 4,731ms (13.5x) | — |
-| CUDA custom build (all GPU) | — | 1,971ms (12.3x) | 5,126ms (13.1x) | — |
+With **live streaming transcription** (v3.0, default on), segments are processed during recording — perceived stop→text latency is **~100–380 ms at any recording length**. The batch numbers below apply when streaming is off or the fallback engages:
 
-*Paste latency: 2–3ms (native Win32 FFI via koffi). Windows tries single-pass first, with batched VAD-segment encoding as an automatic fallback for very long or truncated audio.*
+| Config | 7.3s Audio | 30s Audio | 60s Audio |
+|--------|-----------|-----------|-----------|
+| **v3.0 batch (sparse mel + parallel decode)** | **~170ms (43x)** | **~560ms (54x)** | **~810ms (74x)** |
+| v2.9 batch (same hardware) | 173ms (42x) | 650ms (46x) | 1,033ms (58x) |
+| CPU (all) | 336ms enc-only (22x) | 1,400ms enc-only (21x) | 3,172ms enc-only (19x) |
+
+*Paste latency: 2–3ms (native Win32 FFI via koffi). Windows tries single-pass first, with batched VAD-segment encoding as an automatic fallback for very long or truncated audio. FP16/FP32 encoder variants were benchmarked on DirectML and rejected (≤15% gain for 2× the download); CUDA EP is not available in onnxruntime-node on Windows (Linux-only per the official support matrix).*
 
 **macOS (Apple Silicon M-series):**
 

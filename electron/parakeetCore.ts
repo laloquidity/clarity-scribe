@@ -395,13 +395,29 @@ function getHannWindow(nFft: number, winLength: number): Float32Array {
     return _hannCache.window;
 }
 
-let _melFilterCache: { key: string; filters: Float32Array } | null = null;
-function getMelFilterbank(sampleRate: number, nFft: number, nMels: number): Float32Array {
+let _melFilterCache: { key: string; filters: Float32Array; bandStart: Int32Array; bandEnd: Int32Array } | null = null;
+function getMelFilterbank(sampleRate: number, nFft: number, nMels: number): { filters: Float32Array; bandStart: Int32Array; bandEnd: Int32Array } {
     const key = `${sampleRate}:${nFft}:${nMels}`;
     if (!_melFilterCache || _melFilterCache.key !== key) {
-        _melFilterCache = { key, filters: createMelFilterbank(sampleRate, nFft, nMels, 0, sampleRate / 2) };
+        const filters = createMelFilterbank(sampleRate, nFft, nMels, 0, sampleRate / 2);
+        // Each mel filter is a narrow triangle — nonzero over only a handful of
+        // the 257 bins. Precompute the nonzero band per filter so the mel matmul
+        // skips guaranteed-zero terms. Skipped terms contribute exactly +0.0
+        // (power ≥ 0, filter = 0), so the result is bit-identical to the dense loop.
+        const nBins = nFft / 2 + 1;
+        const bandStart = new Int32Array(nMels);
+        const bandEnd = new Int32Array(nMels);
+        for (let m = 0; m < nMels; m++) {
+            let start = 0;
+            while (start < nBins && filters[m * nBins + start] === 0) start++;
+            let end = nBins;
+            while (end > start && filters[m * nBins + (end - 1)] === 0) end--;
+            bandStart[m] = start;
+            bandEnd[m] = end;
+        }
+        _melFilterCache = { key, filters, bandStart, bandEnd };
     }
-    return _melFilterCache.filters;
+    return _melFilterCache;
 }
 
 /**
@@ -465,7 +481,9 @@ export function computeMelSpectrogram(
     const window = getHannWindow(nFft, winLength);
 
     // ── 5. Mel filterbank (Slaney scale, Slaney norm, 0–8000 Hz, memoized) ─
-    const melFilters = getMelFilterbank(sampleRate, nFft, nMels);
+    // bandStart/bandEnd bound each filter's nonzero bins so the matmul below
+    // skips zero terms (bit-identical output, ~10x fewer multiplies).
+    const { filters: melFilters, bandStart, bandEnd } = getMelFilterbank(sampleRate, nFft, nMels);
 
     // ── 6. STFT → power spectrum → mel → log ───────────────────────────
     const features = new Float32Array(nMels * totalFrames);
@@ -496,11 +514,13 @@ export function computeMelSpectrogram(
             power[i] = real[i] * real[i] + imag[i] * imag[i];
         }
 
-        // mel → log
+        // mel → log (sparse: only each filter's nonzero band contributes)
         for (let m = 0; m < nMels; m++) {
             let energy = 0;
-            for (let i = 0; i < nBins; i++) {
-                energy += melFilters[m * nBins + i] * power[i];
+            const rowOff = m * nBins;
+            const end = bandEnd[m];
+            for (let i = bandStart[m]; i < end; i++) {
+                energy += melFilters[rowOff + i] * power[i];
             }
             // features stored [C, T]: mel channel m at frame t
             features[m * totalFrames + frame] = Math.log(energy + logZeroGuard);
