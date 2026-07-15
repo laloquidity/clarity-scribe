@@ -25,6 +25,27 @@ function formatTime(timestamp: number): string {
     return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
 }
 
+/** Audio length: "12.4s" under a minute, "1:05" above. */
+export function formatAudioLength(ms: number): string {
+    const s = ms / 1000;
+    if (s < 60) return `${s.toFixed(1)}s`;
+    const mins = Math.floor(s / 60);
+    const secs = Math.round(s % 60);
+    return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+/** Transcribe+paste latency: "380ms" under a second, "1.2s" above. */
+export function formatLatency(ms: number): string {
+    return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** Speed vs real time: "33×". Sub-10× keeps a decimal so it stays truthful. */
+export function formatSpeed(audioMs: number, latencyMs: number): string | null {
+    if (!(audioMs > 0) || !(latencyMs > 0)) return null;
+    const x = audioMs / latencyMs;
+    return x >= 10 ? `${Math.round(x)}×` : `${x.toFixed(1)}×`;
+}
+
 const HistoryPanel: React.FC<HistoryPanelProps> = ({ entries, onCopy, onDelete, onClear }) => {
     const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
     const [confirmClearAll, setConfirmClearAll] = useState(false);
@@ -126,6 +147,31 @@ const HistoryPanel: React.FC<HistoryPanelProps> = ({ entries, onCopy, onDelete, 
                                     ) : (
                                         <>
                                             <span className="history-entry-time">{formatTime(entry.timestamp)}</span>
+                                            {entry.audioMs !== undefined && (
+                                                <>
+                                                    <span className="history-entry-sep">·</span>
+                                                    <span className="history-entry-stat" title="Audio length">
+                                                        {formatAudioLength(entry.audioMs)}
+                                                    </span>
+                                                </>
+                                            )}
+                                            {entry.latencyMs !== undefined && (
+                                                <>
+                                                    <span className="history-entry-sep">·</span>
+                                                    <span className="history-entry-stat" title="Transcription + paste time">
+                                                        {formatLatency(entry.latencyMs)}
+                                                    </span>
+                                                </>
+                                            )}
+                                            {entry.audioMs !== undefined && entry.latencyMs !== undefined &&
+                                                formatSpeed(entry.audioMs, entry.latencyMs) && (
+                                                <>
+                                                    <span className="history-entry-sep">·</span>
+                                                    <span className="history-entry-stat speed" title="Speed vs real time">
+                                                        {formatSpeed(entry.audioMs, entry.latencyMs)}
+                                                    </span>
+                                                </>
+                                            )}
                                             {entry.app && entry.app !== 'clipboard' && (
                                                 <span className="history-entry-app">→ {entry.app}</span>
                                             )}

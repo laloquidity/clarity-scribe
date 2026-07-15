@@ -52,6 +52,10 @@ const App: React.FC = () => {
     const spokenPunctRef = useRef<boolean>(false);
     useEffect(() => { spokenPunctRef.current = settings.spokenPunctuation; }, [settings.spokenPunctuation]);
 
+    // Per-dictation metrics (audio length + stop instant), captured when audio
+    // is handed to the engine and consumed when the result is pasted.
+    const pendingMetricsRef = useRef<{ audioMs: number; stoppedAt: number } | null>(null);
+
     // Audio recording — disable silence detection in hold-to-talk mode
     const { startRecording, stopRecording, isRecordingRef } = useAudioRecording({
         settings,
@@ -61,6 +65,7 @@ const App: React.FC = () => {
             setTimeout(() => setStatusMessage(undefined), 5000);
         },
         skipSilenceDetection: settings.hotkeyMode === 'hold',
+        onRecordingComplete: (metrics) => { pendingMetricsRef.current = metrics; },
     });
 
     // Toggle recording — called by mic button click
@@ -217,6 +222,10 @@ const App: React.FC = () => {
 
         const unsubResult = api.onTranscriptionResult(async (rawText) => {
             setPartialText('');
+            // Claim this dictation's metrics up front so early returns below
+            // can't leak them into the next entry.
+            const metrics = pendingMetricsRef.current;
+            pendingMetricsRef.current = null;
             if (!rawText || rawText.trim().length === 0) {
                 setAppState('IDLE');
                 isRecordingRef.current = false;
@@ -262,12 +271,15 @@ const App: React.FC = () => {
             const didPaste = result.success;
             const targetAppName = result.app || (result.fallback === 'clipboard' ? 'clipboard' : 'unknown');
 
-            // Add to history
+            // Add to history. latencyMs is measured AFTER the paste completes,
+            // so it covers the whole stop→text-on-screen path.
             const entry: HistoryEntry = {
                 id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
                 text: text.trim(),
                 timestamp: Date.now(),
                 app: targetAppName,
+                audioMs: metrics?.audioMs,
+                latencyMs: metrics ? Date.now() - metrics.stoppedAt : undefined,
             };
             await api.addHistory(entry);
             setHistory(prev => [entry, ...prev]);

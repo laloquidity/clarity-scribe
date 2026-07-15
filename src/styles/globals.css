@@ -365,13 +365,35 @@ body,
 .history-entry-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 5px;
     margin-top: 4px;
+    min-width: 0;
 }
 
 .history-entry-time {
     font-size: 9px;
     color: var(--text-muted);
+    white-space: nowrap;
+}
+
+/* Per-dictation stats: audio length · transcribe+paste · speed */
+.history-entry-stat {
+    font-size: 9px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.history-entry-stat.speed {
+    color: var(--primary);
+    opacity: 0.75;
+    font-weight: 600;
+}
+
+.history-entry-sep {
+    font-size: 9px;
+    color: var(--text-muted);
+    opacity: 0.35;
 }
 
 .history-entry-app {
@@ -379,6 +401,10 @@ body,
     color: var(--primary);
     opacity: 0.6;
     font-weight: 600;
+    margin-left: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .history-entry-row {

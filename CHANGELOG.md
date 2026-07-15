@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### ✨ New Features
+
+- **Per-dictation stats in history** — each history row now shows, next to the date/time: the **audio length**, the **transcription + paste time** (measured from the moment you stop to text on screen), and the **speed vs real time** (e.g. `12.4s · 380ms · 33×`). Entries recorded before this change simply omit the figures.
+
 ## v3.0.0 — Live Streaming Transcription & Windows Engine Tune-Up
 
 ### ⚡ Performance
