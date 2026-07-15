@@ -13,6 +13,9 @@ const DEFAULT_SETTINGS: Settings = {
     transcriptionEngine: 'auto',
     personalDictionary: [],
     itnEnabled: false,
+    liveTranscription: true,
+    soundCues: false,
+    spokenPunctuation: false,
 };
 
 export function useSettings() {

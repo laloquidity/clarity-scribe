@@ -12,6 +12,8 @@ interface WidgetProps {
     whisperStatus: string;
     hotkey?: string;
     hotkeyMode?: 'toggle' | 'hold';
+    /** Live transcript so far (streaming mode) — shown while recording. */
+    partialText?: string;
 }
 
 const Waveform = () => (
@@ -49,6 +51,7 @@ const Widget: React.FC<WidgetProps> = ({
     whisperStatus,
     hotkey,
     hotkeyMode,
+    partialText,
 }) => {
     const isRecording = appState === 'RECORDING';
     const isProcessing = appState === 'PROCESSING';
@@ -132,6 +135,23 @@ const Widget: React.FC<WidgetProps> = ({
                             <div className="model-progress-bar">
                                 <div className="model-progress-fill" style={{ width: `${whisperProgress}%` }} />
                             </div>
+                        </div>
+                    )}
+                    {(isRecording || isProcessing) && partialText && (
+                        <div
+                            className="live-transcript"
+                            title={partialText}
+                            style={{
+                                fontSize: 11,
+                                opacity: 0.75,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                maxWidth: 210,
+                                marginTop: 2,
+                            }}
+                        >
+                            {/* show the tail — the newest words matter most */}
+                            {partialText.length > 46 ? '…' + partialText.slice(-45) : partialText}
                         </div>
                     )}
                 </div>

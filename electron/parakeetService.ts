@@ -563,24 +563,30 @@ export async function transcribeParakeet(
             const T_out = encoderOut.dims[2] as number;
             const encoderData = encoderOut.data as Float32Array;
 
-            // 4. Decode each batch element independently (decoder runs on CPU — negligible overhead)
+            // 4. Decode all batch elements CONCURRENTLY. Each decode is an
+            // independent greedy loop over its own encoder slice (own state,
+            // own reusable buffers), and ONNX Runtime sessions are safe for
+            // concurrent run() calls — so N segments decode in parallel on the
+            // CPU instead of serially, cutting long-audio decode wall-time.
+            // Results are collected by index so text order is preserved.
             const decStart = Date.now();
-            for (let i = 0; i < N; i++) {
-                const segLen = Number(encoderOutLens.data[i]);
-                const segIdx = batchStart + i;
+            const segTexts = await Promise.all(
+                Array.from({ length: N }, (_, i) => {
+                    const segLen = Number(encoderOutLens.data[i]);
 
-                // Extract this segment's encoder output: [1, D, T_out] slice from batch
-                // Batch layout [N, D, T]: element i starts at offset i * D * T_out
-                const segData = new Float32Array(D * T_out);
-                const batchOffset = i * D * T_out;
-                segData.set(encoderData.subarray(batchOffset, batchOffset + D * T_out));
+                    // Extract this segment's encoder output: [1, D, T_out] slice
+                    // from batch layout [N, D, T] (element i at offset i*D*T_out)
+                    const segData = new Float32Array(D * T_out);
+                    const batchOffset = i * D * T_out;
+                    segData.set(encoderData.subarray(batchOffset, batchOffset + D * T_out));
 
-                const segEncoderOut = new ort.Tensor('float32', segData, [1, D, T_out]);
-                const { text } = await core.transducerGreedyDecode(segEncoderOut, segLen, decodeCtx());
-
-                if (text.trim()) {
-                    texts.push(text.trim());
-                }
+                    const segEncoderOut = new ort.Tensor('float32', segData, [1, D, T_out]);
+                    return core.transducerGreedyDecode(segEncoderOut, segLen, decodeCtx())
+                        .then(r => r.text.trim());
+                })
+            );
+            for (const t of segTexts) {
+                if (t) texts.push(t);
             }
             totalDec += Date.now() - decStart;
         }

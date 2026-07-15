@@ -16,6 +16,7 @@ import { useSettings } from './hooks/useSettings';
 import { useAudioRecording } from './hooks/useAudioRecording';
 import { cleanTranscription } from './utils/cleanTranscription';
 import { applyITN } from './utils/itn';
+import { applySpokenPunctuation } from './utils/spokenPunctuation';
 import type { AppState, HistoryEntry, DictionaryEntry } from './types';
 
 const COLLAPSED_HEIGHT = 64;
@@ -35,6 +36,7 @@ const App: React.FC = () => {
     const [copiedToast, setCopiedToast] = useState(false);
     const [setupDone, setSetupDone] = useState(false);
     const [personalDictionary, setPersonalDictionary] = useState<DictionaryEntry[]>([]);
+    const [partialText, setPartialText] = useState('');
 
     // Keep a ref to dictionary for use in the transcription callback (avoids stale closure)
     const dictionaryRef = useRef<DictionaryEntry[]>([]);
@@ -47,6 +49,8 @@ const App: React.FC = () => {
     // capture a stale value). Default OFF — feature is strictly opt-in.
     const itnEnabledRef = useRef<boolean>(false);
     useEffect(() => { itnEnabledRef.current = settings.itnEnabled; }, [settings.itnEnabled]);
+    const spokenPunctRef = useRef<boolean>(false);
+    useEffect(() => { spokenPunctRef.current = settings.spokenPunctuation; }, [settings.spokenPunctuation]);
 
     // Audio recording — disable silence detection in hold-to-talk mode
     const { startRecording, stopRecording, isRecordingRef } = useAudioRecording({
@@ -166,12 +170,53 @@ const App: React.FC = () => {
         return () => { unsubReady?.(); unsubProgress?.(); };
     }, []);
 
+    // Live transcript preview (streaming mode): update while recording, clear
+    // when a recording starts or a final result lands.
+    useEffect(() => {
+        const api = window.electronAPI;
+        if (!api?.onTranscriptionPartial) return;
+        const unsub = api.onTranscriptionPartial((text) => setPartialText(text));
+        return () => { unsub?.(); };
+    }, []);
+    useEffect(() => {
+        if (appState === 'RECORDING') setPartialText('');
+    }, [appState]);
+
+    // Subtle generated sound cues on record start/stop (no audio assets).
+    const soundCuesRef = useRef(false);
+    useEffect(() => { soundCuesRef.current = settings.soundCues; }, [settings.soundCues]);
+    const prevStateRef = useRef<AppState>('IDLE');
+    useEffect(() => {
+        const prev = prevStateRef.current;
+        prevStateRef.current = appState;
+        if (!soundCuesRef.current) return;
+        const cue = (freq: number, durMs: number) => {
+            try {
+                const ctx = new AudioContext();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.frequency.value = freq;
+                osc.type = 'sine';
+                gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.06, ctx.currentTime + 0.01);
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + durMs / 1000);
+                osc.connect(gain).connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + durMs / 1000 + 0.02);
+                osc.onended = () => ctx.close();
+            } catch { /* audio unavailable — never block recording */ }
+        };
+        if (prev !== 'RECORDING' && appState === 'RECORDING') cue(880, 90);        // start: high blip
+        else if (prev === 'RECORDING' && appState === 'PROCESSING') cue(587, 110);  // stop: lower blip
+    }, [appState]);
+
     // Listen for transcription results
     useEffect(() => {
         const api = window.electronAPI;
         if (!api) return;
 
         const unsubResult = api.onTranscriptionResult(async (rawText) => {
+            setPartialText('');
             if (!rawText || rawText.trim().length === 0) {
                 setAppState('IDLE');
                 isRecordingRef.current = false;
@@ -180,6 +225,13 @@ const App: React.FC = () => {
 
             // Post-processing: remove filler words, stutters, apply dictionary, and clean up
             let text = cleanTranscription(rawText, dictionaryRef.current);
+
+            // Optional spoken punctuation commands ("comma" → ",", URL-aware
+            // "dot", "new line", …). Opt-in; runs before ITN so numbers/dates
+            // see the already-punctuated sentence shape.
+            if (spokenPunctRef.current) {
+                text = applySpokenPunctuation(text);
+            }
 
             // Optional Inverse Text Normalization (spoken-form → written-form).
             // Strictly opt-in: when disabled, output is byte-identical to before.
@@ -301,6 +353,7 @@ const App: React.FC = () => {
                         whisperStatus={whisperStatus}
                         hotkey={settings.hotkey}
                         hotkeyMode={settings.hotkeyMode}
+                        partialText={partialText}
                     />
                 </div>
                 <div className="no-drag" style={{ display: 'flex', gap: 4, paddingRight: 12 }}>

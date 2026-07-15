@@ -472,6 +472,54 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                     </label>
                 </div>
 
+                {/* Spoken punctuation — opt-in, default OFF */}
+                <div className="settings-group">
+                    <span className="settings-label" style={{ marginBottom: 2 }}>Spoken punctuation</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 6 }}>
+                        Say "comma", "period", "new line", "question mark" — even "google dot com" — and get symbols.
+                    </span>
+                    <label className="settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={!!settings.spokenPunctuation}
+                            onChange={e => onUpdateSetting('spokenPunctuation', e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
+
+                {/* Live transcription (transcribe-while-recording) — default ON */}
+                <div className="settings-group">
+                    <span className="settings-label" style={{ marginBottom: 2 }}>Live transcription</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 6 }}>
+                        Transcribe while you speak for near-instant results and a live preview in the widget (Parakeet engine).
+                    </span>
+                    <label className="settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={settings.liveTranscription !== false}
+                            onChange={e => onUpdateSetting('liveTranscription', e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
+
+                {/* Sound cues — default OFF */}
+                <div className="settings-group">
+                    <span className="settings-label" style={{ marginBottom: 2 }}>Sound cues</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 6 }}>
+                        Subtle blips when recording starts and stops.
+                    </span>
+                    <label className="settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={!!settings.soundCues}
+                            onChange={e => onUpdateSetting('soundCues', e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
+
                 {/* Launch on Login */}
                 <LaunchOnLogin />
             </div>

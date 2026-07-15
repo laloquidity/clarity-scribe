@@ -35,8 +35,13 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     const noAudioStartRef = useRef<number>(0);
     const noAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
     const noAudioAnalyserRef = useRef<AnalyserNode | null>(null);
+    const streamingActiveRef = useRef(false);
+    const streamPendingRef = useRef<Float32Array[]>([]);
+    const streamPendingSamplesRef = useRef(0);
+    const flushResolveRef = useRef<(() => void) | null>(null);
 
     const MAX_RECORDING_DURATION_MS = 30 * 60 * 1000;
+    const STREAM_CHUNK_MS = 250; // batch worklet frames into ~250ms IPC chunks
     const NO_AUDIO_WINDOW_MS = 30_000;     // Check window: 30 seconds
     const NO_AUDIO_THRESHOLD = 0.80;        // 80% silence triggers auto-stop
     const NO_AUDIO_ENERGY_THRESHOLD = 10;   // Frequency-domain avg below this = silence (same as existing silence detection)
@@ -131,13 +136,35 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
         []
     );
 
+    /** Send accumulated streaming chunks to the main process (fire-and-forget). */
+    const flushStreamPending = useCallback(() => {
+        if (!streamingActiveRef.current || streamPendingSamplesRef.current === 0) return;
+        const total = streamPendingSamplesRef.current;
+        const merged = new Float32Array(total);
+        let off = 0;
+        for (const b of streamPendingRef.current) { merged.set(b, off); off += b.length; }
+        streamPendingRef.current = [];
+        streamPendingSamplesRef.current = 0;
+        window.electronAPI?.streamChunk?.(merged);
+    }, []);
+
+    const abortStreaming = useCallback(() => {
+        if (streamingActiveRef.current) {
+            streamingActiveRef.current = false;
+            streamPendingRef.current = [];
+            streamPendingSamplesRef.current = 0;
+            window.electronAPI?.streamAbort?.();
+        }
+    }, []);
+
     const processRecordedAudio = useCallback(
         (chunks: Float32Array[], recordedSampleRate: number) => {
             const totalLength = chunks.reduce((acc, buf) => acc + buf.length, 0);
-            if (totalLength === 0) { onStateChange('IDLE'); return; }
+            if (totalLength === 0) { abortStreaming(); onStateChange('IDLE'); return; }
 
             const durationSeconds = totalLength / recordedSampleRate;
             if (durationSeconds < 1.0) {
+                abortStreaming();
                 onError('Recording too short. Speak for at least 1 second.');
                 onStateChange('ERROR');
                 return;
@@ -150,12 +177,17 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
             if (audioWorkerRef.current) {
                 audioWorkerRef.current.onmessage = (event) => {
                     const { success, processedAudio, error } = event.data;
-                    if (!success) { onStateChange('IDLE'); return; }
+                    if (!success) { abortStreaming(); onStateChange('IDLE'); return; }
 
                     const api = window.electronAPI;
                     if (api?.transcribe) {
+                        // If a streaming session ran during recording, the main
+                        // process finalizes it inside 'transcribe' (tail only);
+                        // the full buffer is the batch-path fallback.
+                        streamingActiveRef.current = false;
                         api.transcribe(processedAudio, 16000);
                     } else {
+                        abortStreaming();
                         onError('Transcription engine not available.');
                         onStateChange('ERROR');
                     }
@@ -166,7 +198,7 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
                 );
             }
         },
-        [onStateChange, onError]
+        [onStateChange, onError, abortStreaming]
     );
 
     const stopRecording = useCallback(() => {
@@ -181,23 +213,31 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
         if (ctx) {
             // Suspend FIRST — stops the hardware audio graph
             ctx.suspend().then(() => {
-                // Yield to the macrotask queue for 50ms.
-                // ctx.suspend() resolves as a microtask, but any final AudioWorklet 
-                // frames are traveling via MessagePort (macrotasks). Without this yield, 
-                // we would snapshot before the final frames arrive.
-                setTimeout(() => {
+                // Flush handshake with the worklet: port messages are delivered
+                // in order, so when the worklet answers 'flush' every prior audio
+                // frame has already arrived. Replaces a fixed 50ms wait — typical
+                // handshake completes in <5ms. 100ms timeout as a safety net.
+                const flushed = new Promise<void>((resolve) => {
+                    flushResolveRef.current = resolve;
+                    processorRef.current?.port.postMessage({ command: 'flush' });
+                    setTimeout(resolve, 100);
+                });
+                flushed.then(() => {
+                    flushResolveRef.current = null;
                     isRecordingRef.current = false;
+                    flushStreamPending(); // last partial stream chunk (tail)
                     const bufferChunks = [...audioBuffersRef.current];
                     processRecordedAudio(bufferChunks, ctx.sampleRate);
                     stopStream();
-                }, 50);
+                });
             });
         } else {
             isRecordingRef.current = false;
+            abortStreaming();
             stopStream();
             onStateChange('IDLE');
         }
-    }, [processRecordedAudio, stopStream, onStateChange]);
+    }, [processRecordedAudio, stopStream, onStateChange, flushStreamPending, abortStreaming]);
 
     const startRecording = useCallback(async () => {
         if (isToggleBusyRef.current) return;
@@ -232,6 +272,7 @@ class AudioRecorderProcessor extends AudioWorkletProcessor {
         this.port.onmessage = (event) => {
             if (event.data.command === 'stop') this._isRecording = false;
             else if (event.data.command === 'start') this._isRecording = true;
+            else if (event.data.command === 'flush') this.port.postMessage({ type: 'flushed' });
         };
     }
     process(inputs) {
@@ -263,10 +304,34 @@ registerProcessor('audio-recorder-processor', AudioRecorderProcessor);
             audioBuffersRef.current = [];
             isRecordingRef.current = true;
 
+            // Start a live streaming session (transcribe-while-recording) when
+            // the engine supports it and the user hasn't disabled it. The full
+            // buffer is still kept locally as the batch-path fallback.
+            streamingActiveRef.current = false;
+            streamPendingRef.current = [];
+            streamPendingSamplesRef.current = 0;
+            if (settingsRef.current.liveTranscription !== false && window.electronAPI?.streamStart) {
+                window.electronAPI.streamStart(audioCtx.sampleRate)
+                    .then((r: { streaming: boolean }) => { streamingActiveRef.current = !!r?.streaming; })
+                    .catch(() => { streamingActiveRef.current = false; });
+            }
+            const streamChunkSamples = Math.round((STREAM_CHUNK_MS / 1000) * audioCtx.sampleRate);
+
             processor.port.onmessage = (event) => {
+                if (event.data.type === 'flushed') {
+                    flushResolveRef.current?.();
+                    return;
+                }
                 if (!isRecordingRef.current) return;
                 if (event.data.type === 'audio' && event.data.buffer) {
                     audioBuffersRef.current.push(event.data.buffer);
+                    if (streamingActiveRef.current) {
+                        streamPendingRef.current.push(event.data.buffer);
+                        streamPendingSamplesRef.current += event.data.buffer.length;
+                        if (streamPendingSamplesRef.current >= streamChunkSamples) {
+                            flushStreamPending();
+                        }
+                    }
                 }
             };
 
@@ -341,7 +406,7 @@ registerProcessor('audio-recorder-processor', AudioRecorderProcessor);
         } finally {
             isToggleBusyRef.current = false;
         }
-    }, [onStateChange, onError, startSilenceDetection, stopRecording]);
+    }, [onStateChange, onError, startSilenceDetection, stopRecording, flushStreamPending]);
 
     return { startRecording, stopRecording, stopStream, isRecordingRef };
 }

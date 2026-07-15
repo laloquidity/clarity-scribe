@@ -6,6 +6,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     isWhisperReady: () => ipcRenderer.invoke('is-whisper-ready'),
     copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text),
 
+    // Streaming transcription (transcribe-while-recording)
+    streamStart: (sampleRate: number) => ipcRenderer.invoke('stream-start', sampleRate),
+    streamChunk: (chunk: Float32Array) => ipcRenderer.invoke('stream-chunk', chunk),
+    streamAbort: () => ipcRenderer.invoke('stream-abort'),
+    onTranscriptionPartial: (cb: (text: string) => void) => {
+        const handler = (_: any, text: string) => cb(text);
+        ipcRenderer.on('transcription-partial', handler);
+        return () => { ipcRenderer.removeListener('transcription-partial', handler); };
+    },
+
     // Listeners
     onWhisperReady: (cb: (info?: { acceleration: string }) => void) => {
         const handler = (_: any, info?: { acceleration: string }) => cb(info);
