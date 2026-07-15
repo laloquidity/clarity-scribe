@@ -538,10 +538,21 @@ function applyOrdinals(text: string): string {
     });
 
     // Simple ordinals.
+    // "second" is the one ordinal that doubles as a TIME UNIT. Leave it alone
+    // in duration contexts — "tokens per second", "give me a second", "one
+    // second" — where "2nd" would be wrong. Ordinal readings ("the second
+    // option", "second place") still convert. Per design principle #1
+    // (CONSERVATIVE), the ambiguous "a second X" stays unconverted.
+    const SECOND_DURATION_PRECEDERS = new Set(['per', 'a', 'one']);
     const reSimple = new RegExp(`\\b(${ordAlt})\\b`, 'gi');
-    out = out.replace(reSimple, (match, ord: string) => {
+    out = out.replace(reSimple, (match, ord: string, offset: number, whole: string) => {
         const n = ORDINAL_WORDS[ord.toLowerCase()];
         if (n === undefined) return match;
+        if (ord.toLowerCase() === 'second') {
+            const before = whole.slice(0, offset).trimEnd();
+            const prevWord = before.slice(before.lastIndexOf(' ') + 1).toLowerCase();
+            if (SECOND_DURATION_PRECEDERS.has(prevWord)) return match;
+        }
         return `${n}${ordinalSuffix(n)}`;
     });
 

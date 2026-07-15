@@ -63,7 +63,8 @@ describe('applyITN — cardinal numbers', () => {
     it('leaves small ambiguous standalone words alone', () => {
         expect(applyITN('one of the best')).toBe('one of the best');
         expect(applyITN('a dog and a cat')).toBe('a dog and a cat');
-        expect(applyITN('give me a second')).not.toMatch(/\b2\b/);
+        // exact-match: the old /\b2\b/ assertion couldn't catch "a 2nd"
+        expect(applyITN('give me a second')).toBe('give me a second');
     });
     it('keeps surrounding words intact', () => {
         expect(applyITN('I have twenty three apples')).toBe('I have 23 apples');
@@ -86,6 +87,16 @@ describe('applyITN — ordinals', () => {
     });
     it('uses correct suffix in context', () => {
         expect(applyITN('the first item')).toBe('the 1st item');
+    });
+    it('keeps "second" as a time unit in duration contexts', () => {
+        expect(applyITN('tokens per second')).toBe('tokens per second');
+        expect(applyITN('sixty frames per second')).toBe('60 frames per second');
+        expect(applyITN('one second please')).toBe('one second please');
+        expect(applyITN('wait a second')).toBe('wait a second');
+        // …while ordinal readings still convert
+        expect(applyITN('the second option')).toBe('the 2nd option');
+        expect(applyITN('second place')).toBe('2nd place');
+        expect(applyITN('second')).toBe('2nd');
     });
 });
 
