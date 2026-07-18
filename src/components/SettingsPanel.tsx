@@ -67,6 +67,35 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
     }, []);
 
     // Launch on Login sub-component
+    /** Port + bearer token readout shown when the Local API is enabled. */
+    function LocalApiInfo() {
+        const [info, setInfo] = React.useState<{ running: boolean; port: number; token: string | null } | null>(null);
+        const [copied, setCopied] = React.useState(false);
+        React.useEffect(() => {
+            window.electronAPI?.getLocalApiInfo?.().then(setInfo).catch(() => {});
+        }, []);
+        if (!info) return null;
+        return (
+            <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                <div>{info.running ? `Running on 127.0.0.1:${info.port}` : `Will listen on 127.0.0.1:${info.port} after restart`}</div>
+                {info.token && (
+                    <button
+                        className="history-action-btn"
+                        style={{ marginTop: 3 }}
+                        onClick={() => {
+                            window.electronAPI?.copyToClipboard(info.token!);
+                            setCopied(true);
+                            setTimeout(() => setCopied(false), 1500);
+                        }}
+                    >
+                        {copied ? 'Token copied ✓' : 'Copy API token'}
+                    </button>
+                )}
+                {!info.token && <div>Token is generated on first start.</div>}
+            </div>
+        );
+    }
+
     function LaunchOnLogin() {
         const [enabled, setEnabled] = React.useState(false);
         React.useEffect(() => {
@@ -518,6 +547,24 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                         />
                         <span className="toggle-slider" />
                     </label>
+                </div>
+
+                {/* Local API — opt-in, default OFF, applies on restart */}
+                <div className="settings-group">
+                    <span className="settings-label" style={{ marginBottom: 2 }}>Local API</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 6 }}>
+                        Loopback-only API for scripts &amp; agents: live transcript event stream + record start/stop.
+                        Takes effect after restarting the app. See README for endpoints.
+                    </span>
+                    <label className="settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={!!settings.localApiEnabled}
+                            onChange={e => onUpdateSetting('localApiEnabled', e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                    </label>
+                    {settings.localApiEnabled && <LocalApiInfo />}
                 </div>
 
                 {/* Launch on Login */}

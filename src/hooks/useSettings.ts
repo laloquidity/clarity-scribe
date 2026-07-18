@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS: Settings = {
     liveTranscription: true,
     soundCues: false,
     spokenPunctuation: false,
+    localApiEnabled: false,
 };
 
 export function useSettings() {

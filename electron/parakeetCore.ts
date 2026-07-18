@@ -30,6 +30,118 @@ export interface DecodeContext {
     blankId: number;
     predRnnLayers: number;
     predHidden: number;
+    /** Optional custom-vocabulary bias (shallow fusion). Absent → decode is
+     *  bit-identical to the unbiased implementation. */
+    bias?: BiasContext | null;
+}
+
+// ---------------------------------------------------------------------------
+// Custom-vocabulary biasing (shallow fusion over a token trie)
+// ---------------------------------------------------------------------------
+//
+// Personal-dictionary terms are tokenized into the model's SentencePiece
+// inventory and stored in a trie of token-id sequences. During greedy decode
+// we track which trie prefixes the recent emissions match; the token ids that
+// would EXTEND a matched prefix get a logit boost before the argmax. This
+// biases the decoder toward producing "Kubernetes" as the model hears it,
+// instead of fixing "cooper netties" after the fact with string replacement.
+//
+// The boost only tips near-ties (confident emissions have logit gaps far
+// larger than the boost), and with no terms configured the code path is
+// completely inert — guarded by the golden regression test.
+
+interface TrieNode {
+    children: Map<number, TrieNode>;
+    terminal: boolean;
+}
+
+export interface BiasContext {
+    root: TrieNode;
+    boost: number;
+    /** Number of terms successfully tokenized (diagnostics). */
+    termCount: number;
+}
+
+/**
+ * Greedy longest-match tokenization of a term into the model's SentencePiece
+ * inventory. Word starts get the ▁ marker (NeMo convention). Returns null if
+ * any position cannot be matched by a known piece.
+ */
+export function tokenizeTerm(term: string, pieceToId: Map<string, number>, maxPieceLen: number): number[] | null {
+    const ids: number[] = [];
+    const words = term.trim().split(/\s+/).filter(w => w.length > 0);
+    if (words.length === 0) return null;
+
+    for (const word of words) {
+        let rest = '▁' + word; // ▁ marks a word boundary in SentencePiece
+        while (rest.length > 0) {
+            let matched = false;
+            for (let len = Math.min(maxPieceLen, rest.length); len >= 1; len--) {
+                const id = pieceToId.get(rest.slice(0, len));
+                if (id !== undefined) {
+                    ids.push(id);
+                    rest = rest.slice(len);
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return null; // character not representable
+        }
+    }
+    return ids.length > 0 ? ids : null;
+}
+
+/**
+ * Build a bias trie from user terms against the loaded vocabulary.
+ * Returns null when nothing usable was produced (decode stays unbiased).
+ *
+ * Each term is added as-given; an additional Capitalized variant is added for
+ * all-lowercase terms because the model capitalizes sentence starts.
+ */
+export function buildBiasContext(terms: string[], vocabulary: string[], boost = 2.0): BiasContext | null {
+    if (!terms || terms.length === 0) return null;
+
+    const pieceToId = new Map<string, number>();
+    let maxPieceLen = 1;
+    for (let id = 0; id < vocabulary.length; id++) {
+        const piece = vocabulary[id];
+        if (!piece || (piece.startsWith('<') && piece.endsWith('>'))) continue;
+        pieceToId.set(piece, id);
+        if (piece.length > maxPieceLen) maxPieceLen = piece.length;
+    }
+
+    const root: TrieNode = { children: new Map(), terminal: false };
+    let termCount = 0;
+
+    const addSequence = (ids: number[]) => {
+        let node = root;
+        for (const id of ids) {
+            let next = node.children.get(id);
+            if (!next) {
+                next = { children: new Map(), terminal: false };
+                node.children.set(id, next);
+            }
+            node = next;
+        }
+        node.terminal = true;
+    };
+
+    for (const raw of terms) {
+        const term = (raw || '').trim();
+        if (!term) continue;
+        const variants = new Set<string>([term]);
+        if (term === term.toLowerCase()) {
+            variants.add(term.charAt(0).toUpperCase() + term.slice(1));
+        }
+        let added = false;
+        for (const v of variants) {
+            const ids = tokenizeTerm(v, pieceToId, maxPieceLen);
+            if (ids) { addSequence(ids); added = true; }
+        }
+        if (added) termCount++;
+    }
+
+    return termCount > 0 ? { root, boost, termCount } : null;
 }
 
 /**
@@ -226,6 +338,35 @@ export async function transducerGreedyDecode(
     let tokensThisFrame = 0;
     let skip = 0; // frames to advance
 
+    // --- Custom-vocabulary bias state (inert when no bias context) ---
+    // activeNodes holds trie prefixes matched by the most recent emissions;
+    // the ids extending any of them (or starting a new term) get the boost.
+    const bias = ctx.bias ?? null;
+    let activeNodes: Array<{ children: Map<number, unknown>; terminal: boolean }> = [];
+    const collectBoosted = (): Set<number> | null => {
+        if (!bias) return null;
+        const boosted = new Set<number>();
+        for (const id of bias.root.children.keys()) boosted.add(id);
+        for (const node of activeNodes) {
+            for (const id of (node.children as Map<number, unknown>).keys()) boosted.add(id);
+        }
+        return boosted.size > 0 ? boosted : null;
+    };
+    const advanceBias = (y: number): void => {
+        if (!bias) return;
+        const next: typeof activeNodes = [];
+        const seen = new Set<unknown>();
+        for (const node of [bias.root, ...activeNodes]) {
+            const child = (node.children as Map<number, any>).get(y);
+            // Completed terms end their path; prefixes with continuations live on.
+            if (child && child.children.size > 0 && !seen.has(child)) {
+                seen.add(child);
+                next.push(child);
+            }
+        }
+        activeNodes = next;
+    };
+
     // Diagnostic counters for truncation investigation
     let totalBlanks = 0;
     let totalIterations = 0;
@@ -253,13 +394,28 @@ export async function transducerGreedyDecode(
         // TDT: joiner output = [vocab_size + num_durations]
         const numDurations = logitsData.length - vocabSize;
 
-        // Argmax over vocab portion (token logits)
+        // Argmax over vocab portion (token logits). With a bias context, ids
+        // that extend a matched custom-vocabulary prefix (or start one) get a
+        // logit boost first — shallow fusion. The plain loop is kept separate
+        // so the unbiased path stays bit-identical (golden-tested).
         let y = 0;
         let maxVal = logitsData[0];
-        for (let i = 1; i < vocabSize; i++) {
-            if (logitsData[i] > maxVal) {
-                maxVal = logitsData[i];
-                y = i;
+        const boosted = collectBoosted();
+        if (boosted) {
+            maxVal = logitsData[0] + (boosted.has(0) ? bias!.boost : 0);
+            for (let i = 1; i < vocabSize; i++) {
+                const v = logitsData[i] + (boosted.has(i) ? bias!.boost : 0);
+                if (v > maxVal) {
+                    maxVal = v;
+                    y = i;
+                }
+            }
+        } else {
+            for (let i = 1; i < vocabSize; i++) {
+                if (logitsData[i] > maxVal) {
+                    maxVal = logitsData[i];
+                    y = i;
+                }
             }
         }
 
@@ -284,6 +440,7 @@ export async function transducerGreedyDecode(
             tokensThisFrame += 1;
             lastTokenFrame = t;
             consecutiveBlanks = 0;
+            advanceBias(y);
 
             targetsBuf[0] = prevToken;
             ({ output: decoderOut, nextStates } = await runDecoder(decoderSession, targets, targetLen, decoderStates));
@@ -308,6 +465,7 @@ export async function transducerGreedyDecode(
             prevToken = blankId;
             consecutiveBlanks = 0;
             tokensThisFrame = 0;
+            activeNodes = []; // bias prefixes are stale after an LSTM reset
             targetsBuf[0] = prevToken;
             ({ output: decoderOut, nextStates } = await runDecoder(decoderSession, targets, targetLen, decoderStates));
             decoderCalls++;

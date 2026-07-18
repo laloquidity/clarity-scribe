@@ -64,6 +64,39 @@ export function setCoreMLEnabled(enabled: boolean): void {
     sidecarEnabled = enabled;
 }
 
+// --- Decoder-level custom vocabulary (shallow-fusion biasing) ---
+// Terms come from the Personal Dictionary's "replacement" values (what the
+// user MEANT). The trie is built lazily against the loaded vocabulary and
+// rebuilt whenever the dictionary changes. Applies to the ONNX decode path
+// (Windows/Linux and the macOS ONNX fallback); the CoreML sidecar decodes in
+// Swift and does not support biasing yet.
+let boostTerms: string[] = [];
+let biasContext: core.BiasContext | null = null;
+let biasDirty = false;
+
+export function setVocabularyBoostTerms(terms: string[]): void {
+    boostTerms = (terms || []).filter(t => typeof t === 'string' && t.trim().length > 0);
+    biasDirty = true;
+}
+
+function currentBias(): core.BiasContext | null {
+    if (biasDirty && vocabulary.length > 0) {
+        biasDirty = false;
+        try {
+            biasContext = core.buildBiasContext(boostTerms, vocabulary);
+            if (biasContext) {
+                console.log(`[Parakeet] Vocabulary bias active: ${biasContext.termCount}/${boostTerms.length} terms tokenized`);
+            } else if (boostTerms.length > 0) {
+                console.log('[Parakeet] Vocabulary bias: no terms tokenizable');
+            }
+        } catch (e) {
+            console.warn('[Parakeet] Vocabulary bias build failed (decoding unbiased):', e);
+            biasContext = null;
+        }
+    }
+    return biasContext;
+}
+
 /** Decode context passed to the shared core TDT decoder. */
 function decodeCtx(): core.DecodeContext {
     return {
@@ -73,6 +106,7 @@ function decodeCtx(): core.DecodeContext {
         blankId: BLANK_ID,
         predRnnLayers,
         predHidden,
+        bias: currentBias(),
     };
 }
 

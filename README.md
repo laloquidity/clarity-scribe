@@ -8,7 +8,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 
 | Platform | Install |
 |----------|---------|
-| **Windows** (x64) | [**Clarity Scribe Setup (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v2.8.0/Clarity.Scribe.Setup.2.8.0.exe) (~912 MB, v2.8 — for the v3 live-streaming engine, build from source until the next installer release) |
+| **Windows** (x64) | [**Clarity Scribe Setup 3.1.0 (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v3.1.0/Clarity.Scribe.Setup.3.1.0.exe) (~913 MB — live streaming engine, GPU backends bundled) |
 | **macOS** (Apple Silicon) | Clone and run from source — see [Getting Started](#getting-started) |
 
 > On first launch, the app downloads the Whisper AI model (~1.5 GB). Parakeet TDT (~890 MB) is downloaded on first use when engine is set to Auto or Parakeet. Fully offline after model downloads.
@@ -21,7 +21,8 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 - **Smart Formatting (ITN)** (opt-in) — Spoken forms become written forms: "two thirty pm" → "2:30 PM", "fifty million dollars" → "$50,000,000" (with thousands separators), dates, ordinals, punctuation commands.
 - **Spoken Punctuation** (opt-in) — Say "comma", "period", "new line", "question mark" — with context-aware "dot" that only activates in URLs ("google dot com" → "google.com").
 - **Sound Cues** (opt-in) — Subtle generated blips on recording start/stop.
-- **Personal Dictionary** — Add custom word corrections that automatically apply to every transcription. Maps what was written to what you meant (e.g. `Chat GPT` to `ChatGPT`). Book icon in the widget bar opens a full CRUD panel with Add, Edit, batch Delete, Export JSON, and Import JSON. Each entry auto-generates ~12 case/hyphen/space variants for robust matching.
+- **Personal Dictionary with decoder-level recognition** — Add custom word corrections that apply to every transcription (e.g. `Chat GPT` to `ChatGPT`), with full CRUD, Export/Import JSON, and ~12 auto-generated variants per entry. Dictionary terms also feed **shallow-fusion vocabulary biasing inside the decoder** (ONNX engine): the model is nudged toward emitting your custom terms as it hears them, not just string-replaced afterwards.
+- **Local API** (opt-in) — Loopback-only HTTP API + SSE event stream: scripts and agents can start/stop dictation and consume live transcripts. See [Local API](#local-api-programmable-voice-layer).
 - **Hold-to-Talk Mode** — Hold a key to record, release to transcribe — or use the classic tap-to-toggle. Switch modes instantly in Settings with an Apple-style segmented control. Single function keys (F5-F12) for hold mode, modifier combos for toggle mode.
 - **Filler Word Removal** — Automatically strips filled pauses (um, uh, ah, er) from transcriptions while preserving natural speech patterns
 - **No-Audio Auto-Stop** — Automatically stops recording if no meaningful audio is detected for 80% of a 30-second window. Catches wrong mic selection, muted mic, and forgotten recordings.
@@ -187,6 +188,7 @@ clarity-scribe/
 │   ├── parakeetCore.ts    # Pure DSP + TDT decode (mel/FFT, decoder caching, collapse recovery) — unit-tested
 │   ├── parakeetSidecar.ts # CoreML ANE sidecar manager (spawn/protocol/model download, macOS)
 │   ├── streamingTranscriber.ts # Transcribe-while-recording: RMS segmenter, segment queue, partials — unit-tested
+│   ├── localApi.ts        # Loopback SSE event stream + record control (opt-in) — unit-tested
 │   ├── winPaste.ts        # Native Win32 paste via koffi FFI with foreground verification (Windows)
 │   ├── tdtDecoder.ts      # Token-and-Duration Transducer beam search
 │   └── preload.ts         # Context bridge (IPC API)
@@ -276,6 +278,75 @@ The default engine is the CoreML sidecar with the encoder on the Apple Neural En
 ### Whisper Large V3 Turbo (whisper.cpp)
 
 Uses CUDA, Vulkan, or Metal depending on platform. GPU DLLs are loaded automatically from `resources/win-gpu/{cuda,vulkan}/` on Windows.
+
+## Local API (programmable voice layer)
+
+Clarity Scribe can expose a small **loopback-only** HTTP API so scripts, agents,
+and automations can drive dictation and observe transcription in real time. This
+is the integration seam for building agent/automation workflows on top of your
+voice — start/stop recording programmatically and stream partial and final
+transcripts as they happen.
+
+Disabled by default. Enable it in Settings ("Local API") and restart the app.
+When on, it binds `127.0.0.1:5111` (never reachable off your machine) and issues
+a random bearer token on first start, stored locally (copy it from Settings).
+
+### Auth
+
+Every request requires the token, supplied either way:
+
+- Header: `Authorization: Bearer <token>`
+- Query param: `?token=<token>` (needed for `EventSource`, which can't set headers)
+
+Requests without a valid token get `401`.
+
+### Endpoints
+
+| Method | Path                    | Description                                             |
+| ------ | ----------------------- | ------------------------------------------------------- |
+| GET    | `/v1/events`            | SSE stream of live events (see below)                   |
+| POST   | `/v1/record/start`      | Start recording. `200 {ok:true}` or `409` if already on |
+| POST   | `/v1/record/stop`       | Stop recording. `200 {ok:true}` or `409` if not on      |
+| GET    | `/v1/status`            | `{recording, engine, version}`                          |
+| GET    | `/v1/history?limit=N`   | `{entries:[…]}` — recent transcripts, newest first      |
+
+Unknown routes return a JSON `404`. All responses are `application/json` except
+the event stream.
+
+### Event stream (SSE)
+
+`GET /v1/events` holds open a `text/event-stream`. Each event is a JSON object on
+a `data:` line, with a `ts` (epoch ms):
+
+- `{type:"hello", version, ts}` — sent once on connect
+- `{type:"partial", text, ts}` — live in-progress transcript
+- `{type:"result", text, ts}` — finalized transcript
+- `{type:"state", state:"RECORDING"|"PROCESSING"|"IDLE", ts}` — recording lifecycle
+
+A heartbeat comment is sent every 15s to keep the connection alive.
+
+### Example (curl)
+
+```bash
+TOKEN=<your-token>
+
+# Start recording
+curl -X POST http://127.0.0.1:5111/v1/record/start \
+  -H "Authorization: Bearer $TOKEN"
+
+# Check status
+curl http://127.0.0.1:5111/v1/status -H "Authorization: Bearer $TOKEN"
+
+# Stream live events (Ctrl-C to stop)
+curl -N "http://127.0.0.1:5111/v1/events?token=$TOKEN"
+```
+
+Browser / EventSource:
+
+```js
+const es = new EventSource(`http://127.0.0.1:5111/v1/events?token=${TOKEN}`);
+es.onmessage = (e) => console.log(JSON.parse(e.data));
+```
 
 ## Privacy
 
