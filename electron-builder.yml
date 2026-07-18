@@ -42,6 +42,9 @@ mac:
   extraResources:
     - from: "native/parakeet-sidecar/.build/release/parakeet-sidecar"
       to: "parakeet-sidecar"
+    # Menu-bar tray icon loaded at runtime via process.resourcesPath
+    - from: "resources/icon.png"
+      to: "icon.png"
   files:
     - "!node_modules/koffi/build/koffi/win32_*"
 win:
@@ -54,6 +57,9 @@ win:
     - from: "resources/win-gpu/"
       to: "win-gpu/"
       filter: ["**/*.dll"]
+    # Tray icon loaded at runtime via process.resourcesPath (main.ts createTrayIcon)
+    - from: "resources/icon.ico"
+      to: "icon.ico"
   files:
     - "!node_modules/koffi/build/koffi/darwin_*"
 nsis:
