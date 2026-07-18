@@ -1,5 +1,20 @@
 # Changelog
 
+## v3.2.0 — Local API, Decoder-Level Vocabulary & Proper Icons
+
+### ✨ New Features
+
+- **Local API (programmable voice layer, opt-in)** — a loopback-only HTTP server (`127.0.0.1:5111`, bearer-token auth, default OFF) exposing an **SSE event stream** of live transcription (`partial` / `result` / `state` events) plus `POST /v1/record/start|stop`, `GET /v1/status`, and `GET /v1/history`. Scripts and agents can now drive dictation and consume transcripts in real time — the first brick of the voice-layer-for-agents direction. Settings shows the port and a copy-token button. 18 dedicated tests.
+- **Decoder-level custom vocabulary (shallow fusion)** — Personal Dictionary terms are tokenized into the model's SentencePiece inventory and boosted inside the TDT greedy decode via a token-trie (boost applied to ids that extend a matched prefix). Custom terms are now *recognized* rather than only string-replaced afterwards. Inert when the dictionary is empty (golden decode bit-identical — regression-tested); applies to the ONNX engine (Windows/Linux + macOS fallback; the CoreML sidecar decodes in Swift and is not biased yet).
+- **v3.1.0 Windows installer shipped** — `Clarity Scribe Setup 3.1.0.exe` on the [v3.1.0 release](https://github.com/laloquidity/clarity-scribe/releases/tag/v3.1.0); README download link updated.
+
+### 🐛 Fixes
+
+- **Windows tray icon** — the hidden-icons tray showed a garbled 16px blob; the tray now loads the real app logo from `icon.ico` (shipped as an extraResource, resolved via `process.resourcesPath` when packaged).
+- **macOS menu-bar icon was blank** — the tray fed an SVG to `nativeImage.createFromBuffer`, which Electron cannot decode. Now uses the logo PNG at menu-bar size; dev runs also set the dock icon.
+
+---
+
 ## v3.1.0 — Paste Reliability, Live Capsule & Dictation Stats
 
 ### 🐛 Fixes

@@ -16,6 +16,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => { ipcRenderer.removeListener('transcription-partial', handler); };
     },
 
+    // Local API (programmable voice layer)
+    getLocalApiInfo: () => ipcRenderer.invoke('get-local-api-info'),
+
     // Listeners
     onWhisperReady: (cb: (info?: { acceleration: string }) => void) => {
         const handler = (_: any, info?: { acceleration: string }) => cb(info);

@@ -10,7 +10,8 @@ import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
 import * as streaming from './streamingTranscriber';
-import { transcribeParakeet } from './parakeetService';
+import { transcribeParakeet, setVocabularyBoostTerms } from './parakeetService';
+import { startLocalApi, stopLocalApi, emitEvent, isRunning as isLocalApiRunning } from './localApi';
 import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow, getForegroundPid } from './winPaste';
 import { initHotkeyService, registerHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
 
@@ -198,6 +199,23 @@ function execPromise(command: string): Promise<string> {
 
 function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Feed Personal Dictionary "replacement" terms (what the user MEANT) into the
+ * decoder's shallow-fusion vocabulary bias, so custom terms are recognized at
+ * decode time instead of only string-replaced afterwards.
+ */
+function syncVocabularyBoost(): void {
+    try {
+        const raw = store.get('personalDictionary') as any[];
+        const terms = Array.isArray(raw)
+            ? raw.map(e => (typeof e === 'string' ? e : e?.replacement)).filter((t: any) => typeof t === 'string' && t.trim())
+            : [];
+        setVocabularyBoostTerms(terms);
+    } catch (e) {
+        console.warn('[Main] Vocabulary boost sync failed:', e);
+    }
 }
 
 async function pasteToTarget(text: string): Promise<{ success: boolean; fallback?: string; app?: string; reason?: string }> {
@@ -472,12 +490,14 @@ function setupHotkeyCallbacks(): void {
             if (!isCurrentlyRecording) {
                 captureTargetBeforeRecording();
                 isCurrentlyRecording = true;
+                emitEvent({ type: 'state', state: 'RECORDING' });
             } else {
                 // Hotkey stop: the app under the user's fingers RIGHT NOW is
                 // where they want the text — retarget in case they switched
                 // apps mid-recording (start-time capture would be stale).
                 retargetAtStop();
                 isCurrentlyRecording = false;
+                emitEvent({ type: 'state', state: 'PROCESSING' });
             }
             mainWindow?.webContents.send('toggle-recording');
         },
@@ -487,6 +507,7 @@ function setupHotkeyCallbacks(): void {
             if (isCurrentlyRecording) return;
             captureTargetBeforeRecording();
             isCurrentlyRecording = true;
+            emitEvent({ type: 'state', state: 'RECORDING' });
             mainWindow?.webContents.send('start-recording');
         },
         // Hold mode: key up stops recording
@@ -495,6 +516,7 @@ function setupHotkeyCallbacks(): void {
             if (!isCurrentlyRecording) return;
             retargetAtStop();
             isCurrentlyRecording = false;
+            emitEvent({ type: 'state', state: 'PROCESSING' });
             mainWindow?.webContents.send('stop-recording');
         },
     });
@@ -522,6 +544,8 @@ function setupIpcHandlers(): void {
                 if (result.healthy && result.text) {
                     console.log(`[Main] Streamed transcription finalized in ${Date.now() - t0}ms (${result.segments} segments): "${result.text.substring(0, 80)}"`);
                     mainWindow?.webContents.send('transcription-result', result.text);
+                    emitEvent({ type: 'result', text: result.text });
+                    emitEvent({ type: 'state', state: 'IDLE' });
                     return { success: true, text: result.text };
                 }
                 console.log(`[Main] Streaming session ${result.healthy ? 'empty' : 'unhealthy'} — falling back to batch transcription`);
@@ -537,6 +561,8 @@ function setupIpcHandlers(): void {
             });
             console.log(`[Main] Transcribed: "${text.substring(0, 80)}"`);
             mainWindow?.webContents.send('transcription-result', text);
+            emitEvent({ type: 'result', text });
+            emitEvent({ type: 'state', state: 'IDLE' });
             return { success: true, text };
         } catch (error: any) {
             console.error('[Main] Transcribe error:', error);
@@ -668,6 +694,18 @@ function setupIpcHandlers(): void {
     });
     ipcMain.handle('save-dictionary', (_, dictionary: any[]) => {
         store.set('personalDictionary', dictionary);
+        syncVocabularyBoost();
+    });
+
+    // Local API info for the settings UI (token shown so users can wire tools).
+    ipcMain.handle('get-local-api-info', () => {
+        const s = store.get('settings') as any || {};
+        return {
+            enabled: s.localApiEnabled === true,
+            running: isLocalApiRunning(),
+            port: (s.localApiPort as number) || 5111,
+            token: (store.get('localApiToken') as string) || null,
+        };
     });
 
     // Window
@@ -815,8 +853,12 @@ app.whenReady().then(async () => {
                 streaming.configureStreaming((audio16k) => transcribeParakeet(audio16k));
                 streaming.onPartial((text) => {
                     mainWindow?.webContents.send('transcription-partial', text);
+                    emitEvent({ type: 'partial', text });
                 });
                 console.log('[Main] ✓ Live streaming transcription enabled');
+
+                // Decoder-level custom vocabulary from the Personal Dictionary
+                syncVocabularyBoost();
             } catch (e) {
                 console.warn('[Main] Parakeet init failed, falling back to Whisper:', e);
                 sendStep('parakeet', 'Parakeet Engine', 100, 'Skipped');
@@ -835,6 +877,44 @@ app.whenReady().then(async () => {
         mainWindow?.webContents.send('whisper-ready', { acceleration: nativeWhisper.getAccelerationInfo().type });
     } catch (error) {
         console.error('[Main] Init error:', error);
+    }
+
+    // --- Local API (programmable voice layer) ---
+    // Opt-in loopback control server: SSE event stream of live transcription
+    // plus start/stop endpoints. The integration seam for agent workflows.
+    {
+        const s = store.get('settings') as any || {};
+        if (s.localApiEnabled === true) { // default OFF
+            startLocalApi({
+                port: (s.localApiPort as number) || 5111,
+                getToken: () => (store.get('localApiToken') as string) || null,
+                setToken: (t) => store.set('localApiToken', t),
+                startRecording: () => {
+                    if (isCurrentlyRecording) return false;
+                    captureTargetBeforeRecording();
+                    isCurrentlyRecording = true;
+                    emitEvent({ type: 'state', state: 'RECORDING' });
+                    mainWindow?.webContents.send('start-recording');
+                    return true;
+                },
+                stopRecording: () => {
+                    if (!isCurrentlyRecording) return false;
+                    retargetAtStop();
+                    isCurrentlyRecording = false;
+                    emitEvent({ type: 'state', state: 'PROCESSING' });
+                    mainWindow?.webContents.send('stop-recording');
+                    return true;
+                },
+                getStatus: () => ({
+                    recording: isCurrentlyRecording,
+                    engine: nativeWhisper.getEngineInfo().currentEngine,
+                    version: app.getVersion(),
+                }),
+                getHistory: (limit) => getHistory().slice(0, limit),
+            })
+                .then(({ port }) => console.log(`[LocalAPI] listening on 127.0.0.1:${port}`))
+                .catch((err) => console.error('[LocalAPI] failed to start:', err));
+        }
     }
 
     setupHotkeyCallbacks();
@@ -858,6 +938,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('will-quit', () => {
+    if (isLocalApiRunning()) stopLocalApi();
     stopHotkeyService();
     if (pollingInterval) clearInterval(pollingInterval);
     nativeWhisper.cleanup();

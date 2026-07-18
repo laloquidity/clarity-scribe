@@ -21,6 +21,9 @@ export interface Settings {
     // Spoken punctuation commands ("comma", "period", "new line", URL-aware
     // "dot", …) converted to symbols. Default OFF (opt-in, like ITN).
     spokenPunctuation: boolean;
+    // Local API: loopback SSE event stream + record start/stop endpoints for
+    // scripts/agents. Default OFF; takes effect on app restart.
+    localApiEnabled: boolean;
 }
 
 export interface HistoryEntry {
@@ -111,6 +114,9 @@ export interface ElectronAPI {
     streamChunk: (chunk: Float32Array) => Promise<void>;
     streamAbort: () => Promise<void>;
     onTranscriptionPartial: (cb: (text: string) => void) => () => void;
+
+    // Local API (programmable voice layer)
+    getLocalApiInfo: () => Promise<{ enabled: boolean; running: boolean; port: number; token: string | null }>;
 
     onWhisperReady: (cb: (info?: { acceleration: string }) => void) => () => void;
     onWhisperProgress: (cb: (p: number, m: string) => void) => () => void;
