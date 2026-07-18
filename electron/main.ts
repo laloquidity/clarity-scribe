@@ -340,38 +340,49 @@ function createWindow(): void {
 }
 
 // --- Tray ---
+
+/** Resolve a bundled resource on disk in both dev and packaged layouts. */
+function getResourcePath(name: string): string {
+    return app.isPackaged
+        ? path.join(process.resourcesPath, name)
+        : path.join(app.getAppPath(), 'resources', name);
+}
+
 function createTrayIcon(): Electron.NativeImage {
-    const size = 16;
+    // Use the real app logo everywhere. Previous implementation used a
+    // hand-rolled 16px base64 blob on Windows (rendered as a garbled dot in
+    // the hidden-icons tray) and an SVG buffer on macOS — which Electron's
+    // nativeImage cannot decode at all, leaving the menu-bar icon BLANK.
     if (process.platform === 'win32') {
-        // Windows: Generate a proper 16x16 RGBA PNG for the system tray
-        // Simple microphone icon in white on transparent background
-        const img = nativeImage.createEmpty();
-        // Use a base64-encoded 16x16 PNG microphone icon
-        const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA' +
-            'mklEQVQ4y2NgGAWkAEYo/R8KGCkxgJGBgYGFgYHhPxD/h2IWKA0D' +
-            'LFANYIayQRgEQGwWqAYQzcy4DGCBagBhkCQLLgNYoGx0AxgpMYCF' +
-            'Eg1gga0eBv4jNJBkACMKG90ARgYI+I+kgRFdA5BmhjqHBSTDDCAH' +
-            'sECdw4JLAwuaH1gI+QGfBuwaWIgJJFwaWAgZQJIGfBoYKdGADwAA' +
-            'GmwZEWhKgZkAAAAASUVORK5CYII=';
-        return nativeImage.createFromBuffer(Buffer.from(pngBase64, 'base64'), { width: size, height: size });
+        // .ico carries proper 16/20/24/32px renditions for the tray.
+        const icon = nativeImage.createFromPath(getResourcePath('icon.ico'));
+        if (!icon.isEmpty()) return icon;
     } else {
-        // macOS: SVG template image for menu bar
-        const canvas = `<?xml version="1.0" encoding="UTF-8"?>
-<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
-<circle cx="8" cy="8" r="6" fill="black"/>
-<circle cx="8" cy="5" r="2.5" fill="white"/>
-<path d="M5.5,6.5 Q5.5,10 8,10 Q10.5,10 10.5,6.5" fill="none" stroke="white" stroke-width="1.2"/>
-<line x1="8" y1="10.5" x2="8" y2="12.5" stroke="white" stroke-width="1"/>
-<line x1="6" y1="12.5" x2="10" y2="12.5" stroke="white" stroke-width="1"/>
-</svg>`;
-        const icon = nativeImage.createFromBuffer(Buffer.from(canvas));
-        icon.setTemplateImage(true);
-        return icon;
+        // macOS menu bar: the logo resized to menu-bar size (18pt; Electron
+        // derives @2x from the source PNG for retina).
+        const icon = nativeImage.createFromPath(getResourcePath('icon.png'));
+        if (!icon.isEmpty()) return icon.resize({ width: 18, height: 18 });
     }
+    // Fallback: minimal embedded 16x16 mic glyph (never leaves the tray empty).
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA' +
+        'mklEQVQ4y2NgGAWkAEYo/R8KGCkxgJGBgYGFgYHhPxD/h2IWKA0D' +
+        'LFANYIayQRgEQGwWqAYQzcy4DGCBagBhkCQLLgNYoGx0AxgpMYCF' +
+        'Eg1gga0eBv4jNJBkACMKG90ARgYI+I+kgRFdA5BmhjqHBSTDDCAH' +
+        'sECdw4JLAwuaH1gI+QGfBuwaWIgJJFwaWAgZQJIGfBoYKdGADwAA' +
+        'GmwZEWhKgZkAAAAASUVORK5CYII=';
+    return nativeImage.createFromBuffer(Buffer.from(pngBase64, 'base64'), { width: 16, height: 16 });
 }
 
 function createTray(): void {
     try {
+        // macOS dev runs show the default Electron dock icon; point the dock
+        // at the real logo (packaged builds get it from icon.icns).
+        if (process.platform === 'darwin' && !app.isPackaged) {
+            try {
+                const dockIcon = nativeImage.createFromPath(getResourcePath('icon.png'));
+                if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon);
+            } catch { /* cosmetic only */ }
+        }
         const icon = createTrayIcon();
         tray = new Tray(icon);
         tray.setToolTip('Clarity Scribe');
