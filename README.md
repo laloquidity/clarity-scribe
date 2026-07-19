@@ -24,7 +24,8 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 - **Personal Dictionary with decoder-level recognition** — Add custom word corrections that apply to every transcription (e.g. `Chat GPT` to `ChatGPT`), with full CRUD, Export/Import JSON, and ~12 auto-generated variants per entry. Dictionary terms also feed **shallow-fusion vocabulary biasing inside the decoder** (ONNX engine): the model is nudged toward emitting your custom terms as it hears them, not just string-replaced afterwards.
 - **Local API** (opt-in) — Loopback-only HTTP API + SSE event stream: scripts and agents can start/stop dictation and consume live transcripts. See [Local API](#local-api-programmable-voice-layer).
 - **MCP Server** — Scribe is callable as a tool provider from Claude Desktop, Claude Code, and any MCP-speaking agent: `dictate`, `start/stop_dictation`, `get_recent_transcripts`. See [MCP server](#mcp-server-use-scribe-from-ai-agents).
-- **Command Mode** (opt-in) — Speak commands instead of dictation: a second hotkey (F10) routes your words through a **local LLM** (llama.cpp + Gemma 4, fully offline) to actions — open apps/folders, search the web, type text, show transcripts. A **risk rulebook** governs execution: benign actions **just run**; consequential ones (launching executables, and future message/delete/system tools) show a Confirm/Cancel proposal that auto-cancels if unanswered; severe tiers refuse outright. Unsupported requests get an honest "I can't do that" instead of a wrong action. Requires `llama-server` + a Gemma 4 GGUF (auto-discovered from `C:\llama-server` / overridable via `SCRIBE_LLAMA_SERVER` + `SCRIBE_ROUTER_MODEL`).
+- **Command Mode** (opt-in) — Speak commands instead of dictation: a second hotkey (F10) routes your words through a **local LLM** (llama.cpp + Gemma 4, fully offline) to actions — open apps/folders, search the web, type text, show transcripts. A **risk rulebook** governs execution: benign actions **just run**; consequential ones (launching executables, contacting people) show a Confirm/Cancel proposal that auto-cancels if unanswered; severe tiers (money, credentials, bulk deletion) refuse outright. Unsupported requests get an honest "I can't do that" instead of a wrong action. Requires `llama-server` + a Gemma 4 GGUF (auto-discovered from `C:\llama-server` / overridable via `SCRIBE_LLAMA_SERVER` + `SCRIBE_ROUTER_MODEL`).
+- **Screen Agent** (part of Command Mode, Windows) — Multi-step commands drive the computer like a person would: *"open spotify and play we will rock you"* → the agent reads the app's **real controls** via the Windows **accessibility tree** (exact names + rectangles, ~100 ms, no GPU), decides one action at a time with the local LLM, and activates controls **programmatically** (so it can't misclick), falling back to computer vision (OmniParser) only for apps with no accessibility data. Live step feed with a Stop button (**Esc aborts instantly, even mid-step**); every click is re-checked against the risk rulebook mid-flight — "Send"/"Buy"/"Delete" pause for approval, credential fields are refused; a step cap + loop detection stop a wandering agent. See [Screen agent](#screen-agent-voice-driven-computer-use).
 - **Hold-to-Talk Mode** — Hold a key to record, release to transcribe — or use the classic tap-to-toggle. Switch modes instantly in Settings with an Apple-style segmented control. Single function keys (F5-F12) for hold mode, modifier combos for toggle mode.
 - **Filler Word Removal** — Automatically strips filled pauses (um, uh, ah, er) from transcriptions while preserving natural speech patterns
 - **No-Audio Auto-Stop** — Automatically stops recording if no meaningful audio is detected for 80% of a 30-second window. Catches wrong mic selection, muted mic, and forgotten recordings.
@@ -395,6 +396,56 @@ Example: in Claude Desktop, ask *"use clarity-scribe to let me dictate my
 answer"* — Claude calls `dictate`, you talk, hit your stop hotkey, and your
 words arrive in the conversation. The same tools work from any agent framework
 that speaks MCP, which is the foundation for the voice-command roadmap.
+
+## Screen agent (voice-driven computer use)
+
+With Command Mode on, requests that need to happen *inside* an app — not just
+opening it — run through a local **accessibility-first** perceive→decide→act
+loop (modeled on Microsoft's [UFO²](https://github.com/microsoft/UFO) Windows
+agent):
+
+1. **Perceive** — a native **UI Automation** reader (`uia-probe.exe`) returns
+   the focused window's *real* controls — exact names, exact screen
+   rectangles, and which support programmatic activation — in ~100–200 ms with
+   no GPU. It's one bulk `FindAll` + `CacheRequest`, so reads don't become
+   slow cross-process round-trips. Only when a window exposes no useful tree
+   (Chromium/CEF apps, games, canvas UIs) does it fall back to **OmniParser v2**
+   vision (YOLO + Florence-2 on the GPU), scoped to that window.
+2. **Decide** — the same local Gemma model that routes commands picks exactly
+   one next action from the numbered control list: click a control, type into a
+   field, press keys, scroll, launch an app, wait, or declare done/impossible.
+3. **Act** — **programmatically first** (`InvokePattern`/`ValuePattern`): the OS
+   activates the exact control, so the cursor never moves and can't misclick.
+   Physical `SendInput` is a fallback, and only fires once the target window is
+   verified foreground.
+
+Say *"open spotify and play we will rock you"* and the agent launches Spotify
+(resolving the real install path, not guessing), finds and focuses its window,
+then searches and plays the result — narrating every step in the widget.
+
+**Guardrails** (the same risk rulebook that governs one-shot commands, applied
+at two levels):
+
+| Level | AUTO | CONFIRM (card, ↵/Esc) | REFUSE |
+|---|---|---|---|
+| Goal (before anything runs) | benign in-app tasks | messaging/emailing/posting *as you* | purchases, money transfer, credentials, sign-in, bulk deletion |
+| Each click (mid-task) | ordinary controls | "Send", "Buy now", "Delete", "Post"… | password / card-number fields |
+
+Plus mechanical limits: a **true kill switch** — global **Esc aborts instantly,
+even mid-perceive or mid-decision** — one agent at a time, window-scoped actions
+(a click can't wander onto the desktop), a hard step cap, a wall-clock deadline,
+and stuck-loop detection. Unanswered mid-task confirmations auto-cancel — an
+agent never acts on silence.
+
+**Setup (Windows):** the accessibility reader (`native/uia-probe/uia-probe.exe`)
+ships prebuilt and needs nothing — it works out of the box for standard
+Win32/WPF apps. The **vision fallback** (for Chromium/canvas apps) is optional:
+clone [OmniParser](https://github.com/microsoft/OmniParser) with its v2 weights
+into `C:\Users\<you>\tools\OmniParser` (or set `SCRIBE_OMNIPARSER_DIR`) with a
+`.venv` of its requirements. The Settings panel shows
+`Screen agent: native accessibility ✓ · vision fallback ✓`. Everything —
+accessibility, vision, reasoning, input — runs locally; nothing ever leaves your
+machine.
 
 ## Privacy
 

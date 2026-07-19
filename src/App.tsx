@@ -47,6 +47,8 @@ const App: React.FC = () => {
     const liveBoxRef = useRef<HTMLDivElement | null>(null);
     // Command mode: current stage of the voice→action pipeline (null = inactive).
     const [commandStage, setCommandStage] = useState<CommandStageEvent | null>(null);
+    // Screen-agent live feed: every action the agent has taken this task.
+    const [agentSteps, setAgentSteps] = useState<string[]>([]);
     const [commandExtra, setCommandExtra] = useState(0);
     const commandCardRef = useRef<HTMLDivElement | null>(null);
     const commandDismissTimer = useRef<number | null>(null);
@@ -217,6 +219,10 @@ const App: React.FC = () => {
                 commandDismissTimer.current = null;
             }
             setCommandStage(s);
+            if (s.stage === 'listening' || s.stage === 'routing') setAgentSteps([]);
+            if (s.stage === 'agent_step' && s.description) {
+                setAgentSteps(prev => (prev[prev.length - 1] === s.description ? prev : [...prev, s.description!]));
+            }
             if (s.stage === 'done' || s.stage === 'cancelled' || s.stage === 'error' || s.stage === 'clarify' || s.stage === 'refused') {
                 setAppState('IDLE');
                 isRecordingRef.current = false;
@@ -228,10 +234,16 @@ const App: React.FC = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Keyboard confirm/cancel while a proposal is showing.
+    // Keyboard control: ↵/Esc on proposals and mid-agent confirms; Esc alone
+    // stops a running agent task instantly.
     useEffect(() => {
-        if (commandStage?.stage !== 'proposal') return;
+        const st = commandStage?.stage;
+        if (st !== 'proposal' && st !== 'agent_confirm' && st !== 'agent_step') return;
         const onKey = (e: KeyboardEvent) => {
+            if (st === 'agent_step') {
+                if (e.key === 'Escape') { e.preventDefault(); window.electronAPI?.agentStop(); }
+                return;
+            }
             if (e.key === 'Enter') { e.preventDefault(); window.electronAPI?.commandConfirm(true); }
             else if (e.key === 'Escape') { e.preventDefault(); window.electronAPI?.commandConfirm(false); }
         };
@@ -245,7 +257,9 @@ const App: React.FC = () => {
     useEffect(() => {
         const el = commandCardRef.current;
         if (!commandVisible || !el) { setCommandExtra(0); return; }
-        setCommandExtra(Math.min(el.scrollHeight, 150) + 18);
+        // The agent's live step feed earns more room than one-shot cards.
+        const cap = commandStage?.stage === 'agent_step' ? 210 : 150;
+        setCommandExtra(Math.min(el.scrollHeight, cap) + 18);
     }, [commandStage, commandVisible]);
 
     // The live box is visible while dictating (and during the brief finalize).
@@ -580,6 +594,40 @@ const App: React.FC = () => {
                             )}
                             {commandStage.stage === 'executing' && (
                                 <div className="command-title"><span className="command-spinner" /> {commandStage.description}</div>
+                            )}
+                            {commandStage.stage === 'agent_step' && (
+                                <>
+                                    {agentSteps.length > 1 && (
+                                        <div className="agent-steps">
+                                            {agentSteps.slice(0, -1).map((s, i) => (
+                                                <div key={i} className="agent-step">✓ {s}</div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <div className="command-title"><span className="command-spinner" /> {commandStage.description}</div>
+                                    <div className="command-actions no-drag agent-footer">
+                                        <span className="agent-progress">
+                                            {commandStage.step ? `step ${commandStage.step} / ${commandStage.maxSteps}` : 'preparing'}
+                                        </span>
+                                        <button className="command-btn cancel" onClick={() => window.electronAPI?.agentStop()}>
+                                            Stop <span className="key-hint">Esc</span>
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+                            {commandStage.stage === 'agent_confirm' && (
+                                <>
+                                    <div className="command-title">{commandStage.description}</div>
+                                    {commandStage.reason && <div className="command-reason">⚠ {commandStage.reason}</div>}
+                                    <div className="command-actions no-drag">
+                                        <button className="command-btn confirm" onClick={() => window.electronAPI?.commandConfirm(true)}>
+                                            Allow <span className="key-hint">↵</span>
+                                        </button>
+                                        <button className="command-btn cancel" onClick={() => window.electronAPI?.commandConfirm(false)}>
+                                            Stop <span className="key-hint">Esc</span>
+                                        </button>
+                                    </div>
+                                </>
                             )}
                             {commandStage.stage === 'done' && (
                                 <>

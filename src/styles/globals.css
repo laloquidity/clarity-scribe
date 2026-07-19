@@ -411,6 +411,41 @@ body,
     border-radius: 10px;
 }
 
+/* Screen agent: live step feed while the computer is being driven. */
+.command-card.stage-agent_step {
+    background: rgba(120, 160, 255, 0.07);
+    border-color: rgba(120, 160, 255, 0.3);
+}
+
+.agent-steps {
+    max-height: 118px;
+    overflow-y: auto;
+    margin-bottom: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.agent-step {
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.agent-footer {
+    align-items: center;
+    justify-content: space-between;
+}
+
+.agent-progress {
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+}
+
 .command-card.stage-done {
     background: rgba(80, 200, 120, 0.08);
     border-color: rgba(80, 200, 120, 0.3);

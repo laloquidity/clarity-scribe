@@ -21,6 +21,10 @@ export type CommandStage =
     | { stage: 'routing'; transcript: string }
     | { stage: 'proposal'; transcript: string; tool: string; description: string; reason?: string }
     | { stage: 'executing'; description: string }
+    // Screen-agent narration (computer_use): one event per action taken, plus
+    // mid-flight confirmation when a click hits the rulebook's confirm tier.
+    | { stage: 'agent_step'; step: number; maxSteps: number; description: string }
+    | { stage: 'agent_confirm'; description: string; reason: string }
     | { stage: 'done'; message: string; detail?: string; transcript: string; tool: string }
     | { stage: 'clarify'; question: string; transcript: string }
     | { stage: 'cancelled'; description: string }
@@ -47,6 +51,15 @@ export function resolveConfirmation(approved: boolean): boolean {
 
 export function hasPendingConfirmation(): boolean {
     return pendingConfirmation !== null;
+}
+
+/**
+ * Wait for the user's Confirm/Cancel — shared by the proposal gate below and
+ * the screen agent's mid-task click gates (both resolve via the same
+ * command-confirm IPC → resolveConfirmation).
+ */
+export function awaitUserConfirmation(timeoutMs: number): Promise<boolean> {
+    return awaitConfirmation(timeoutMs);
 }
 
 function awaitConfirmation(timeoutMs: number): Promise<boolean> {

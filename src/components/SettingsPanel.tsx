@@ -69,7 +69,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
     // Launch on Login sub-component
     /** Router availability readout for command mode. */
     function CommandRouterStatus() {
-        const [st, setSt] = React.useState<{ available: boolean; running: boolean; modelPath: string | null; lastRouteMs: number | null } | null>(null);
+        const [st, setSt] = React.useState<{ available: boolean; running: boolean; modelPath: string | null; lastRouteMs: number | null; uiaAvailable?: boolean; vision?: { available: boolean; running: boolean; lastParseMs: number | null } } | null>(null);
         React.useEffect(() => {
             let alive = true;
             const poll = () => window.electronAPI?.getCommandStatus?.().then(s => { if (alive) setSt(s); }).catch(() => {});
@@ -85,6 +85,13 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                 {st.available && !st.running && <div>Router: {modelName} (starting…)</div>}
                 {st.available && st.running && (
                     <div>Router: {modelName} ✓{st.lastRouteMs != null ? ` · last route ${st.lastRouteMs}ms` : ''}</div>
+                )}
+                {st.uiaAvailable === false && <div>⚠ Screen agent: uia-probe.exe missing — "open X and do Y" tasks disabled.</div>}
+                {st.uiaAvailable && (
+                    <div>
+                        Screen agent: native accessibility ✓
+                        {st.vision?.available ? ` · vision fallback ${st.vision.running ? '✓' : 'warming…'}` : ' · vision fallback not installed (fine for standard apps)'}
+                    </div>
                 )}
             </div>
         );

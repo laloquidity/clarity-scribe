@@ -31,6 +31,12 @@
  * downloads folder" is AUTO while "open crack.exe" is CONFIRM through the
  * same tool. New tools must declare assessRisk() and land in a tier
  * deliberately; the confirmation/refusal UX already exists for them.
+ *
+ * The computer_use tool (screen agent) extends this same rulebook to
+ * multi-step tasks: its goal is assessed here (agentPolicy.assessGoal), and
+ * every individual click is re-assessed mid-flight (agentPolicy.assessClick),
+ * because screens change under an agent. That is where the CONFIRM tier's
+ * "sending messages" entry and the REFUSE tier go live.
  */
 
 export type RiskLevel = 'auto' | 'confirm' | 'refuse';
@@ -56,7 +62,18 @@ export function riskOfOpening(target: string): RiskDecision {
     return { level: 'auto' };
 }
 
+import { assessGoal } from './agentPolicy';
+
+export interface AgentTaskResult {
+    ok: boolean;
+    summary: string;
+    steps: string[];
+    stepsTaken: number;
+}
+
 export interface CommandDeps {
+    /** Screen agent (agentLoop) — absent on platforms without the stack. */
+    runAgentTask?: (goal: string) => Promise<AgentTaskResult>;
     /** Type/paste text into the app the user was in (existing paste flow). */
     typeText: (text: string) => Promise<{ success: boolean; app?: string }>;
     copyToClipboard: (text: string) => void;
@@ -190,6 +207,26 @@ export const COMMAND_TOOLS: CommandTool[] = [
             if (!q) return { message: 'Empty search' };
             await deps.openExternal(`https://www.google.com/search?q=${encodeURIComponent(q)}`);
             return { message: `Searching for "${q.substring(0, 40)}" ✓` };
+        },
+    },
+    {
+        name: 'computer_use',
+        description: 'Perform a multi-step task on this computer by looking at the screen, clicking, and typing — e.g. "open spotify and play we will rock you", "search youtube for lofi and play the first result". Use whenever the request requires interacting INSIDE an application beyond just opening it, or chains several actions together.',
+        parameters: { type: 'object', properties: { goal: { type: 'string', description: "The user's full goal, kept verbatim" } }, required: ['goal'] },
+        // Rulebook, goal tier: benign in-app tasks AUTO (live step feed + Esc
+        // stop + per-click gates); contacting people CONFIRM; money/credentials
+        // REFUSE. See agentPolicy.ts.
+        assessRisk: (a) => assessGoal(str(a.goal)),
+        describe: (a) => `On screen: ${str(a.goal).substring(0, 70)}`,
+        execute: async (a, deps) => {
+            const goal = str(a.goal).trim();
+            if (!goal) return { message: 'No goal given' };
+            if (!deps.runAgentTask) return { message: 'The screen agent is not available on this machine' };
+            const r = await deps.runAgentTask(goal);
+            return {
+                message: r.ok ? `${r.summary} ✓` : r.summary,
+                detail: r.steps.length ? r.steps.map((s, i) => `${i + 1}. ${s}`).join('\n') : undefined,
+            };
         },
     },
     {

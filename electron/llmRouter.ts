@@ -173,31 +173,35 @@ export function stop(): void {
 const SYSTEM_PROMPT = `You route the user's SPOKEN input to exactly one tool call.
 Rules:
 - If it is an instruction to do something on this computer, call the matching tool.
+- If it requires acting INSIDE an application (searching, playing, clicking) or chains several steps ("open X and do Y"), call "computer_use" with the goal verbatim.
 - If it is ordinary prose the user wants typed (dictation), call "dictation" with the text verbatim.
 - If it is an instruction but NO tool matches it, or required details are missing, call "clarify" and say what you need or cannot do. NEVER shoehorn an unsupported request into the closest tool.
 Always call exactly one tool. Keep arguments faithful to the user's words.`;
 
 /**
- * Route one utterance to a tool call. `tools` is an OpenAI-format tool array
- * (see commandTools.toOpenAiTools). Throws on transport/parse errors so the
- * orchestrator can surface an honest error stage.
+ * Generic forced-tool-call chat against the resident llama-server. Shared by
+ * command routing (route) and the agent loop's per-step decisions. Throws on
+ * transport/parse errors so callers can surface honest error states.
  */
-export async function route(utterance: string, tools: unknown[]): Promise<RouteResult> {
+export async function chatToolCall(
+    messages: Array<{ role: string; content: string }>,
+    tools: unknown[],
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<RouteResult> {
     if (!running || !port) {
         const ok = await ensureStarted();
         if (!ok) throw new Error('Command router is not available (llama-server or model not found)');
     }
     const t0 = Date.now();
+    const timeout = AbortSignal.timeout(opts.timeoutMs ?? ROUTE_TIMEOUT_MS);
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(ROUTE_TIMEOUT_MS),
+        // Caller's signal (Esc during an agent step) aborts mid-generation.
+        signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout,
         body: JSON.stringify({
             model: 'router',
-            messages: [
-                { role: 'system', content: SYSTEM_PROMPT },
-                { role: 'user', content: utterance },
-            ],
+            messages,
             tools,
             tool_choice: 'required',
             temperature: 0.1,
@@ -213,8 +217,24 @@ export async function route(utterance: string, tools: unknown[]): Promise<RouteR
     }
     let args: Record<string, unknown> = {};
     try { args = JSON.parse(call.function.arguments || '{}'); } catch { /* tolerate empty/bad args */ }
-    lastRouteMs = Date.now() - t0;
-    return { tool: call.function.name, args, ms: lastRouteMs };
+    return { tool: call.function.name, args, ms: Date.now() - t0 };
+}
+
+/**
+ * Route one utterance to a tool call. `tools` is an OpenAI-format tool array
+ * (see commandTools.toOpenAiTools). Throws on transport/parse errors so the
+ * orchestrator can surface an honest error stage.
+ */
+export async function route(utterance: string, tools: unknown[]): Promise<RouteResult> {
+    const r = await chatToolCall(
+        [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: utterance },
+        ],
+        tools,
+    );
+    lastRouteMs = r.ms;
+    return r;
 }
 
 /** Test seam: inject a fake transport state (unit tests never spawn a server). */

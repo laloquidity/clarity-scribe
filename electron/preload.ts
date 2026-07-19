@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => { ipcRenderer.removeListener('command-stage', handler); };
     },
     commandConfirm: (approved: boolean) => ipcRenderer.invoke('command-confirm', approved),
+    agentStop: () => ipcRenderer.invoke('agent-stop'),
     getCommandStatus: () => ipcRenderer.invoke('get-command-status'),
 
     // Listeners
