@@ -66,6 +66,12 @@ win:
     # Self-contained MCP stdio bridge (see mcp/ and README "MCP server")
     - from: "dist-mcp/scribe-mcp.mjs"
       to: "scribe-mcp.mjs"
+    # Screen-agent vision sidecar script (run with the OmniParser venv python)
+    - from: "agent/"
+      to: "agent/"
+    # Screen-agent accessibility reader (prebuilt, see native/uia-probe/)
+    - from: "native/uia-probe/uia-probe.exe"
+      to: "uia-probe.exe"
   files:
     - "!node_modules/koffi/build/koffi/darwin_*"
 nsis:

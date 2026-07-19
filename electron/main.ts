@@ -15,8 +15,14 @@ import { startLocalApi, stopLocalApi, emitEvent, isRunning as isLocalApiRunning 
 import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow, getForegroundPid } from './winPaste';
 import { initHotkeyService, registerHotkeyService, registerCommandHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
 import * as llmRouter from './llmRouter';
-import { runCommand, resolveConfirmation, CommandStage } from './commandMode';
+import { runCommand, resolveConfirmation, awaitUserConfirmation, CommandStage } from './commandMode';
 import type { CommandDeps } from './commandTools';
+import * as visionSidecar from './visionSidecar';
+import * as uiaProbe from './uiaProbe';
+import { captureScreen, captureScreenRegion } from './screenCapture';
+import * as input from './inputControl';
+import { runAgentTask as runAgentLoop, Perception, AgentElement } from './agentLoop';
+import { resolveApp } from './appLauncher';
 
 const store = new Store();
 
@@ -231,7 +237,133 @@ function resolveKnownFolder(name: string): string | null {
     return null;
 }
 
+// Abort handle for the currently running screen-agent task (Esc / Stop button).
+let agentAbort: AbortController | null = null;
+
+/**
+ * Perception for the screen agent: ACCESSIBILITY TREE FIRST (uiaProbe, ~100ms,
+ * exact rects + real names), OmniParser vision only when the tree is unusable
+ * (games/canvas apps) — and then scoped to the window's own pixels, so the
+ * model never sees the desktop around it. (UFO²-style hybrid, UIA wins.)
+ */
+async function agentPerceive(pinnedHwnd: number | null, signal?: AbortSignal): Promise<Perception> {
+    const MIN_LABELED_CONTROLS = 3;
+    // Follow the foreground window (pinnedHwnd is only a hint). This avoids
+    // dumping a stale transient hwnd captured during app launch; the loop's
+    // foreground-guard is what keeps physical actions safely scoped.
+    let dump = await uiaProbe.dump(pinnedHwnd);
+    if (!dump.ok || !dump.window) {
+        dump = await uiaProbe.dump(null); // pinned/hint failed — use true foreground
+    }
+    const window = dump.ok && dump.window ? dump.window : null;
+    const uiaElements: AgentElement[] = (dump.elements ?? []).map(e => ({
+        id: e.id, name: e.name, type: e.type, rect: e.rect,
+        invoke: e.invoke || e.select, value: e.value,
+    }));
+    const uiaPerception: Perception = { source: 'uia', window, elements: uiaElements };
+
+    // Accessibility tree is the truth whenever it's USEFUL. A Chromium/CEF app
+    // (Spotify, Discord, Electron apps) exposes only a few UNNAMED caption
+    // buttons — present but useless — so count LABELED controls, not raw ones.
+    // Too few labeled controls on a real window ⇒ fall to vision. A sparse
+    // desktop (no window) is NOT a vision trigger — the model should launch_app.
+    // Vision must never be fatal: any failure degrades to the UIA passthrough.
+    const labeled = uiaElements.filter(e => e.name.trim().length > 0 || e.value).length;
+    const needsVision = window !== null && labeled < MIN_LABELED_CONTROLS;
+    if (!needsVision) return uiaPerception;
+
+    try {
+        if (!(await visionSidecar.ensureStarted())) return uiaPerception;
+        const region = window.rect;
+        const shot = await captureScreenRegion(region);
+        const parsed = await visionSidecar.parseScreen(shot.pngBase64, signal);
+        const [ox, oy] = [region[0], region[1]];
+        const elements: AgentElement[] = parsed
+            .filter(e => e.interactive || e.content)
+            .map((e, i) => ({
+                id: i,
+                name: e.content,
+                type: e.type || 'icon',
+                rect: [
+                    ox + e.bbox[0] * shot.width, oy + e.bbox[1] * shot.height,
+                    ox + e.bbox[2] * shot.width, oy + e.bbox[3] * shot.height,
+                ] as [number, number, number, number],
+                invoke: false, // vision has no patterns — physical clicks only
+                value: false,
+            }));
+        return elements.length ? { source: 'vision', window, elements } : uiaPerception;
+    } catch (e: any) {
+        if (signal?.aborted) throw e;
+        console.warn(`[Agent] vision fallback failed (${e?.message || e}) — using UIA data`);
+        return uiaPerception;
+    }
+}
+
 const commandDeps: CommandDeps = {
+    runAgentTask: async (goal) => {
+        const none = { steps: [] as string[], stepsTaken: 0 };
+        if (agentAbort) {
+            return { ok: false, summary: 'An agent task is already running — say "stop" or press Esc first', ...none };
+        }
+        if (!input.isInputControlAvailable()) {
+            return { ok: false, summary: 'The screen agent needs Windows native input (koffi unavailable)', ...none };
+        }
+        if (!uiaProbe.isAvailable()) {
+            return { ok: false, summary: 'The screen agent needs uia-probe.exe (missing from this build)', ...none };
+        }
+        agentAbort = new AbortController();
+        const abortRef = agentAbort;
+        // TRUE kill switch: global Esc aborts even mid-parse/mid-decide.
+        try { globalShortcut.register('Escape', () => { abortRef.abort(); resolveConfirmation(false); }); } catch { /* ignore */ }
+        try {
+            return await runAgentLoop(goal, {
+                perceive: agentPerceive,
+                decide: async (messages, tools, signal) => {
+                    const r = await llmRouter.chatToolCall(messages, tools, { timeoutMs: 30_000, signal });
+                    return { tool: r.tool, args: r.args as Record<string, any> };
+                },
+                act: {
+                    invokeElement: (id) => uiaProbe.invoke(id),
+                    setValue: (id, text) => uiaProbe.setValue(id, text),
+                    focusElement: (id) => uiaProbe.focus(id),
+                    clickAtScreen: input.clickAtScreen,
+                    typeText: input.typeText,
+                    pressKeys: input.pressKeys,
+                    scrollWheel: input.scrollWheel,
+                    launchApp: (name) => commandDeps.launchApp(name),
+                    getForegroundPid: () => getForegroundPid(),
+                    focusWindow: (hwnd) => input.focusWindow(hwnd),
+                    findAppWindow: async (name) => {
+                        // Match a launched app to its top-level window by name.
+                        // Titles carry the app name ("Spotify Premium",
+                        // "… — Mozilla Firefox"). Strip filler, then match either
+                        // direction (title⊇query or query⊇title) so "the
+                        // calculator" ↔ "Calculator" both hit.
+                        const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                        const q = norm(name.replace(/^(open|launch|start|the|a|my)\s+/i, ''));
+                        if (!q) return null;
+                        const wins = await uiaProbe.listWindows();
+                        const self = mainWindow?.getTitle?.() ?? '';
+                        const match = wins.find(w => {
+                            if (w.title === self) return false;
+                            const t = norm(w.title);
+                            return t.includes(q) || (q.length >= 4 && q.includes(t) && t.length >= 4);
+                        });
+                        return match ? match.hwnd : null;
+                    },
+                },
+                requestConfirm: async (description, reason) => {
+                    emitCommandStage({ stage: 'agent_confirm', description, reason });
+                    return awaitUserConfirmation(20_000);
+                },
+                onStep: (e) => emitCommandStage({ stage: 'agent_step', ...e }),
+                signal: agentAbort.signal,
+            });
+        } finally {
+            try { globalShortcut.unregister('Escape'); } catch { /* ignore */ }
+            agentAbort = null;
+        }
+    },
     typeText: async (text) => {
         const r = await pasteToTarget(text);
         return { success: r.success, app: r.app };
@@ -240,11 +372,21 @@ const commandDeps: CommandDeps = {
     openExternal: (url) => shell.openExternal(url),
     openPath: (p) => shell.openPath(p),
     launchApp: async (name) => {
-        // OS shell resolves app names; never throws into the tool result path.
-        const cmd = process.platform === 'win32'
-            ? `start "" "${name.replace(/"/g, '')}"`
-            : `open -a "${name.replace(/"/g, '')}"`;
-        await new Promise<void>((resolve) => exec(cmd, () => resolve()));
+        // Resolve real install paths (Start Menu shortcut / App Paths) instead
+        // of `start "" "name"`, which fails for apps not on PATH (Spotify etc.)
+        // and pops a "Windows cannot find" dialog the agent then fights.
+        if (process.platform === 'win32') {
+            const { target, via } = await resolveApp(name);
+            console.log(`[Launch] "${name}" → ${via}: ${target}`);
+            if (via === 'startmenu' || via === 'path' || via === 'apppaths') {
+                const err = await shell.openPath(target);
+                if (!err) return;
+                console.warn(`[Launch] openPath failed (${err}) — shell fallback`);
+            }
+            await new Promise<void>((resolve) => exec(`start "" "${target.replace(/"/g, '')}"`, () => resolve()));
+            return;
+        }
+        await new Promise<void>((resolve) => exec(`open -a "${name.replace(/"/g, '')}"`, () => resolve()));
     },
     resolveKnownFolder,
     getHistory: (limit) => getHistory().slice(0, limit).map(e => ({ text: e.text, timestamp: e.timestamp })),
@@ -265,10 +407,12 @@ function applyCommandModeSettings(): void {
     const s = store.get('settings') as any || {};
     if (s.commandModeEnabled === true) {
         registerCommandHotkeyService((s.commandHotkey as string) || 'F10');
-        llmRouter.ensureStarted(); // warm in the background; non-blocking
+        llmRouter.ensureStarted();     // warm in the background; non-blocking
+        visionSidecar.ensureStarted(); // warm the screen agent's eyes too
     } else {
         registerCommandHotkeyService(null);
         llmRouter.stop();
+        visionSidecar.stop();
     }
 }
 
@@ -831,9 +975,18 @@ function setupIpcHandlers(): void {
 
     // --- Command mode ---
     ipcMain.handle('command-confirm', (_, approved: boolean) => resolveConfirmation(!!approved));
+    // Stop button / Esc during an agent task: abort the loop AND decline any
+    // pending mid-task confirmation so nothing stays blocked.
+    ipcMain.handle('agent-stop', () => {
+        agentAbort?.abort();
+        resolveConfirmation(false);
+        return agentAbort !== null;
+    });
     ipcMain.handle('get-command-status', () => ({
         enabled: isCommandModeEnabled(),
         ...llmRouter.getStatus(),
+        vision: visionSidecar.getStatus(),
+        uiaAvailable: uiaProbe.isAvailable(),
     }));
 
     // Local API info for the settings UI (token shown so users can wire tools).
@@ -1085,6 +1238,8 @@ app.whenReady().then(async () => {
 app.on('will-quit', () => {
     if (isLocalApiRunning()) stopLocalApi();
     llmRouter.stop();
+    visionSidecar.stop();
+    uiaProbe.stop();
     stopHotkeyService();
     if (pollingInterval) clearInterval(pollingInterval);
     nativeWhisper.cleanup();

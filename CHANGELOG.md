@@ -1,5 +1,22 @@
 # Changelog
 
+## v3.5.0 — Screen Agent (voice-driven computer use)
+
+### ✨ New Features
+
+- **Screen agent** — command mode can now drive the computer like a person: *"open spotify and play we will rock you"*, *"open the calculator and compute 7 times 8"*. Requests that need to act **inside** an app (or chain steps) route to a new `computer_use` tool running a local perceive→decide→act loop. The architecture is **accessibility-first** (modeled on Microsoft's UFO² Windows agent), with computer vision as a fallback:
+  - **Perceive (primary)** — a native **UI Automation** reader (`native/uia-probe/uia-probe.exe`, compiled from C#, DPI-aware, its own process) reads the focused window's real controls — exact names, exact screen rectangles, control patterns — in ~100–200 ms with no GPU. Uses one bulk `FindAll` + `CacheRequest` (Name/ControlType/BoundingRectangle/patterns) exactly as UFO²'s inspector does, so property reads don't become cross-process round-trips. Descends into hosted UWP CoreWindows.
+  - **Perceive (fallback)** — for surfaces with no useful accessibility tree (Chromium/CEF apps like Spotify, games, canvas UIs), **OmniParser v2** (YOLO + Florence-2 on the GPU) parses a screenshot of *that window* into elements. UIA wins; vision only fills gaps, and never fatal.
+  - **Decide** — the resident Gemma 4 router picks exactly one action per turn (click / type into / type / press keys / scroll / launch app / wait / done / give up) via forced tool-calling with the numbered control list + action history (set-of-marks: the model picks a numbered control, never raw coordinates).
+  - **Act** — **programmatic first**: `InvokePattern`/`ValuePattern`/`TogglePattern` activate the exact control — *the cursor never moves, so it cannot misclick*. Physical `SendInput` (virtual-desktop-correct absolute clicks, Unicode typing) is the fallback, and only fires after verifying the target window is foreground.
+- **Robust app launching** (`electron/appLauncher.ts`) — resolves a spoken name to a real target via Start Menu shortcuts, an alias map for built-ins (`calculator`→`calc`…), and the App Paths registry — instead of `start "name"`, which failed for apps not on PATH (the old *"Windows cannot find 'Spotify'"* bug). After launching, the agent locates the app's own window (enumerating top-level windows), focuses it, and anchors perception to it — robust even when Windows' foreground-lock stops a background-launched app from activating.
+- **Rulebook, extended to agents** (`electron/agentPolicy.ts`) — risk assessed at **two levels**. Goal tier: benign in-app tasks run immediately; messaging/emailing/posting *as you* confirms up front; purchases, money movement, credentials, sign-in, and bulk deletion are **refused** (the refuse tier is now live). Click tier, re-checked mid-flight because screens change under an agent: "Send"/"Buy now"/"Delete"/"Post" buttons pause for an Allow/Stop card; password/card-number fields refuse outright.
+- **Safety hardening** — a **true kill switch**: a global **Esc** aborts the loop *even mid-perceive or mid-LLM-call* (the abort signal is threaded into the vision and router fetches), plus a one-agent-at-a-time guard. Every physical action is **window-scoped**: the loop verifies the target window is foreground before touching the mouse and re-perceives instead of clicking stale coordinates — the guard that makes v1's "misclick launched another app" impossible. Hard step cap, wall-clock deadline, loop detection, launch-once-per-app, and auto-cancel of unanswered confirmations.
+- **Live agent UI** — the capsule becomes a step feed during agent runs: completed actions checkmarked, the current action spinning, `step N/12` progress, a Stop button (Esc). Mid-task confirmations reuse the proposal card (`Allow ↵ / Stop Esc`). Settings shows `Screen agent: native accessibility ✓ · vision fallback ✓`.
+- **New modules**: `native/uia-probe/` (C# UIA reader + DPI manifest + build), `electron/uiaProbe.ts` (resident stdio client with watchdog), `electron/agentLoop.ts` (AT-first loop), `electron/agentPolicy.ts`, `electron/appLauncher.ts`, `electron/inputControl.ts`, `electron/screenCapture.ts`, `electron/visionSidecar.ts` + `agent/omniparser_server.py` (vision fallback). ~40 new tests (policy tiers, loop behaviors incl. the "window lost focus → never click blind" regression, launcher resolution); suite now 176.
+
+---
+
 ## v3.4.0 — Command Mode (voice → action)
 
 ### ✨ New Features

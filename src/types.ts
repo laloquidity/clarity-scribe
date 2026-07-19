@@ -32,7 +32,7 @@ export interface Settings {
 
 /** One stage of a command-mode run, streamed from the main process. */
 export interface CommandStageEvent {
-    stage: 'listening' | 'routing' | 'proposal' | 'executing' | 'done' | 'clarify' | 'cancelled' | 'refused' | 'error';
+    stage: 'listening' | 'routing' | 'proposal' | 'executing' | 'agent_step' | 'agent_confirm' | 'done' | 'clarify' | 'cancelled' | 'refused' | 'error';
     transcript?: string;
     tool?: string;
     description?: string;
@@ -41,6 +41,9 @@ export interface CommandStageEvent {
     question?: string;
     /** Why a proposal/refusal guardrail applied (risk rulebook). */
     reason?: string;
+    /** Screen-agent progress (stage 'agent_step'). */
+    step?: number;
+    maxSteps?: number;
 }
 
 export interface HistoryEntry {
@@ -140,7 +143,8 @@ export interface ElectronAPI {
     // Command mode
     onCommandStage: (cb: (stage: CommandStageEvent) => void) => () => void;
     commandConfirm: (approved: boolean) => Promise<boolean>;
-    getCommandStatus: () => Promise<{ enabled: boolean; available: boolean; running: boolean; modelPath: string | null; binaryPath: string | null; lastRouteMs: number | null }>;
+    agentStop: () => Promise<boolean>;
+    getCommandStatus: () => Promise<{ enabled: boolean; available: boolean; running: boolean; modelPath: string | null; binaryPath: string | null; lastRouteMs: number | null; uiaAvailable?: boolean; vision?: { available: boolean; running: boolean; port: number | null; lastParseMs: number | null } }>;
 
     onWhisperReady: (cb: (info?: { acceleration: string }) => void) => () => void;
     onWhisperProgress: (cb: (p: number, m: string) => void) => () => void;
