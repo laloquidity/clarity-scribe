@@ -217,7 +217,7 @@ const App: React.FC = () => {
                 commandDismissTimer.current = null;
             }
             setCommandStage(s);
-            if (s.stage === 'done' || s.stage === 'cancelled' || s.stage === 'error' || s.stage === 'clarify') {
+            if (s.stage === 'done' || s.stage === 'cancelled' || s.stage === 'error' || s.stage === 'clarify' || s.stage === 'refused') {
                 setAppState('IDLE');
                 isRecordingRef.current = false;
                 const holdMs = s.stage === 'clarify' || s.detail ? 6000 : 2600;
@@ -566,6 +566,7 @@ const App: React.FC = () => {
                             {commandStage.stage === 'proposal' && (
                                 <>
                                     <div className="command-title">{commandStage.description}</div>
+                                    {commandStage.reason && <div className="command-reason">⚠ {commandStage.reason}</div>}
                                     <div className="command-transcript">"{commandStage.transcript}"</div>
                                     <div className="command-actions no-drag">
                                         <button className="command-btn confirm" onClick={() => window.electronAPI?.commandConfirm(true)}>
@@ -594,6 +595,12 @@ const App: React.FC = () => {
                             )}
                             {commandStage.stage === 'cancelled' && (
                                 <div className="command-title muted">Cancelled — {commandStage.description}</div>
+                            )}
+                            {commandStage.stage === 'refused' && (
+                                <>
+                                    <div className="command-title error">Not doing that: {commandStage.description}</div>
+                                    <div className="command-reason">⚠ {commandStage.reason}</div>
+                                </>
                             )}
                             {commandStage.stage === 'error' && (
                                 <div className="command-title error">{commandStage.message}</div>

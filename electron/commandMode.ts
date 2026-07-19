@@ -19,11 +19,12 @@ import { getTool, toOpenAiTools, CommandDeps, ToolOutcome } from './commandTools
 export type CommandStage =
     | { stage: 'listening' }
     | { stage: 'routing'; transcript: string }
-    | { stage: 'proposal'; transcript: string; tool: string; description: string }
+    | { stage: 'proposal'; transcript: string; tool: string; description: string; reason?: string }
     | { stage: 'executing'; description: string }
     | { stage: 'done'; message: string; detail?: string; transcript: string; tool: string }
     | { stage: 'clarify'; question: string; transcript: string }
     | { stage: 'cancelled'; description: string }
+    | { stage: 'refused'; description: string; reason: string }
     | { stage: 'error'; message: string; transcript?: string };
 
 export interface CommandRuntime {
@@ -96,8 +97,14 @@ export async function runCommand(transcript: string, rt: CommandRuntime): Promis
 
     const description = tool.describe(routed.args);
 
-    if (tool.confirm) {
-        rt.emit({ stage: 'proposal', transcript: text, tool: tool.name, description });
+    // Apply the risk rulebook to the ACTUAL arguments (see commandTools.ts):
+    // auto → just do it; confirm → proposal card; refuse → explain, never run.
+    const risk = tool.assessRisk(routed.args);
+    if (risk.level === 'refuse') {
+        return finish({ stage: 'refused', description, reason: risk.reason ?? 'This action is not allowed' });
+    }
+    if (risk.level === 'confirm') {
+        rt.emit({ stage: 'proposal', transcript: text, tool: tool.name, description, reason: risk.reason });
         const approved = await awaitConfirmation(rt.confirmTimeoutMs ?? 15_000);
         if (!approved) {
             return finish({ stage: 'cancelled', description });
