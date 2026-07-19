@@ -51,12 +51,18 @@ export const PersonalDictionary: React.FC<PersonalDictionaryProps> = ({
     };
 
     const handleAdd = () => {
-        if (original.trim() && replacement.trim()) {
+        // "What was written" is optional: leaving it blank creates a pure
+        // VOCABULARY term (original === replacement). String replacement is a
+        // no-op for such entries, but the term still feeds the decoder's
+        // custom-vocabulary biasing — useful when you want "Lumbazzi"
+        // recognized without knowing how the model might misspell it.
+        const effOriginal = original.trim() || replacement.trim();
+        if (effOriginal && replacement.trim()) {
             const newEntry: DictionaryEntry = {
                 id: crypto.randomUUID(),
-                original: original.trim(),
+                original: effOriginal,
                 replacement: replacement.trim(),
-                variants: generateVariants(original.trim()),
+                variants: generateVariants(effOriginal),
                 createdAt: Date.now(),
             };
 
@@ -86,9 +92,10 @@ export const PersonalDictionary: React.FC<PersonalDictionaryProps> = ({
     };
 
     const handleEditSave = () => {
-        if (original.trim() && replacement.trim() && editingId) {
+        const effOriginal = original.trim() || replacement.trim(); // blank → vocabulary term
+        if (effOriginal && replacement.trim() && editingId) {
             const exists = dictionary.some(
-                e => e.original.toLowerCase() === original.trim().toLowerCase() && e.id !== editingId
+                e => e.original.toLowerCase() === effOriginal.toLowerCase() && e.id !== editingId
             );
 
             if (!exists) {
@@ -96,9 +103,9 @@ export const PersonalDictionary: React.FC<PersonalDictionaryProps> = ({
                     if (e.id === editingId) {
                         return {
                             ...e,
-                            original: original.trim(),
+                            original: effOriginal,
                             replacement: replacement.trim(),
-                            variants: generateVariants(original.trim()),
+                            variants: generateVariants(effOriginal),
                         };
                     }
                     return e;
@@ -285,11 +292,11 @@ export const PersonalDictionary: React.FC<PersonalDictionaryProps> = ({
             {showForm && (
                 <div className="dictionary-form">
                     <span className="dictionary-form-label">
-                        {isEditing ? 'Edit Correction' : 'New Correction'}
+                        {isEditing ? 'Edit Entry' : 'New Correction or Vocabulary Term'}
                     </span>
                     <div className="dictionary-form-row">
                         <div className="dictionary-form-field">
-                            <label className="dictionary-field-label">What was written:</label>
+                            <label className="dictionary-field-label">What was written (optional):</label>
                             <input
                                 ref={originalInputRef}
                                 type="text"
@@ -297,7 +304,8 @@ export const PersonalDictionary: React.FC<PersonalDictionaryProps> = ({
                                 onChange={(e) => setOriginal(e.target.value)}
                                 onKeyDown={(e) => { if (e.key === 'Escape') resetForm(); }}
                                 className="dictionary-input"
-                                placeholder="e.g., Chat GPT"
+                                placeholder="blank = vocabulary term"
+                                title="Leave blank to add a vocabulary term the decoder should recognize, without a correction pair."
                             />
                         </div>
                         <ArrowRight size={14} style={{ color: 'var(--text-tertiary)', marginTop: 18, flexShrink: 0 }} />
@@ -320,7 +328,7 @@ export const PersonalDictionary: React.FC<PersonalDictionaryProps> = ({
                         <button onClick={resetForm} className="dict-btn-text">Cancel</button>
                         <button
                             onClick={isEditing ? handleEditSave : handleAdd}
-                            disabled={!original.trim() || !replacement.trim()}
+                            disabled={!replacement.trim()}
                             className="dict-btn dict-btn-submit"
                         >
                             {isEditing ? 'Save' : 'Add'}

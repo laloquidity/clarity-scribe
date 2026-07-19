@@ -1,6 +1,6 @@
 {
     "name": "clarity-scribe",
-    "version": "3.2.0",
+    "version": "3.3.0",
     "description": "Lightweight standalone dictation app powered by Whisper AI",
     "author": "laloquidity",
     "license": "AGPL-3.0-only WITH Commons-Clause",
@@ -10,16 +10,18 @@
         "dev": "concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
         "dev:vite": "vite",
         "dev:electron": "tsc -p tsconfig.electron.json && wait-on http://localhost:5198 && electron .",
-        "build": "tsc -p tsconfig.electron.json && vite build",
+        "build": "tsc -p tsconfig.electron.json && vite build && npm run build:mcp",
         "build:sidecar:mac": "node scripts/prepare-sidecar.js",
         "build:mac": "npm run build:sidecar:mac && npm run build && electron-builder -c electron-builder.yml --mac",
         "build:win": "npm run build && electron-builder -c electron-builder.yml --win",
         "test": "vitest run",
         "test:watch": "vitest",
         "postinstall": "node scripts/postinstall.js",
-        "build:prebuilt:win": "node scripts/build-prebuilt-win.js"
+        "build:prebuilt:win": "node scripts/build-prebuilt-win.js",
+        "build:mcp": "esbuild mcp/scribe-mcp.mjs --bundle --platform=node --format=esm --outfile=dist-mcp/scribe-mcp.mjs --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\""
     },
     "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@napi-rs/whisper": "^0.0.4",
         "electron-store": "^6.0.1",
         "framer-motion": "^11.18.2",
@@ -29,7 +31,8 @@
         "react": "^18.2.0",
         "react-dom": "^18.2.0",
         "smart-whisper": "^0.8.1",
-        "uiohook-napi": "^1.5.5"
+        "uiohook-napi": "^1.5.5",
+        "zod": "^4.4.3"
     },
     "devDependencies": {
         "@electron/rebuild": "^4.0.2",

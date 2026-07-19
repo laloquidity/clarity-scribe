@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.3.0 — MCP Server & Vocabulary Terms
+
+### ✨ New Features
+
+- **MCP server** — Scribe is now a [Model Context Protocol](https://modelcontextprotocol.io) tool provider: any MCP host (Claude Desktop, Claude Code, the Claude Agent SDK, MCP-speaking agent runtimes) can call `dictate` (start recording + await the final transcript), `start_dictation`/`stop_dictation`, `get_status`, and `get_recent_transcripts`. Implemented as a stdio bridge (`mcp/scribe-mcp.mjs`, official `@modelcontextprotocol/sdk`) over the Local API, with automatic port/token discovery from Scribe's config (env overrides supported). Packaged builds ship a self-contained bundle at `resources/scribe-mcp.mjs` (no node_modules needed). 8 tests run the bridge core against a live in-process Local API.
+- **Vocabulary-only dictionary entries** — the Personal Dictionary's "What was written" field is now optional: leave it blank to add a pure vocabulary term (e.g. a name the decoder should recognize) without needing to know how the model misspells it. Such entries feed the decoder-level biasing; string replacement is a no-op for them. Corrections with a before→after pair work exactly as before — they remain the deterministic safety net behind the probabilistic decoder bias.
+
+---
+
 ## v3.2.0 — Local API, Decoder-Level Vocabulary & Proper Icons
 
 ### ✨ New Features
