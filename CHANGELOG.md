@@ -1,5 +1,19 @@
 # Changelog
 
+## v3.4.0 — Command Mode (voice → action)
+
+### ✨ New Features
+
+- **Command mode** — a second hotkey (default **F10**, configurable) records a spoken **command** instead of dictation: *"open my downloads folder"*, *"search for flights to Tokyo"*, *"show me my last three transcripts"*. The transcript is routed by a **local LLM** (llama.cpp + Gemma 4 E2B, auto-discovered; fully offline) to one of a curated tool set — type text, copy to clipboard, open apps/folders/URLs, web search, show transcripts — through a staged pipeline narrated live in the capsule: **listening → interpreting → proposal → executing → done**.
+  - **Confirmation gating**: context-changing actions (open, search) show a proposal card with Confirm (↵) / Cancel (Esc) buttons; an unanswered proposal **auto-cancels** — it can never execute silently. Benign actions run immediately.
+  - **Honest refusals**: unsupported requests get a clarify response ("I cannot set reminders…") instead of being shoehorned into the nearest tool — verified live.
+  - The command capture reuses the full dictation pipeline (streaming preview shows what you said, amber-accented); command runs are logged to history with a `CMD` chip.
+  - **`POST /v1/command`** on the Local API runs the same pipeline from text — agents can trigger gated actions programmatically, with stages streamed over SSE.
+  - Settings → "Command mode": enable toggle, hotkey picker, live router status (model, last route latency). Requires `llama-server` + a Gemma 4 GGUF (`SCRIBE_LLAMA_SERVER` / `SCRIBE_ROUTER_MODEL` override discovery); without them the toggle explains what's missing and dictation is unaffected.
+- New modules `electron/llmRouter.ts` (resident llama-server lifecycle + OpenAI-format routing with prompt-cache reuse), `electron/commandTools.ts` (tool registry with safety tiers, DI for testing), `electron/commandMode.ts` (stage machine with the confirmation contract). 15 new tests cover the full stage machine (approval, decline, timeout-never-executes, clarify, router failure) + registry + route parsing; suite now 138.
+
+---
+
 ## v3.3.0 — MCP Server & Vocabulary Terms
 
 ### ✨ New Features

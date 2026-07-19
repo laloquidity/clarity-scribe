@@ -4,7 +4,7 @@
  * Lightweight dictation app: global hotkey, Whisper transcription,
  * paste-to-target with clipboard restore, transcription history.
  */
-import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, screen, powerMonitor, systemPreferences } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, shell, Tray, Menu, nativeImage, screen, powerMonitor, systemPreferences } from 'electron';
 import { exec, execSync } from 'child_process';
 import * as path from 'path';
 import Store from 'electron-store';
@@ -13,7 +13,10 @@ import * as streaming from './streamingTranscriber';
 import { transcribeParakeet, setVocabularyBoostTerms } from './parakeetService';
 import { startLocalApi, stopLocalApi, emitEvent, isRunning as isLocalApiRunning } from './localApi';
 import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow, getForegroundPid } from './winPaste';
-import { initHotkeyService, registerHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
+import { initHotkeyService, registerHotkeyService, registerCommandHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
+import * as llmRouter from './llmRouter';
+import { runCommand, resolveConfirmation, CommandStage } from './commandMode';
+import type { CommandDeps } from './commandTools';
 
 const store = new Store();
 
@@ -34,6 +37,7 @@ interface HistoryEntry {
     app: string;
     audioMs?: number;   // recorded audio duration
     latencyMs?: number; // stop→pasted (transcription + paste)
+    kind?: 'command';   // spoken command (app = tool name); absent = dictation
 }
 
 function getHistory(): HistoryEntry[] {
@@ -199,6 +203,73 @@ function execPromise(command: string): Promise<string> {
 
 function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// --- Command mode (voice → action) ---
+// A second hotkey records a COMMAND instead of dictation: the transcript is
+// routed by a local LLM (llmRouter) to a tool, gated by the capsule's
+// confirmation UI for outward-facing actions, then executed.
+let isCommandSession = false;
+
+/** Well-known folder names → real paths for the open_target tool. */
+function resolveKnownFolder(name: string): string | null {
+    const n = name.toLowerCase();
+    const map: Array<[RegExp, Parameters<typeof app.getPath>[0]]> = [
+        [/download/, 'downloads'],
+        [/document/, 'documents'],
+        [/desktop/, 'desktop'],
+        [/picture|photo/, 'pictures'],
+        [/music/, 'music'],
+        [/video|movie/, 'videos'],
+        [/home folder|user folder/, 'home'],
+    ];
+    for (const [re, key] of map) {
+        if (re.test(n)) {
+            try { return app.getPath(key); } catch { return null; }
+        }
+    }
+    return null;
+}
+
+const commandDeps: CommandDeps = {
+    typeText: async (text) => {
+        const r = await pasteToTarget(text);
+        return { success: r.success, app: r.app };
+    },
+    copyToClipboard: (text) => clipboard.writeText(text),
+    openExternal: (url) => shell.openExternal(url),
+    openPath: (p) => shell.openPath(p),
+    launchApp: async (name) => {
+        // OS shell resolves app names; never throws into the tool result path.
+        const cmd = process.platform === 'win32'
+            ? `start "" "${name.replace(/"/g, '')}"`
+            : `open -a "${name.replace(/"/g, '')}"`;
+        await new Promise<void>((resolve) => exec(cmd, () => resolve()));
+    },
+    resolveKnownFolder,
+    getHistory: (limit) => getHistory().slice(0, limit).map(e => ({ text: e.text, timestamp: e.timestamp })),
+};
+
+function emitCommandStage(s: CommandStage): void {
+    mainWindow?.webContents.send('command-stage', s);
+    emitEvent({ type: 'command', ...s }); // mirror to the Local API stream
+}
+
+function isCommandModeEnabled(): boolean {
+    const s = store.get('settings') as any;
+    return s?.commandModeEnabled === true;
+}
+
+/** Register/unregister the command hotkey + warm the router per settings. */
+function applyCommandModeSettings(): void {
+    const s = store.get('settings') as any || {};
+    if (s.commandModeEnabled === true) {
+        registerCommandHotkeyService((s.commandHotkey as string) || 'F10');
+        llmRouter.ensureStarted(); // warm in the background; non-blocking
+    } else {
+        registerCommandHotkeyService(null);
+        llmRouter.stop();
+    }
 }
 
 /**
@@ -519,12 +590,65 @@ function setupHotkeyCallbacks(): void {
             emitEvent({ type: 'state', state: 'PROCESSING' });
             mainWindow?.webContents.send('stop-recording');
         },
+        // Command mode: second hotkey toggles a command-capture session that
+        // reuses the whole recording pipeline; the transcript is routed to an
+        // action instead of being pasted.
+        onCommandToggle: () => {
+            if (!isCommandModeEnabled()) return;
+            if (!isCurrentlyRecording) {
+                console.log('[Main] Command hotkey — start command capture');
+                captureTargetBeforeRecording(); // type_text targets the current app
+                isCurrentlyRecording = true;
+                isCommandSession = true;
+                emitEvent({ type: 'state', state: 'RECORDING' });
+                emitCommandStage({ stage: 'listening' });
+                llmRouter.ensureStarted(); // warm while the user is speaking
+                mainWindow?.webContents.send('start-recording');
+            } else if (isCommandSession) {
+                console.log('[Main] Command hotkey — stop command capture');
+                retargetAtStop();
+                isCurrentlyRecording = false;
+                emitEvent({ type: 'state', state: 'PROCESSING' });
+                mainWindow?.webContents.send('stop-recording');
+            }
+            // Recording a normal dictation → the command hotkey does nothing.
+        },
     });
 }
 
 function registerHotkey(key: string, mode?: HotkeyMode): boolean {
     const resolvedMode = mode || (store.get('settings') as any)?.hotkeyMode || 'toggle';
     return registerHotkeyService(key, resolvedMode);
+}
+
+/**
+ * Route a command transcript through the orchestrator (fire-and-forget from
+ * the transcribe handler's perspective) and log successful actions to history.
+ */
+function dispatchCommand(transcript: string): { success: boolean; command: true } {
+    isCommandSession = false;
+    runCommand(transcript, {
+        route: llmRouter.route,
+        deps: commandDeps,
+        emit: emitCommandStage,
+    }).then((end) => {
+        emitEvent({ type: 'state', state: 'IDLE' });
+        if (end.stage === 'done') {
+            addHistoryEntry({
+                id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
+                text: transcript,
+                timestamp: Date.now(),
+                app: end.tool,
+                kind: 'command',
+            });
+        }
+    }).catch((e) => {
+        // runCommand never throws by contract; belt-and-braces.
+        console.error('[Main] Command dispatch error:', e);
+        emitCommandStage({ stage: 'error', message: String(e?.message || e) });
+        emitEvent({ type: 'state', state: 'IDLE' });
+    });
+    return { success: true, command: true };
 }
 
 // --- IPC Handlers ---
@@ -543,6 +667,7 @@ function setupIpcHandlers(): void {
                 const result = await streaming.finalizeSession();
                 if (result.healthy && result.text) {
                     console.log(`[Main] Streamed transcription finalized in ${Date.now() - t0}ms (${result.segments} segments): "${result.text.substring(0, 80)}"`);
+                    if (isCommandSession) return dispatchCommand(result.text);
                     mainWindow?.webContents.send('transcription-result', result.text);
                     emitEvent({ type: 'result', text: result.text });
                     emitEvent({ type: 'state', state: 'IDLE' });
@@ -560,12 +685,18 @@ function setupIpcHandlers(): void {
                 },
             });
             console.log(`[Main] Transcribed: "${text.substring(0, 80)}"`);
+            if (isCommandSession) return dispatchCommand(text);
             mainWindow?.webContents.send('transcription-result', text);
             emitEvent({ type: 'result', text });
             emitEvent({ type: 'state', state: 'IDLE' });
             return { success: true, text };
         } catch (error: any) {
             console.error('[Main] Transcribe error:', error);
+            if (isCommandSession) {
+                isCommandSession = false;
+                emitCommandStage({ stage: 'error', message: error.message || 'Transcription failed' });
+                emitEvent({ type: 'state', state: 'IDLE' });
+            }
             return { success: false, error: error.message };
         }
     });
@@ -663,6 +794,7 @@ function setupIpcHandlers(): void {
     ipcMain.handle('save-settings', (_, settings) => {
         store.set('settings', settings);
         if (settings.hotkey) registerHotkey(settings.hotkey, settings.hotkeyMode);
+        applyCommandModeSettings(); // command hotkey + router lifecycle
     });
     ipcMain.handle('get-hotkey', () => store.get('hotkey') || 'Alt+Space');
     ipcMain.handle('set-hotkey', (_, key) => { store.set('hotkey', key); return registerHotkey(key); });
@@ -696,6 +828,13 @@ function setupIpcHandlers(): void {
         store.set('personalDictionary', dictionary);
         syncVocabularyBoost();
     });
+
+    // --- Command mode ---
+    ipcMain.handle('command-confirm', (_, approved: boolean) => resolveConfirmation(!!approved));
+    ipcMain.handle('get-command-status', () => ({
+        enabled: isCommandModeEnabled(),
+        ...llmRouter.getStatus(),
+    }));
 
     // Local API info for the settings UI (token shown so users can wire tools).
     ipcMain.handle('get-local-api-info', () => {
@@ -911,6 +1050,11 @@ app.whenReady().then(async () => {
                     version: app.getVersion(),
                 }),
                 getHistory: (limit) => getHistory().slice(0, limit),
+                // Text-command entry point for agents: same pipeline as speech.
+                runCommand: (text) => {
+                    if (!isCommandModeEnabled()) return Promise.resolve({ stage: 'error', message: 'Command mode is disabled' });
+                    return runCommand(text, { route: llmRouter.route, deps: commandDeps, emit: emitCommandStage });
+                },
             })
                 .then(({ port }) => console.log(`[LocalAPI] listening on 127.0.0.1:${port}`))
                 .catch((err) => console.error('[LocalAPI] failed to start:', err));
@@ -918,6 +1062,7 @@ app.whenReady().then(async () => {
     }
 
     setupHotkeyCallbacks();
+    applyCommandModeSettings(); // command hotkey + router (if enabled)
     const savedSettings = store.get('settings') as any;
     registerHotkey(
         (store.get('hotkey') as string) || savedSettings?.hotkey || 'Alt+Space',
@@ -939,6 +1084,7 @@ app.whenReady().then(async () => {
 
 app.on('will-quit', () => {
     if (isLocalApiRunning()) stopLocalApi();
+    llmRouter.stop();
     stopHotkeyService();
     if (pollingInterval) clearInterval(pollingInterval);
     nativeWhisper.cleanup();

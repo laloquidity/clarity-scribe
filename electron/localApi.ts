@@ -44,6 +44,10 @@ export interface LocalApiConfig {
     getStatus: () => { recording: boolean; engine: string; version: string };
     /** Recent history entries, newest-first, capped at `limit`. */
     getHistory: (limit: number) => any[];
+    /** Optional: run a TEXT command through the command-mode pipeline (as if it
+     *  had been spoken). Stages stream over SSE; the promise resolves with the
+     *  terminal stage. Absent → POST /v1/command returns 501. */
+    runCommand?: (text: string) => Promise<any>;
 }
 
 /** How often we push an SSE heartbeat comment. Idle proxies and some OS socket
@@ -233,6 +237,32 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     if (path === '/v1/record/stop' && method === 'POST') {
         const ok = cfg.stopRecording();
         sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { ok: false, error: 'not_recording' });
+        return;
+    }
+
+    // POST /v1/command {text} — run a text command through the command-mode
+    // pipeline (routing → confirmation gate → execution). Stages stream over
+    // SSE; the response carries the terminal stage. Lets agents trigger the
+    // same actions a spoken command would, without audio.
+    if (path === '/v1/command' && method === 'POST') {
+        if (!cfg.runCommand) {
+            sendJson(res, 501, { ok: false, error: 'command_mode_unavailable' });
+            return;
+        }
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+            let text = '';
+            try { text = String(JSON.parse(body || '{}').text || ''); } catch { /* fall through */ }
+            if (!text.trim()) {
+                sendJson(res, 400, { ok: false, error: 'missing_text' });
+                return;
+            }
+            cfg.runCommand!(text).then(
+                (end) => sendJson(res, 200, { ok: true, result: end }),
+                (e) => sendJson(res, 500, { ok: false, error: String(e?.message || e) })
+            );
+        });
         return;
     }
 

@@ -67,6 +67,29 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
     }, []);
 
     // Launch on Login sub-component
+    /** Router availability readout for command mode. */
+    function CommandRouterStatus() {
+        const [st, setSt] = React.useState<{ available: boolean; running: boolean; modelPath: string | null; lastRouteMs: number | null } | null>(null);
+        React.useEffect(() => {
+            let alive = true;
+            const poll = () => window.electronAPI?.getCommandStatus?.().then(s => { if (alive) setSt(s); }).catch(() => {});
+            poll();
+            const t = window.setInterval(poll, 4000);
+            return () => { alive = false; window.clearInterval(t); };
+        }, []);
+        if (!st) return null;
+        const modelName = st.modelPath?.split(/[\\/]/).pop();
+        return (
+            <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                {!st.available && <div>⚠ Router not found — needs llama-server + a Gemma model (see README).</div>}
+                {st.available && !st.running && <div>Router: {modelName} (starting…)</div>}
+                {st.available && st.running && (
+                    <div>Router: {modelName} ✓{st.lastRouteMs != null ? ` · last route ${st.lastRouteMs}ms` : ''}</div>
+                )}
+            </div>
+        );
+    }
+
     /** Port + bearer token readout shown when the Local API is enabled. */
     function LocalApiInfo() {
         const [info, setInfo] = React.useState<{ running: boolean; port: number; token: string | null } | null>(null);
@@ -547,6 +570,40 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                         />
                         <span className="toggle-slider" />
                     </label>
+                </div>
+
+                {/* Command mode — voice → action via a local LLM. Default OFF. */}
+                <div className="settings-group">
+                    <span className="settings-label" style={{ marginBottom: 2 }}>Command mode</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 6 }}>
+                        Speak commands instead of dictation: "open my downloads folder", "search for…". Routed by a
+                        local LLM (fully offline); actions that change context ask for confirmation first.
+                    </span>
+                    <label className="settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={!!settings.commandModeEnabled}
+                            onChange={e => onUpdateSetting('commandModeEnabled', e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                    </label>
+                    {settings.commandModeEnabled && (
+                        <>
+                            <div style={{ marginTop: 8 }}>
+                                <span className="settings-label" style={{ fontSize: 11 }}>Command hotkey</span>
+                                <select
+                                    className="settings-select"
+                                    value={settings.commandHotkey || 'F10'}
+                                    onChange={e => onUpdateSetting('commandHotkey', e.target.value)}
+                                >
+                                    {['F6', 'F7', 'F9', 'F10', 'F11', 'F12', 'Control+Alt+Space']
+                                        .filter(k => k !== settings.hotkey)
+                                        .map(k => <option key={k} value={k}>{k}</option>)}
+                                </select>
+                            </div>
+                            <CommandRouterStatus />
+                        </>
+                    )}
                 </div>
 
                 {/* Local API — opt-in, default OFF, applies on restart */}
