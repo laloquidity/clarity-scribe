@@ -18,10 +18,13 @@ interface HotkeyCallbacks {
     onToggle: () => void;       // Toggle mode: single press
     onKeyDown: () => void;      // Hold mode: key pressed
     onKeyUp: () => void;        // Hold mode: key released
+    /** Command mode: single press toggles a command-capture session. */
+    onCommandToggle?: () => void;
 }
 
 let currentMode: HotkeyMode = 'toggle';
 let currentAccelerator: string = 'Alt+Space';
+let commandAccelerator: string | null = null; // second binding (always toggle)
 let callbacks: HotkeyCallbacks | null = null;
 let isUiohookStarted = false;
 let isKeyCurrentlyDown = false;
@@ -116,6 +119,7 @@ function registerToggleMode(accelerator: string): boolean {
 
         if (success) console.log(`[Hotkey] Toggle mode registered: ${key}`);
         else console.error(`[Hotkey] Failed to register: ${key}`);
+        applyCommandShortcut(); // unregisterAll above wiped it — restore
         return success;
     } catch (err) {
         console.error(`[Hotkey] Registration error:`, err);
@@ -123,6 +127,44 @@ function registerToggleMode(accelerator: string): boolean {
             console.log('[Hotkey] Falling back to Alt+Space');
             return registerToggleMode('Alt+Space');
         }
+        applyCommandShortcut();
+        return false;
+    }
+}
+
+/**
+ * Register (or clear) the COMMAND hotkey — a second, independent binding that
+ * toggles a command-capture session. Always a globalShortcut toggle, so it
+ * coexists with both dictation modes (hold mode uses uiohook, not
+ * globalShortcut; toggle mode uses a different accelerator).
+ */
+export function registerCommandHotkeyService(accelerator: string | null): boolean {
+    // Unregister the previous binding first (also handles disable → null).
+    if (commandAccelerator) {
+        try {
+            if (globalShortcut.isRegistered(commandAccelerator)) globalShortcut.unregister(commandAccelerator);
+        } catch { /* ignore */ }
+    }
+    commandAccelerator = accelerator && accelerator.trim() ? accelerator.trim() : null;
+    return applyCommandShortcut();
+}
+
+function applyCommandShortcut(): boolean {
+    if (!commandAccelerator) return true;
+    if (commandAccelerator === currentAccelerator && currentMode === 'toggle') {
+        console.warn(`[Hotkey] Command hotkey "${commandAccelerator}" clashes with the dictation hotkey — not registered`);
+        return false;
+    }
+    try {
+        if (globalShortcut.isRegistered(commandAccelerator)) globalShortcut.unregister(commandAccelerator);
+        const ok = globalShortcut.register(commandAccelerator, () => {
+            callbacks?.onCommandToggle?.();
+        });
+        if (ok) console.log(`[Hotkey] Command hotkey registered: ${commandAccelerator}`);
+        else console.error(`[Hotkey] Failed to register command hotkey: ${commandAccelerator}`);
+        return ok;
+    } catch (err) {
+        console.error('[Hotkey] Command hotkey registration error:', err);
         return false;
     }
 }
@@ -177,6 +219,7 @@ function registerHoldMode(accelerator: string): boolean {
         console.log(`[Hotkey] Hold mode updated, listening for keycode ${targetKeyCode} (${accelerator})`);
     }
 
+    applyCommandShortcut(); // unregisterAll above wiped the command binding
     return true;
 }
 

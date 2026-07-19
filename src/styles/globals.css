@@ -387,6 +387,138 @@ body,
     display: none;
 }
 
+/* Command capture: amber accent distinguishes "this will act" from dictation */
+.live-transcript-box.command {
+    background: rgba(245, 179, 66, 0.07);
+    border-color: rgba(245, 179, 66, 0.28);
+}
+
+.command-badge {
+    display: inline-block;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #f5b342;
+    margin-bottom: 3px;
+}
+
+/* Command pipeline card (routing → proposal → executing → outcome) */
+.command-card {
+    margin: 0 12px 8px;
+    padding: 9px 11px;
+    background: rgba(245, 179, 66, 0.07);
+    border: 1px solid rgba(245, 179, 66, 0.28);
+    border-radius: 10px;
+}
+
+.command-card.stage-done {
+    background: rgba(80, 200, 120, 0.08);
+    border-color: rgba(80, 200, 120, 0.3);
+}
+
+.command-card.stage-error {
+    background: rgba(240, 90, 90, 0.08);
+    border-color: rgba(240, 90, 90, 0.3);
+}
+
+.command-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.35;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.command-title.muted { color: var(--text-muted); font-weight: 400; }
+.command-title.error { color: #f08a8a; }
+
+.command-transcript {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 3px;
+    line-height: 1.35;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.command-detail {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 5px;
+    white-space: pre-wrap;
+    line-height: 1.45;
+}
+
+.command-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.command-btn {
+    flex: 1;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 7px;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: filter 0.1s ease;
+}
+
+.command-btn:hover { filter: brightness(1.15); }
+
+.command-btn.confirm {
+    background: rgba(245, 179, 66, 0.9);
+    color: #1a1207;
+}
+
+.command-btn.cancel {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+}
+
+.command-btn .key-hint {
+    font-size: 9px;
+    opacity: 0.6;
+    font-weight: 400;
+}
+
+.command-spinner {
+    width: 10px;
+    height: 10px;
+    flex-shrink: 0;
+    border: 2px solid rgba(245, 179, 66, 0.25);
+    border-top-color: #f5b342;
+    border-radius: 50%;
+    animation: command-spin 0.8s linear infinite;
+}
+
+@keyframes command-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* History: command entries get a marker chip */
+.history-entry-kind {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #f5b342;
+    background: rgba(245, 179, 66, 0.12);
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-right: 6px;
+    vertical-align: 1px;
+}
+
 .history-entry-meta {
     display: flex;
     align-items: center;

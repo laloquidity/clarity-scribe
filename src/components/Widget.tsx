@@ -12,6 +12,8 @@ interface WidgetProps {
     whisperStatus: string;
     hotkey?: string;
     hotkeyMode?: 'toggle' | 'hold';
+    /** A command-mode session is active (recording or pipeline running). */
+    commandActive?: boolean;
 }
 
 const Waveform = () => (
@@ -49,6 +51,7 @@ const Widget: React.FC<WidgetProps> = ({
     whisperStatus,
     hotkey,
     hotkeyMode,
+    commandActive,
 }) => {
     const isRecording = appState === 'RECORDING';
     const isProcessing = appState === 'PROCESSING';
@@ -70,7 +73,9 @@ const Widget: React.FC<WidgetProps> = ({
     const getStatusText = () => {
         if (!whisperReady && whisperProgress < 100) return whisperStatus || 'Loading...';
         if (statusMessage) return statusMessage;
+        if (isRecording && commandActive) return 'Listening for command';
         if (isRecording) return 'Recording';
+        if (isProcessing && commandActive) return 'Command';
         if (isProcessing) {
             if (transcriptionProgress !== null && transcriptionProgress < 100) {
                 return `Processing ${transcriptionProgress}%`;

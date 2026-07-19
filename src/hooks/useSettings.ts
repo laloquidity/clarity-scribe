@@ -17,6 +17,8 @@ const DEFAULT_SETTINGS: Settings = {
     soundCues: false,
     spokenPunctuation: false,
     localApiEnabled: false,
+    commandModeEnabled: false,
+    commandHotkey: 'F10',
 };
 
 export function useSettings() {

@@ -117,7 +117,10 @@ const HistoryPanel: React.FC<HistoryPanelProps> = ({ entries, onCopy, onDelete, 
                                 title={confirmDeleteId === entry.id ? '' : 'Click to copy'}
                             >
                                 <div className="history-entry-row">
-                                    <div className="history-entry-text">{entry.text}</div>
+                                    <div className="history-entry-text">
+                                        {entry.kind === 'command' && <span className="history-entry-kind" title={`Command → ${entry.app}`}>CMD</span>}
+                                        {entry.text}
+                                    </div>
                                     {confirmDeleteId !== entry.id && (
                                         <button
                                             className="history-delete-btn"

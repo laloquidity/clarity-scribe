@@ -19,6 +19,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Local API (programmable voice layer)
     getLocalApiInfo: () => ipcRenderer.invoke('get-local-api-info'),
 
+    // Command mode
+    onCommandStage: (cb: (stage: any) => void) => {
+        const handler = (_: any, stage: any) => cb(stage);
+        ipcRenderer.on('command-stage', handler);
+        return () => { ipcRenderer.removeListener('command-stage', handler); };
+    },
+    commandConfirm: (approved: boolean) => ipcRenderer.invoke('command-confirm', approved),
+    getCommandStatus: () => ipcRenderer.invoke('get-command-status'),
+
     // Listeners
     onWhisperReady: (cb: (info?: { acceleration: string }) => void) => {
         const handler = (_: any, info?: { acceleration: string }) => cb(info);

@@ -24,6 +24,21 @@ export interface Settings {
     // Local API: loopback SSE event stream + record start/stop endpoints for
     // scripts/agents. Default OFF; takes effect on app restart.
     localApiEnabled: boolean;
+    // Command mode: a second hotkey records a spoken COMMAND, routed by a
+    // local LLM to an action (with confirmation gating). Default OFF.
+    commandModeEnabled: boolean;
+    commandHotkey: string;
+}
+
+/** One stage of a command-mode run, streamed from the main process. */
+export interface CommandStageEvent {
+    stage: 'listening' | 'routing' | 'proposal' | 'executing' | 'done' | 'clarify' | 'cancelled' | 'error';
+    transcript?: string;
+    tool?: string;
+    description?: string;
+    message?: string;
+    detail?: string;
+    question?: string;
 }
 
 export interface HistoryEntry {
@@ -35,6 +50,8 @@ export interface HistoryEntry {
     audioMs?: number;
     /** Stop→pasted latency in ms (transcription + paste). Optional for the same reason. */
     latencyMs?: number;
+    /** 'command' = spoken command (app holds the tool name); absent = dictation. */
+    kind?: 'command';
 }
 
 /**
@@ -117,6 +134,11 @@ export interface ElectronAPI {
 
     // Local API (programmable voice layer)
     getLocalApiInfo: () => Promise<{ enabled: boolean; running: boolean; port: number; token: string | null }>;
+
+    // Command mode
+    onCommandStage: (cb: (stage: CommandStageEvent) => void) => () => void;
+    commandConfirm: (approved: boolean) => Promise<boolean>;
+    getCommandStatus: () => Promise<{ enabled: boolean; available: boolean; running: boolean; modelPath: string | null; binaryPath: string | null; lastRouteMs: number | null }>;
 
     onWhisperReady: (cb: (info?: { acceleration: string }) => void) => () => void;
     onWhisperProgress: (cb: (p: number, m: string) => void) => () => void;

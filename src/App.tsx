@@ -18,7 +18,7 @@ import { retainAudioContext, releaseAudioContext } from './utils/audioContextMan
 import { cleanTranscription } from './utils/cleanTranscription';
 import { applyITN } from './utils/itn';
 import { applySpokenPunctuation } from './utils/spokenPunctuation';
-import type { AppState, HistoryEntry, DictionaryEntry } from './types';
+import type { AppState, HistoryEntry, DictionaryEntry, CommandStageEvent } from './types';
 
 const COLLAPSED_HEIGHT = 64;
 const EXPANDED_HEIGHT = 460;
@@ -45,6 +45,11 @@ const App: React.FC = () => {
     const [partialText, setPartialText] = useState('');
     const [liveExtra, setLiveExtra] = useState(0);
     const liveBoxRef = useRef<HTMLDivElement | null>(null);
+    // Command mode: current stage of the voice→action pipeline (null = inactive).
+    const [commandStage, setCommandStage] = useState<CommandStageEvent | null>(null);
+    const [commandExtra, setCommandExtra] = useState(0);
+    const commandCardRef = useRef<HTMLDivElement | null>(null);
+    const commandDismissTimer = useRef<number | null>(null);
 
     // Keep a ref to dictionary for use in the transcription callback (avoids stale closure)
     const dictionaryRef = useRef<DictionaryEntry[]>([]);
@@ -193,24 +198,75 @@ const App: React.FC = () => {
     }, []);
     useEffect(() => {
         if (appState === 'RECORDING') setPartialText('');
+        // A command 'listening' badge with no follow-up (aborted/too-short
+        // recording) must not linger once we're back to idle.
+        if (appState === 'IDLE') {
+            setCommandStage(prev => (prev?.stage === 'listening' ? null : prev));
+        }
     }, [appState]);
+
+    // Command mode: subscribe to pipeline stages. Terminal stages auto-dismiss
+    // after a beat so the capsule returns to its resting state; proposals wire
+    // Enter/Esc for confirm/cancel.
+    useEffect(() => {
+        const api = window.electronAPI;
+        if (!api?.onCommandStage) return;
+        const unsub = api.onCommandStage((s) => {
+            if (commandDismissTimer.current) {
+                window.clearTimeout(commandDismissTimer.current);
+                commandDismissTimer.current = null;
+            }
+            setCommandStage(s);
+            if (s.stage === 'done' || s.stage === 'cancelled' || s.stage === 'error' || s.stage === 'clarify') {
+                setAppState('IDLE');
+                isRecordingRef.current = false;
+                const holdMs = s.stage === 'clarify' || s.detail ? 6000 : 2600;
+                commandDismissTimer.current = window.setTimeout(() => setCommandStage(null), holdMs);
+            }
+        });
+        return () => { unsub?.(); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // Keyboard confirm/cancel while a proposal is showing.
+    useEffect(() => {
+        if (commandStage?.stage !== 'proposal') return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Enter') { e.preventDefault(); window.electronAPI?.commandConfirm(true); }
+            else if (e.key === 'Escape') { e.preventDefault(); window.electronAPI?.commandConfirm(false); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [commandStage?.stage]);
+
+    const commandVisible = commandStage !== null && commandStage.stage !== 'listening';
+
+    // Measure the command card for window sizing (same pattern as the live box).
+    useEffect(() => {
+        const el = commandCardRef.current;
+        if (!commandVisible || !el) { setCommandExtra(0); return; }
+        setCommandExtra(Math.min(el.scrollHeight, 150) + 18);
+    }, [commandStage, commandVisible]);
 
     // The live box is visible while dictating (and during the brief finalize).
     const liveVisible = (appState === 'RECORDING' || appState === 'PROCESSING') && partialText.length > 0;
+    // While the command pipeline is past recording, the command card replaces it.
+    const liveBoxShown = liveVisible && !commandVisible;
+    const commandRecording = commandStage?.stage === 'listening' && appState === 'RECORDING';
 
     // Measure the live transcript content whenever it changes: grow the box
     // (and the window, below) to fit, up to the cap — then pin to the newest
     // lines so the latest words are always visible.
     useEffect(() => {
         const el = liveBoxRef.current;
-        if (!liveVisible || !el) {
+        if (!liveBoxShown || !el) {
             setLiveExtra(0);
             return;
         }
         const content = Math.min(el.scrollHeight, LIVE_BOX_MAX_CONTENT);
         setLiveExtra(content + LIVE_BOX_CHROME);
         el.scrollTop = el.scrollHeight; // keep newest words in view
-    }, [partialText, liveVisible]);
+    }, [partialText, liveBoxShown]);
 
     // Subtle generated sound cues on record start/stop (no audio assets).
     // Uses the app's SHARED AudioContext: a per-cue `new AudioContext()` is
@@ -346,12 +402,15 @@ const App: React.FC = () => {
         } else if (expanded) {
             height = EXPANDED_HEIGHT;
         }
-        if (setupDone && liveVisible) {
+        if (setupDone && liveBoxShown) {
             height += liveExtra;
+        }
+        if (setupDone && commandVisible) {
+            height += commandExtra;
         }
 
         api.setWindowSize({ width: 340, height });
-    }, [expanded, setupDone, liveVisible, liveExtra]);
+    }, [expanded, setupDone, liveBoxShown, liveExtra, commandVisible, commandExtra]);
 
     // Copy entry to clipboard
     const handleCopyEntry = useCallback((text: string) => {
@@ -408,6 +467,7 @@ const App: React.FC = () => {
                         whisperStatus={whisperStatus}
                         hotkey={settings.hotkey}
                         hotkeyMode={settings.hotkeyMode}
+                        commandActive={commandRecording || (commandVisible && commandStage?.stage !== 'done')}
                     />
                 </div>
                 <div className="no-drag" style={{ display: 'flex', gap: 4, paddingRight: 12 }}>
@@ -466,18 +526,78 @@ const App: React.FC = () => {
                 </div>
             </div>
 
-            {/* Live transcript (streaming mode) — grows with speech up to a cap */}
+            {/* Live transcript (streaming mode) — grows with speech up to a cap.
+                Amber accent while capturing a COMMAND instead of dictation. */}
             <AnimatePresence>
-                {liveVisible && (
+                {liveBoxShown && (
                     <motion.div
-                        className="live-transcript-box"
+                        className={`live-transcript-box ${commandRecording ? 'command' : ''}`}
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.15 }}
                     >
+                        {commandRecording && <div className="command-badge">COMMAND</div>}
                         <div className="live-transcript-content" ref={liveBoxRef}>
                             {partialText}
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Command pipeline card: routing → proposal (confirm/cancel) →
+                executing → done/clarify/cancelled/error */}
+            <AnimatePresence>
+                {commandVisible && commandStage && (
+                    <motion.div
+                        className={`command-card stage-${commandStage.stage}`}
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                    >
+                        <div ref={commandCardRef}>
+                            {commandStage.stage === 'routing' && (
+                                <>
+                                    <div className="command-title"><span className="command-spinner" /> Interpreting…</div>
+                                    <div className="command-transcript">"{commandStage.transcript}"</div>
+                                </>
+                            )}
+                            {commandStage.stage === 'proposal' && (
+                                <>
+                                    <div className="command-title">{commandStage.description}</div>
+                                    <div className="command-transcript">"{commandStage.transcript}"</div>
+                                    <div className="command-actions no-drag">
+                                        <button className="command-btn confirm" onClick={() => window.electronAPI?.commandConfirm(true)}>
+                                            Confirm <span className="key-hint">↵</span>
+                                        </button>
+                                        <button className="command-btn cancel" onClick={() => window.electronAPI?.commandConfirm(false)}>
+                                            Cancel <span className="key-hint">Esc</span>
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+                            {commandStage.stage === 'executing' && (
+                                <div className="command-title"><span className="command-spinner" /> {commandStage.description}</div>
+                            )}
+                            {commandStage.stage === 'done' && (
+                                <>
+                                    <div className="command-title">{commandStage.message}</div>
+                                    {commandStage.detail && <div className="command-detail">{commandStage.detail}</div>}
+                                </>
+                            )}
+                            {commandStage.stage === 'clarify' && (
+                                <>
+                                    <div className="command-title">{commandStage.question}</div>
+                                    <div className="command-transcript">"{commandStage.transcript}"</div>
+                                </>
+                            )}
+                            {commandStage.stage === 'cancelled' && (
+                                <div className="command-title muted">Cancelled — {commandStage.description}</div>
+                            )}
+                            {commandStage.stage === 'error' && (
+                                <div className="command-title error">{commandStage.message}</div>
+                            )}
                         </div>
                     </motion.div>
                 )}
