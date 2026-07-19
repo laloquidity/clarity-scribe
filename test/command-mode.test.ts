@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import http from 'http';
 import { runCommand, resolveConfirmation, hasPendingConfirmation, CommandStage } from '../electron/commandMode';
-import { COMMAND_TOOLS, getTool, toOpenAiTools, CommandDeps } from '../electron/commandTools';
+import { COMMAND_TOOLS, getTool, toOpenAiTools, riskOfOpening, CommandDeps } from '../electron/commandTools';
 import * as llmRouter from '../electron/llmRouter';
 
 function makeDeps(overrides: Partial<CommandDeps> = {}): CommandDeps & { calls: string[] } {
@@ -56,23 +56,39 @@ describe('runCommand stage machine', () => {
         expect(deps.calls).toEqual(['type:hello']);
     });
 
-    it('confirm tool waits for approval, then executes', async () => {
-        const { stages, rt, deps } = collectRuntime({ tool: 'open_target', args: { target: 'downloads folder' } }, makeDeps(), 2000);
-        const run = runCommand('open my downloads', rt);
-        // Wait for the proposal to be emitted
+    it('rulebook: benign open (folder) AUTO-executes — no proposal', async () => {
+        const { stages, rt, deps } = collectRuntime({ tool: 'open_target', args: { target: 'downloads folder' } });
+        const end = await runCommand('open my downloads', rt);
+        expect(stages.map(s => s.stage)).toEqual(['routing', 'executing', 'done']);
+        expect(end.stage).toBe('done');
+        expect(deps.calls[0]).toBe('path:C:\\Users\\me\\Downloads');
+    });
+
+    it('rulebook: web search AUTO-executes — no proposal', async () => {
+        const { stages, rt, deps } = collectRuntime({ tool: 'search_web', args: { query: 'cats' } });
+        const end = await runCommand('search for cats', rt);
+        expect(stages.map(s => s.stage)).toEqual(['routing', 'executing', 'done']);
+        expect(end.stage).toBe('done');
+        expect(deps.calls[0]).toContain('url:https://www.google.com/search');
+    });
+
+    it('rulebook: launching an executable file CONFIRMS, then executes on approval', async () => {
+        const { stages, rt, deps } = collectRuntime({ tool: 'open_target', args: { target: 'C:\\Downloads\\setup.exe' } }, makeDeps(), 2000);
+        const run = runCommand('open setup exe', rt);
         await new Promise(r => setTimeout(r, 20));
-        expect(stages.at(-1)?.stage).toBe('proposal');
+        const proposal = stages.at(-1) as any;
+        expect(proposal.stage).toBe('proposal');
+        expect(proposal.reason).toContain('executable');
         expect(hasPendingConfirmation()).toBe(true);
         expect(resolveConfirmation(true)).toBe(true);
         const end = await run;
         expect(end.stage).toBe('done');
-        expect(rt.deps === deps).toBe(true);
-        expect(deps.calls[0]).toBe('path:C:\\Users\\me\\Downloads');
+        expect(deps.calls[0]).toBe('path:C:\\Downloads\\setup.exe');
     });
 
     it('declined proposal cancels without executing', async () => {
-        const { rt, deps } = collectRuntime({ tool: 'search_web', args: { query: 'cats' } }, makeDeps(), 2000);
-        const run = runCommand('search for cats', rt);
+        const { rt, deps } = collectRuntime({ tool: 'open_target', args: { target: 'run.bat' } }, makeDeps(), 2000);
+        const run = runCommand('open run dot bat', rt);
         await new Promise(r => setTimeout(r, 20));
         resolveConfirmation(false);
         const end = await run;
@@ -81,10 +97,27 @@ describe('runCommand stage machine', () => {
     });
 
     it('unanswered proposal times out to cancelled (never auto-executes)', async () => {
-        const { rt, deps } = collectRuntime({ tool: 'open_target', args: { target: 'downloads' } }, makeDeps(), 50);
-        const end = await runCommand('open downloads', rt);
+        const { rt, deps } = collectRuntime({ tool: 'open_target', args: { target: 'script.ps1' } }, makeDeps(), 50);
+        const end = await runCommand('open the script', rt);
         expect(end.stage).toBe('cancelled');
         expect(deps.calls).toEqual([]);
+    });
+
+    it('rulebook: a refuse-tier tool emits refused and never executes', async () => {
+        // No shipping tool refuses yet — verify the orchestrator contract with
+        // a stubbed assessment by monkey-patching a registry entry.
+        const open = getTool('open_target')!;
+        const original = open.assessRisk;
+        open.assessRisk = () => ({ level: 'refuse', reason: 'test: severe action' });
+        try {
+            const { rt, deps } = collectRuntime({ tool: 'open_target', args: { target: 'x' } });
+            const end = await runCommand('do the severe thing', rt);
+            expect(end.stage).toBe('refused');
+            expect((end as any).reason).toContain('severe');
+            expect(deps.calls).toEqual([]);
+        } finally {
+            open.assessRisk = original;
+        }
     });
 
     it('clarify short-circuits without execution', async () => {
@@ -132,12 +165,27 @@ describe('command tool registry', () => {
             expect(t.describe({ text: 'x', target: 'y', query: 'z', question: 'q', limit: 2 })).toBeTypeOf('string');
         }
     });
-    it('outward/context-changing tools are confirm-gated; benign ones are not', () => {
-        expect(getTool('open_target')!.confirm).toBe(true);
-        expect(getTool('search_web')!.confirm).toBe(true);
-        expect(getTool('type_text')!.confirm).toBe(false);
-        expect(getTool('dictation')!.confirm).toBe(false);
-        expect(getTool('clarify')!.confirm).toBe(false);
+    it('rulebook tiers: everything benign is auto; executables confirm', () => {
+        expect(getTool('type_text')!.assessRisk({ text: 'x' }).level).toBe('auto');
+        expect(getTool('dictation')!.assessRisk({ text: 'x' }).level).toBe('auto');
+        expect(getTool('copy_to_clipboard')!.assessRisk({ text: 'x' }).level).toBe('auto');
+        expect(getTool('get_recent_transcripts')!.assessRisk({}).level).toBe('auto');
+        expect(getTool('clarify')!.assessRisk({ question: 'q' }).level).toBe('auto');
+        expect(getTool('search_web')!.assessRisk({ query: 'q' }).level).toBe('auto');
+        // open_target: argument-dependent
+        expect(getTool('open_target')!.assessRisk({ target: 'downloads folder' }).level).toBe('auto');
+        expect(getTool('open_target')!.assessRisk({ target: 'https://example.com' }).level).toBe('auto');
+        expect(getTool('open_target')!.assessRisk({ target: 'notepad' }).level).toBe('auto');
+        expect(getTool('open_target')!.assessRisk({ target: 'C:\\x\\setup.exe' }).level).toBe('confirm');
+    });
+
+    it('riskOfOpening flags every executable/script extension, case-insensitively', () => {
+        for (const f of ['a.exe', 'b.BAT', 'c.cmd', 'd.ps1', 'e.msi', 'f.vbs', 'g.scr', 'h.reg', 'i.lnk', 'j.jar', 'k.com', 'l.app', 'm.sh', 'n.command']) {
+            expect(riskOfOpening(f).level, f).toBe('confirm');
+        }
+        for (const f of ['report.pdf', 'notes.txt', 'photo.jpg', 'downloads folder', 'https://x.com/setup.exe.html', 'archive.zip']) {
+            expect(riskOfOpening(f).level, f).toBe('auto');
+        }
     });
     it('open_target routes URLs, known folders, paths, and app names correctly', async () => {
         const deps = makeDeps();

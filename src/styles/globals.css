@@ -416,7 +416,8 @@ body,
     border-color: rgba(80, 200, 120, 0.3);
 }
 
-.command-card.stage-error {
+.command-card.stage-error,
+.command-card.stage-refused {
     background: rgba(240, 90, 90, 0.08);
     border-color: rgba(240, 90, 90, 0.3);
 }
@@ -433,6 +434,13 @@ body,
 
 .command-title.muted { color: var(--text-muted); font-weight: 400; }
 .command-title.error { color: #f08a8a; }
+
+.command-reason {
+    font-size: 10px;
+    color: #f5b342;
+    margin-top: 3px;
+    line-height: 1.35;
+}
 
 .command-transcript {
     font-size: 10px;

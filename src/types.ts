@@ -32,13 +32,15 @@ export interface Settings {
 
 /** One stage of a command-mode run, streamed from the main process. */
 export interface CommandStageEvent {
-    stage: 'listening' | 'routing' | 'proposal' | 'executing' | 'done' | 'clarify' | 'cancelled' | 'error';
+    stage: 'listening' | 'routing' | 'proposal' | 'executing' | 'done' | 'clarify' | 'cancelled' | 'refused' | 'error';
     transcript?: string;
     tool?: string;
     description?: string;
     message?: string;
     detail?: string;
     question?: string;
+    /** Why a proposal/refusal guardrail applied (risk rulebook). */
+    reason?: string;
 }
 
 export interface HistoryEntry {
