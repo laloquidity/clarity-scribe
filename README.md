@@ -23,6 +23,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 - **Sound Cues** (opt-in) — Subtle generated blips on recording start/stop.
 - **Personal Dictionary with decoder-level recognition** — Add custom word corrections that apply to every transcription (e.g. `Chat GPT` to `ChatGPT`), with full CRUD, Export/Import JSON, and ~12 auto-generated variants per entry. Dictionary terms also feed **shallow-fusion vocabulary biasing inside the decoder** (ONNX engine): the model is nudged toward emitting your custom terms as it hears them, not just string-replaced afterwards.
 - **Local API** (opt-in) — Loopback-only HTTP API + SSE event stream: scripts and agents can start/stop dictation and consume live transcripts. See [Local API](#local-api-programmable-voice-layer).
+- **MCP Server** — Scribe is callable as a tool provider from Claude Desktop, Claude Code, and any MCP-speaking agent: `dictate`, `start/stop_dictation`, `get_recent_transcripts`. See [MCP server](#mcp-server-use-scribe-from-ai-agents).
 - **Hold-to-Talk Mode** — Hold a key to record, release to transcribe — or use the classic tap-to-toggle. Switch modes instantly in Settings with an Apple-style segmented control. Single function keys (F5-F12) for hold mode, modifier combos for toggle mode.
 - **Filler Word Removal** — Automatically strips filled pauses (um, uh, ah, er) from transcriptions while preserving natural speech patterns
 - **No-Audio Auto-Stop** — Automatically stops recording if no meaningful audio is detected for 80% of a 30-second window. Catches wrong mic selection, muted mic, and forgotten recordings.
@@ -192,6 +193,9 @@ clarity-scribe/
 │   ├── winPaste.ts        # Native Win32 paste via koffi FFI with foreground verification (Windows)
 │   ├── tdtDecoder.ts      # Token-and-Duration Transducer beam search
 │   └── preload.ts         # Context bridge (IPC API)
+├── mcp/
+│   ├── scribe-mcp.mjs     # MCP stdio server: dictate/start/stop/status/history tools
+│   └── scribeApi.mjs      # Local-API client core the bridge is built on — unit-tested
 ├── native/
 │   └── parakeet-sidecar/  # Swift CoreML/ANE Parakeet sidecar (built for macOS bundles)
 ├── src/                   # Renderer (React)
@@ -347,6 +351,46 @@ Browser / EventSource:
 const es = new EventSource(`http://127.0.0.1:5111/v1/events?token=${TOKEN}`);
 es.onmessage = (e) => console.log(JSON.parse(e.data));
 ```
+
+## MCP server (use Scribe from AI agents)
+
+Scribe ships a [Model Context Protocol](https://modelcontextprotocol.io) server —
+the standard way AI agents discover and call an app's capabilities. Any MCP host
+(Claude Desktop, Claude Code, the Claude Agent SDK, agent runtimes that speak
+MCP) can use Scribe as its **voice input**: an agent calls `dictate`, you speak,
+the agent gets your words back as a tool result.
+
+Tools exposed: `dictate` (start recording + wait for the final transcript),
+`start_dictation` / `stop_dictation`, `get_status`, `get_recent_transcripts`.
+
+**Setup**
+
+1. Enable **Local API** in Scribe's Settings and restart the app (the MCP server
+   is a thin stdio bridge over it; it auto-discovers the port and token from
+   Scribe's config).
+2. Register the bridge with your MCP host. Claude Desktop
+   (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "clarity-scribe": {
+      "command": "node",
+      "args": ["<repo>/mcp/scribe-mcp.mjs"]
+    }
+  }
+}
+```
+
+From a source checkout use `mcp/scribe-mcp.mjs` (after `npm install`). Installed
+builds ship a self-contained bundle at
+`<install dir>/resources/scribe-mcp.mjs` — point `args` there instead (no
+`node_modules` needed).
+
+Example: in Claude Desktop, ask *"use clarity-scribe to let me dictate my
+answer"* — Claude calls `dictate`, you talk, hit your stop hotkey, and your
+words arrive in the conversation. The same tools work from any agent framework
+that speaks MCP, which is the foundation for the voice-command roadmap.
 
 ## Privacy
 

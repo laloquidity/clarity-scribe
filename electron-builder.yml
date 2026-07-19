@@ -45,6 +45,9 @@ mac:
     # Menu-bar tray icon loaded at runtime via process.resourcesPath
     - from: "resources/icon.png"
       to: "icon.png"
+    # Self-contained MCP stdio bridge (see mcp/ and README "MCP server")
+    - from: "dist-mcp/scribe-mcp.mjs"
+      to: "scribe-mcp.mjs"
   files:
     - "!node_modules/koffi/build/koffi/win32_*"
 win:
@@ -60,6 +63,9 @@ win:
     # Tray icon loaded at runtime via process.resourcesPath (main.ts createTrayIcon)
     - from: "resources/icon.ico"
       to: "icon.ico"
+    # Self-contained MCP stdio bridge (see mcp/ and README "MCP server")
+    - from: "dist-mcp/scribe-mcp.mjs"
+      to: "scribe-mcp.mjs"
   files:
     - "!node_modules/koffi/build/koffi/darwin_*"
 nsis:
