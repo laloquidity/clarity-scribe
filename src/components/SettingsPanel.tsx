@@ -579,12 +579,21 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                     </label>
                 </div>
 
-                {/* Command mode — voice → action via a local LLM. Default OFF. */}
+                {/* Command mode + screen agent — voice → computer control.
+                    EXPERIMENTAL, default OFF, and fully inert when off: no local
+                    LLM, no vision server, and no command hotkey are started
+                    unless this is enabled. The core dictation experience is
+                    unaffected. */}
                 <div className="settings-group">
-                    <span className="settings-label" style={{ marginBottom: 2 }}>Command mode</span>
+                    <span className="settings-label" style={{ marginBottom: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        Command Mode &amp; Computer Control
+                        <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.04em', color: '#f5b342', border: '1px solid rgba(245,179,66,0.4)', borderRadius: 4, padding: '1px 5px' }}>EXPERIMENTAL</span>
+                    </span>
                     <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 6 }}>
-                        Speak commands instead of dictation: "open my downloads folder", "search for…". Routed by a
-                        local LLM (fully offline); actions that change context ask for confirmation first.
+                        Speak commands instead of dictation — "open my downloads folder", "search for…", or multi-step
+                        tasks like "open spotify and play…". A separate hotkey routes your words through a local LLM
+                        (fully offline) and can act on your screen. <strong>Opt-in and early</strong>: needs local model
+                        setup (see README), and consequential actions ask for confirmation. Leave off for pure dictation.
                     </span>
                     <label className="settings-toggle">
                         <input
