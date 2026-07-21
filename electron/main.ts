@@ -407,8 +407,10 @@ function applyCommandModeSettings(): void {
     const s = store.get('settings') as any || {};
     if (s.commandModeEnabled === true) {
         registerCommandHotkeyService((s.commandHotkey as string) || 'F10');
-        llmRouter.ensureStarted();     // warm in the background; non-blocking
-        visionSidecar.ensureStarted(); // warm the screen agent's eyes too
+        llmRouter.ensureStarted(); // warm the router in the background; non-blocking
+        // Vision (OmniParser) is a multi-GB GPU model and only a FALLBACK for
+        // apps with no accessibility tree — start it lazily on first need
+        // (agentPerceive), not on every launch.
     } else {
         registerCommandHotkeyService(null);
         llmRouter.stop();
