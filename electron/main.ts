@@ -406,7 +406,10 @@ function isCommandModeEnabled(): boolean {
 function applyCommandModeSettings(): void {
     const s = store.get('settings') as any || {};
     if (s.commandModeEnabled === true) {
-        registerCommandHotkeyService((s.commandHotkey as string) || 'F10');
+        // Default differs by platform: on macOS the F-keys are media keys, so
+        // use a modifier combo (Alt = Option); on Windows an F-key is free.
+        const defaultCommandHotkey = process.platform === 'darwin' ? 'Control+Alt+Space' : 'F10';
+        registerCommandHotkeyService((s.commandHotkey as string) || defaultCommandHotkey);
         llmRouter.ensureStarted(); // warm the router in the background; non-blocking
         // Vision (OmniParser) is a multi-GB GPU model and only a FALLBACK for
         // apps with no accessibility tree — start it lazily on first need
