@@ -609,12 +609,18 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                                 <span className="settings-label" style={{ fontSize: 11 }}>Command hotkey</span>
                                 <select
                                     className="settings-select"
-                                    value={settings.commandHotkey || 'F10'}
+                                    value={settings.commandHotkey || (platform === 'win32' ? 'F10' : 'Control+Alt+Space')}
                                     onChange={e => onUpdateSetting('commandHotkey', e.target.value)}
                                 >
-                                    {['F6', 'F7', 'F9', 'F10', 'F11', 'F12', 'Control+Alt+Space']
+                                    {/* Platform-appropriate choices: on macOS the F-keys
+                                        are media keys by default and ⌘Space is Spotlight,
+                                        so lead with ⌃⌥/⌃⇧ combos; on Windows the F-keys
+                                        are free. Rendered with each platform's glyphs. */}
+                                    {(platform === 'win32'
+                                        ? ['F6', 'F7', 'F9', 'F10', 'F11', 'F12', 'Control+Alt+Space']
+                                        : ['Control+Alt+Space', 'Control+Shift+Space', 'Control+Alt+C', 'F7', 'F9', 'F10'])
                                         .filter(k => k !== settings.hotkey)
-                                        .map(k => <option key={k} value={k}>{k}</option>)}
+                                        .map(k => <option key={k} value={k}>{formatHotkey(k, platform)}</option>)}
                                 </select>
                             </div>
                             <CommandRouterStatus />
