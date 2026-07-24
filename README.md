@@ -472,9 +472,15 @@ steps to message someone are the same today as yesterday — only the contact
 and the words change. A **recipe** captures that structure so the next run
 replays deterministically.
 
-Scribe ships a small curated pack (`recipes/builtin.json` — Spotify, Telegram,
-YouTube, Maps, VS Code) and records new ones locally from successful agent
-runs. Two invariants make this safe:
+Scribe ships a deliberately small curated pack (`recipes/builtin.json`) and
+records new ones locally from successful agent runs. **Every shipped recipe
+carries a `verified` note saying how and when it was proven against a live
+app** — a recipe whose selectors were never checked is a false promise that
+just fails until it quarantines itself, so the pack stays small on purpose.
+Apps with poor accessibility support (Telegram Desktop, for instance, exposes
+no usable tree on Windows) need the vision fallback rather than a recipe.
+
+Two invariants make this safe:
 
 **1. Structure, never values.** A recipe may reference `{{message}}`; it can
 never contain the message. *"message Daniel are you good for lunch Tuesday?"*

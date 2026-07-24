@@ -111,7 +111,7 @@ describe('PRIVACY — recipes store structure, never the user’s words', () => 
         expect(isShareable(SPOTIFY).ok).toBe(true);
     });
 
-    it('the shipped builtin pack is clean', async () => {
+    it('the shipped builtin pack is clean AND every recipe records how it was verified', async () => {
         const { readFileSync } = await import('fs');
         const { join } = await import('path');
         const pack: Recipe[] = JSON.parse(
@@ -119,6 +119,9 @@ describe('PRIVACY — recipes store structure, never the user’s words', () => 
         expect(pack.length).toBeGreaterThan(0);
         for (const r of pack) {
             expect(isShareable(r), `${r.id}: ${isShareable(r).reason}`).toEqual({ ok: true });
+            // Shipping a recipe whose selectors were never checked against a
+            // live tree is a false promise — it just fails until quarantined.
+            expect(r.verified, `${r.id} has no verification note`).toBeTruthy();
         }
     });
 });

@@ -70,6 +70,13 @@ export interface Recipe {
     /** Human-readable summary shown in the capsule and settings. */
     describe: string;
     /**
+     * How this recipe was proven, and when. A shipped recipe whose selectors
+     * were never checked against a live accessibility tree is a false promise:
+     * it wastes the user's time failing before it quarantines itself. Every
+     * entry in the builtin pack must carry this.
+     */
+    verified?: string;
+    /**
      * Set when the recipe deliberately stops short of an irreversible action
      * (e.g. Telegram: fill the message but never press Send). Surfaced to the
      * user so "it didn't send" reads as intent, not failure.

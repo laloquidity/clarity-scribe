@@ -128,7 +128,13 @@ export function dump(hwnd?: number | null): Promise<UiaDump> {
     return request(hwnd && hwnd > 0 ? { cmd: 'dump', hwnd } : { cmd: 'dump' });
 }
 
-export interface TopWindow { hwnd: number; pid: number; title: string; }
+export interface TopWindow {
+    hwnd: number;
+    pid: number;
+    title: string;
+    /** Executable name — an app's title is often not its name (chat apps). */
+    proc: string;
+}
 
 /** Visible top-level app windows — the fallback when there's no foreground. */
 export async function listWindows(): Promise<TopWindow[]> {

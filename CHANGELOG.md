@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.7.1 — Honest recipe pack, correct window matching
+
+### 🐛 Fixes
+
+- **Apps are now found by process name, not just window title.** A window's title frequently isn't the app's name — Telegram shows the active chat, editors show the open file — so `findAppWindow` silently failed to locate windows the agent had just launched. The probe now reports the process name and matching prefers it.
+- **Pruned the shipped recipe pack to only what was actually verified.** The Telegram and VS Code recipes were written from plausible-looking labels and never checked against a live accessibility tree. Telegram Desktop turns out to expose **no usable UI Automation tree on Windows** (0 controls; it's a custom-rendered Qt app), so that recipe could never have worked — apps like it need the vision fallback, not a recipe. Every remaining builtin now carries a `verified` note recording how and when it was proven, and a test enforces that field's presence.
+
+---
+
 ## v3.7.0 — Recipes: learn once, replay fast
 
 ### ✨ New Features

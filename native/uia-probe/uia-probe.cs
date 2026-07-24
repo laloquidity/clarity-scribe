@@ -363,10 +363,16 @@ static class Probe
             if (t.Length == 0) return true;
             uint pid;
             GetWindowThreadProcessId(hwnd, out pid);
+            // Report the process name too: an app's window title is often NOT
+            // its name (Telegram shows the active chat), so title-only
+            // matching fails to find windows the agent just launched.
+            string proc = "";
+            try { proc = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch { }
             if (!first) sb.Append(',');
             first = false;
             sb.Append("{\"hwnd\":").Append(hwnd.ToInt64())
               .Append(",\"pid\":").Append(pid)
+              .Append(",\"proc\":").Append(J(proc))
               .Append(",\"title\":").Append(J(t)).Append('}');
             return true;
         }, IntPtr.Zero);
