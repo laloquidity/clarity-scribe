@@ -75,6 +75,8 @@ export interface AgentTaskResult {
 export interface CommandDeps {
     /** Screen agent (agentLoop) — absent on platforms without the stack. */
     runAgentTask?: (goal: string) => Promise<AgentTaskResult>;
+    /** Press Play on a media app's top result (Windows/UIA); absent elsewhere. */
+    playTopResult?: (appNameMatch: RegExp, query: string) => Promise<{ played: boolean; title?: string }>;
     /** Type/paste text into the app the user was in (existing paste flow). */
     typeText: (text: string) => Promise<{ success: boolean; app?: string }>;
     copyToClipboard: (text: string) => void;
@@ -228,16 +230,27 @@ export const COMMAND_TOOLS: CommandTool[] = [
             if (!query) return { message: 'Nothing to play' };
             const wanted = str(a.service) || 'Spotify';
             const svc = MEDIA_SERVICES.find(s => s.match.test(wanted)) ?? MEDIA_SERVICES[0];
+            const short = query.substring(0, 40);
             // Deep link straight into the desktop app when it registers a URI
             // scheme — no browser hop, no clicking, ~120ms end to end.
             if (svc.uri) {
                 try {
                     await deps.openExternal(svc.uri(query));
-                    return { message: `Searching ${svc.label} for "${query.substring(0, 40)}" ✓` };
+                    // …then actually press Play on the top result. The deep
+                    // link only opens the results page; without this the user
+                    // asked to "play X" and got a search. Degrades honestly if
+                    // the app's tree never appears or the button isn't found.
+                    if (svc.playable && deps.playTopResult) {
+                        const r = await deps.playTopResult(svc.match, query);
+                        if (r.played) {
+                            return { message: `Playing ${r.title ? r.title.substring(0, 50) : short} ✓` };
+                        }
+                    }
+                    return { message: `Opened ${svc.label} search for "${short}"` };
                 } catch { /* scheme not registered — fall through to the web */ }
             }
             await deps.openExternal(svc.url(query));
-            return { message: `Searching ${svc.label} for "${query.substring(0, 40)}" ✓` };
+            return { message: `Searching ${svc.label} for "${short}" ✓` };
         },
     },
     {

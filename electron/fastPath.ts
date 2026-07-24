@@ -48,12 +48,14 @@ function tidyQuery(s: string): string {
  * URL — playing a song shouldn't require an agent clicking around an app.
  */
 interface MediaService {
-    /** Spoken names that select this service. */
+    /** Spoken names that select this service — also matches its window title. */
     match: RegExp;
     /** Deep link for a search query (preferred — no browser, no clicking). */
     uri?: (q: string) => string;
     /** Web fallback when the desktop app isn't installed. */
     url: (q: string) => string;
+    /** Desktop app exposes an accessibility tree we can press Play in. */
+    playable?: boolean;
     label: string;
 }
 
@@ -62,6 +64,7 @@ export const MEDIA_SERVICES: MediaService[] = [
         match: /\bspotify\b/i,
         uri: (q) => `spotify:search:${encodeURIComponent(q)}`,
         url: (q) => `https://open.spotify.com/search/${encodeURIComponent(q)}`,
+        playable: true,
         label: 'Spotify',
     },
     {
