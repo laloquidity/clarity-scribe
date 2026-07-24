@@ -24,6 +24,8 @@ import * as input from './inputControl';
 import { runAgentTask as runAgentLoop, Perception, AgentElement } from './agentLoop';
 import { resolveApp } from './appLauncher';
 import { findPlayButton, titleConfirmsPlayback, TREE_POLL_GAPS_MS } from './mediaControl';
+import * as recipeStore from './recipeStore';
+import { replayRecipe } from './recipePlayer';
 
 const store = new Store();
 
@@ -370,6 +372,73 @@ async function playTopResult(appNameMatch: RegExp, query: string): Promise<{ pla
         await delay(gap);
     }
     return { played: false };
+}
+
+/**
+ * "Learn once, replay fast": try a known recipe for this utterance.
+ *
+ * Returns handled:false both when nothing matched and when a recipe went
+ * STALE (the app's UI changed under it) — the caller then falls through to
+ * the agent. A stale recipe is counted, and after enough consecutive misses
+ * it's quarantined so it stops costing time before every fallback.
+ */
+async function tryRecipe(utterance: string): Promise<{ handled: boolean; message?: string; detail?: string; note?: string }> {
+    const match = recipeStore.findRecipe(utterance);
+    if (!match) return { handled: false };
+    const { recipe, slots } = match;
+
+    const outcome = await replayRecipe(recipe, slots, {
+        perceive: async () => {
+            const dump = await uiaProbe.dump(null);
+            if (!dump.ok || !dump.window) return null;
+            return {
+                elements: (dump.elements ?? []).map(e => ({
+                    id: e.id, name: e.name, type: e.type,
+                    invoke: e.invoke || e.select, value: e.value,
+                })),
+                windowTitle: dump.window.title,
+            };
+        },
+        launchApp: (name) => commandDeps.launchApp(name),
+        openUri: (uri) => shell.openExternal(uri),
+        invokeElement: (id) => uiaProbe.invoke(id),
+        setValue: (id, text) => uiaProbe.setValue(id, text),
+        typeText: (text) => input.typeText(text),
+        pressKeys: (keys) => input.pressKeys(keys),
+        requestConfirm: async (description, reason) => {
+            emitCommandStage({ stage: 'agent_confirm', description, reason });
+            return awaitUserConfirmation(20_000);
+        },
+        onStep: (e) => emitCommandStage({
+            stage: 'agent_step', step: e.index, maxSteps: e.total, description: e.description,
+        }),
+        delay,
+        signal: agentAbort?.signal,
+    });
+
+    switch (outcome.status) {
+        case 'done':
+            recipeStore.recordSuccess(recipe.id);
+            return {
+                handled: true,
+                message: recipe.describe,
+                detail: outcome.steps.map((s, i) => `${i + 1}. ${s}`).join('\n'),
+                note: recipe.stopsBefore ? `stopped before ${recipe.stopsBefore}` : undefined,
+            };
+        case 'stale':
+            // The app changed. Count it, say nothing to the user, and let the
+            // agent solve it the slow way — that run can be recorded as a
+            // fresh recipe, which supersedes this one.
+            recipeStore.recordFailure(recipe.id);
+            console.log(`[Recipes] "${recipe.id}" stale at step ${outcome.atStep}: ${outcome.reason} — falling back to the agent`);
+            return { handled: false };
+        case 'refused':
+            return { handled: true, message: `Not doing that: ${outcome.reason}` };
+        case 'cancelled':
+            return { handled: true, message: `Cancelled — ${outcome.reason}` };
+        case 'aborted':
+            return { handled: true, message: 'Stopped by you' };
+    }
 }
 
 const commandDeps: CommandDeps = {
@@ -854,6 +923,7 @@ function dispatchCommand(transcript: string): { success: boolean; command: true 
         route: llmRouter.route,
         deps: commandDeps,
         emit: emitCommandStage,
+        tryRecipe,
     }).then((end) => {
         emitEvent({ type: 'state', state: 'IDLE' });
         if (end.stage === 'done') {
@@ -1285,7 +1355,7 @@ app.whenReady().then(async () => {
                 // Text-command entry point for agents: same pipeline as speech.
                 runCommand: (text) => {
                     if (!isCommandModeEnabled()) return Promise.resolve({ stage: 'error', message: 'Command mode is disabled' });
-                    return runCommand(text, { route: llmRouter.route, deps: commandDeps, emit: emitCommandStage });
+                    return runCommand(text, { route: llmRouter.route, deps: commandDeps, emit: emitCommandStage, tryRecipe });
                 },
             })
                 .then(({ port }) => console.log(`[LocalAPI] listening on 127.0.0.1:${port}`))
@@ -1294,6 +1364,7 @@ app.whenReady().then(async () => {
     }
 
     setupHotkeyCallbacks();
+    recipeStore.loadRecipes(app.getPath('userData')); // builtin pack + learned
     applyCommandModeSettings(); // command hotkey + router (if enabled)
     const savedSettings = store.get('settings') as any;
     registerHotkey(
