@@ -48,6 +48,9 @@ mac:
     # Self-contained MCP stdio bridge (see mcp/ and README "MCP server")
     - from: "dist-mcp/scribe-mcp.mjs"
       to: "scribe-mcp.mjs"
+    # Curated command recipes ("learn once, replay fast") — structure only
+    - from: "recipes/"
+      to: "recipes/"
   files:
     - "!node_modules/koffi/build/koffi/win32_*"
 win:
@@ -66,6 +69,9 @@ win:
     # Self-contained MCP stdio bridge (see mcp/ and README "MCP server")
     - from: "dist-mcp/scribe-mcp.mjs"
       to: "scribe-mcp.mjs"
+    # Curated command recipes ("learn once, replay fast") — structure only
+    - from: "recipes/"
+      to: "recipes/"
     # Screen-agent vision sidecar script (run with the OmniParser venv python)
     - from: "agent/"
       to: "agent/"

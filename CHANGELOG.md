@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.7.0 — Recipes: learn once, replay fast
+
+### ✨ New Features
+
+- **Recipes** — the agent can drive any app but pays a model call per step, so a six-step task costs tens of seconds. Most of that is identical every time; only the values change. A recipe captures the *structure* so the next run replays deterministically. Scribe ships a curated pack (`recipes/builtin.json`: Spotify play/pause, Telegram compose, YouTube, Maps, VS Code) and records new ones locally from successful agent runs.
+- **Privacy is enforced, not promised.** A recipe may reference `{{message}}`; it can never contain the message. Anything the agent typed that came from the user's utterance is slotted away automatically, and any other literal must pass a personal-data check (user paths, emails, phone numbers, card-like numbers, credentials, long free text) or **the recipe is rejected rather than saved**. So *"message Daniel are you good for lunch on Tuesday"* persists as `type {{message}}` — the words never reach disk (asserted in tests). Learned recipes are local-only; export re-runs the same gate.
+- **Staleness is handled, not assumed away.** Steps address controls by label against the live accessibility tree, matched on whole-word boundaries (so `Play` never matches `Start Playback` — a real bug caught by the test suite). A recipe recorded when "Send" was the 5th control will never press "whatever is 5th" later. When an app updates: replay **misses cleanly instead of clicking the wrong thing**, aborts rather than improvising, falls back to the agent (which can read the new layout), and counts the miss. After 3 consecutive failures the recipe is quarantined so it stops costing time; a later successful agent run supersedes it. Self-healing rather than rotting.
+- **Replay is not a trust bypass** — every click is re-assessed against the risk rulebook at replay time, because a control that was benign when recorded may be a "Send" today. Credential fields are refused outright, confirm-tier controls still prompt. Recipes touching irreversible actions deliberately stop short: the shipped Telegram recipe fills the message and leaves sending to the user.
+- New modules `electron/recipes.ts` (schema, intent templates, selector resolution, privacy gate, recorder), `electron/recipePlayer.ts` (replay with staleness handling), `electron/recipeStore.ts` (builtin + learned packs, stats, quarantine). 27 new tests; suite now 220.
+
+---
+
 ## v3.6.0 — Instant commands (deterministic fast path)
 
 ### ⚡ Performance

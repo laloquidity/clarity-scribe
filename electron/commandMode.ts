@@ -39,6 +39,18 @@ export interface CommandRuntime {
     confirmTimeoutMs?: number;
     /** Set false to force LLM routing (tests that exercise the router). */
     fastPath?: boolean;
+    /**
+     * "Learn once, replay fast" — try a known recipe before spending an LLM
+     * call. Resolves handled:false when no recipe matched OR when one matched
+     * but went stale (the app changed), in which case we fall through to the
+     * agent, which can look at the new UI and work it out.
+     */
+    tryRecipe?: (utterance: string) => Promise<{
+        handled: boolean;
+        message?: string;
+        detail?: string;
+        note?: string;
+    }>;
 }
 
 let pendingConfirmation: ((approved: boolean) => void) | null = null;
@@ -96,6 +108,27 @@ export async function runCommand(transcript: string, rt: CommandRuntime): Promis
     // <1ms instead of paying 600-4000ms for an LLM round-trip. Everything
     // downstream (rulebook, confirmation, history) is identical; only the
     // decision is faster. Anything ambiguous returns null and routes normally.
+    // A known recipe is both faster and more capable than a single tool call
+    // (it can be several steps), so try it before anything else. If the app
+    // has changed under it, it reports stale and we continue as if it never
+    // matched — the agent below can still get the job done.
+    if (rt.tryRecipe) {
+        try {
+            const r = await rt.tryRecipe(text);
+            if (r.handled) {
+                return finish({
+                    stage: 'done',
+                    message: r.note ? `${r.message} — ${r.note}` : (r.message ?? 'Done'),
+                    detail: r.detail,
+                    transcript: text,
+                    tool: 'recipe',
+                });
+            }
+        } catch (e: any) {
+            console.warn('[Command] recipe attempt failed, falling through:', e?.message || e);
+        }
+    }
+
     const fast = rt.fastPath === false ? null : matchFastPath(text);
 
     let routed: RouteResult;

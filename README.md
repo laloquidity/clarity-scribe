@@ -399,10 +399,11 @@ that speaks MCP, which is the foundation for the voice-command roadmap.
 
 ## Screen agent (voice-driven computer use)
 
-Commands are dispatched in three tiers, cheapest first:
+Commands are dispatched in tiers, cheapest first:
 
 | Tier | How it decides | Typical latency |
 |---|---|---|
+| **Recipe** | a known multi-step flow, replayed deterministically | **~instant + app speed** |
 | **Fast path** | pattern match → deep link / launch / URL. **No LLM.** | **~90–190 ms** |
 | **Routed** | the local LLM picks one tool | ~0.6–2.5 s |
 | **Agent** | full perceive→decide→act loop | seconds per step |
@@ -462,6 +463,48 @@ into `C:\Users\<you>\tools\OmniParser` (or set `SCRIBE_OMNIPARSER_DIR`) with a
 `Screen agent: native accessibility ✓ · vision fallback ✓`. Everything —
 accessibility, vision, reasoning, input — runs locally; nothing ever leaves your
 machine.
+
+## Recipes — learn once, replay fast
+
+The agent can drive any app, but pays a model call per step, so a six-step
+task costs tens of seconds. Most of that work is identical every time: the
+steps to message someone are the same today as yesterday — only the contact
+and the words change. A **recipe** captures that structure so the next run
+replays deterministically.
+
+Scribe ships a small curated pack (`recipes/builtin.json` — Spotify, Telegram,
+YouTube, Maps, VS Code) and records new ones locally from successful agent
+runs. Two invariants make this safe:
+
+**1. Structure, never values.** A recipe may reference `{{message}}`; it can
+never contain the message. *"message Daniel are you good for lunch Tuesday?"*
+is stored as `type {{message}} into the composer` — the words never reach
+disk. This is enforced mechanically, not by convention: anything the agent
+typed that came from your words is slotted away, and any other literal must
+pass a personal-data check (paths, emails, phone numbers, credentials, long
+free text) or **the recipe is rejected rather than saved**. Learned recipes
+stay on your machine; export re-runs the same gate.
+
+**2. Selectors resolve live, never positionally.** Steps address controls by
+label against the accessibility tree ("the button named Send"), matched on
+whole-word boundaries so `Play` never matches `Start Playback`. A recipe
+recorded when Send was the 5th control will never press "whatever is 5th"
+later.
+
+**When an app updates**, that second invariant turns a hazard into a routine
+event. A renamed or moved control simply fails to resolve — ambiguity counts
+as failure too — so replay **misses cleanly instead of clicking the wrong
+thing**. Then: it aborts rather than improvising, falls back to the agent
+(which can look at the new layout and still get your outcome), and counts the
+miss. After repeated failures the recipe is quarantined so it stops costing
+time, and a later successful agent run is recorded as a fresh recipe that
+supersedes it. The system repairs itself instead of rotting.
+
+Replay is **not** a trust bypass: every click is re-assessed against the risk
+rulebook at replay time, because a control that was harmless when recorded may
+be a "Send" today. Recipes that touch irreversible actions deliberately stop
+short — the shipped Telegram recipe fills your message and leaves it for you
+to send.
 
 ## Privacy
 
