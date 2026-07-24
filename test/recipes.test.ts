@@ -119,9 +119,12 @@ describe('PRIVACY — recipes store structure, never the user’s words', () => 
         expect(pack.length).toBeGreaterThan(0);
         for (const r of pack) {
             expect(isShareable(r), `${r.id}: ${isShareable(r).reason}`).toEqual({ ok: true });
-            // Shipping a recipe whose selectors were never checked against a
-            // live tree is a false promise — it just fails until quarantined.
+            // `verified` must cite an actual observed run — a date and what
+            // was seen. Reasoning about why a recipe *should* work ("URL
+            // only", "looks safe") is not evidence and must not ship.
             expect(r.verified, `${r.id} has no verification note`).toBeTruthy();
+            expect(r.verified, `${r.id}: verified must cite a dated, observed run`)
+                .toMatch(/\d{4}-\d{2}-\d{2}/);
         }
     });
 });

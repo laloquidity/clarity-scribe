@@ -472,13 +472,17 @@ steps to message someone are the same today as yesterday — only the contact
 and the words change. A **recipe** captures that structure so the next run
 replays deterministically.
 
-Scribe ships a deliberately small curated pack (`recipes/builtin.json`) and
-records new ones locally from successful agent runs. **Every shipped recipe
-carries a `verified` note saying how and when it was proven against a live
-app** — a recipe whose selectors were never checked is a false promise that
-just fails until it quarantines itself, so the pack stays small on purpose.
-Apps with poor accessibility support (Telegram Desktop, for instance, exposes
-no usable tree on Windows) need the vision fallback rather than a recipe.
+Scribe ships a deliberately tiny curated pack (`recipes/builtin.json` — one
+recipe today, Spotify) and records new ones locally from successful agent
+runs. **A recipe only ships once it has been watched working**: every builtin
+carries a `verified` note citing a dated, observed run, and a test enforces
+it. Reasoning that a recipe *should* work — "it's only a URL", "the selectors
+look right" — explicitly does not count, because an unproven recipe is a
+false promise that just fails until it quarantines itself. The pack grows one
+verified entry at a time.
+
+Apps with poor accessibility support need the vision fallback rather than a
+recipe — Telegram Desktop, for instance, exposes no usable tree on Windows.
 
 Two invariants make this safe:
 
