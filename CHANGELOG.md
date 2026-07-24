@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.6.0 — Instant commands (deterministic fast path)
+
+### ⚡ Performance
+
+- **Common commands now execute in ~90–190 ms, with no LLM in the loop.** The local router is accurate but costs 600–4000 ms per decision, and a multi-step agent pays that *per step*. The commands people actually repeat are unambiguous, so `electron/fastPath.ts` matches them with patterns in well under a millisecond and emits the same tool call the router would — the risk rulebook, confirmation UI, and history are all unchanged; only the decision got ~1000× faster. Measured end-to-end (including HTTP round-trip):
+
+  | Command | Before | Now |
+  |---|---|---|
+  | "open spotify and play we will rock you" | 10 s+ agent loop (often failed) | **184 ms** |
+  | "search the web for flights to tokyo" | ~600 ms+ | **172 ms** |
+  | "open my downloads folder" | ~5 s | **91 ms** |
+
+  Anything ambiguous returns no match and falls through to the LLM exactly as before (verified: "show me my last two transcripts" still routes correctly in 2.4 s). A wrong instant answer is worse than a slow right one, so the matcher only fires when confident, and compound intents are tested before the simple ones they contain ("open spotify **and play X**" never degrades to a bare "open spotify"). Fast-path commands also work *before the model finishes loading*, since they never touch it.
+- **`play_media` tool via deep links** — "play X on spotify" dispatches the registered `spotify:search:…` URI straight into the desktop app (121 ms measured) instead of launching it and clicking through the UI. Falls back to the web player when the scheme isn't registered, and covers YouTube / Apple Music by search URL.
+
+### 🐛 Fixes
+
+- **Accessibility warmup — Chromium/Electron apps are now drivable natively.** Apps like Spotify build their accessibility tree *lazily* once an assistive client asks: measured **4 elements immediately after launch, 93 a few seconds later** (including the real search field and result rows). The agent was dumping once, seeing a near-empty tree, and writing the app off as vision-only. Perception now retries with backoff (~5 s cumulative) before falling back to OmniParser — so these apps are driven through the fast, precise accessibility path instead of slow, imprecise vision. Only paid when a real window looks sparse.
+
+---
+
 ## v3.5.0 — Screen Agent (voice-driven computer use)
 
 ### ✨ New Features

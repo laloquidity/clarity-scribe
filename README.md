@@ -399,18 +399,34 @@ that speaks MCP, which is the foundation for the voice-command roadmap.
 
 ## Screen agent (voice-driven computer use)
 
-With Command Mode on, requests that need to happen *inside* an app — not just
-opening it — run through a local **accessibility-first** perceive→decide→act
-loop (modeled on Microsoft's [UFO²](https://github.com/microsoft/UFO) Windows
-agent):
+Commands are dispatched in three tiers, cheapest first:
+
+| Tier | How it decides | Typical latency |
+|---|---|---|
+| **Fast path** | pattern match → deep link / launch / URL. **No LLM.** | **~90–190 ms** |
+| **Routed** | the local LLM picks one tool | ~0.6–2.5 s |
+| **Agent** | full perceive→decide→act loop | seconds per step |
+
+The commands people repeat all day — *"open my downloads folder"*, *"search the
+web for…"*, *"play X on spotify"* — never touch the model: they're matched
+deterministically and dispatched directly (Spotify via its `spotify:` deep
+link, so no clicking at all). Anything ambiguous falls through to the LLM, and
+genuinely novel multi-step work falls through to the agent below. Fast-path
+commands work even before the model has finished loading.
+
+When a request *does* need to act inside an app, it runs through a local
+**accessibility-first** perceive→decide→act loop (modeled on Microsoft's
+[UFO²](https://github.com/microsoft/UFO) Windows agent):
 
 1. **Perceive** — a native **UI Automation** reader (`uia-probe.exe`) returns
    the focused window's *real* controls — exact names, exact screen
    rectangles, and which support programmatic activation — in ~100–200 ms with
    no GPU. It's one bulk `FindAll` + `CacheRequest`, so reads don't become
-   slow cross-process round-trips. Only when a window exposes no useful tree
-   (Chromium/CEF apps, games, canvas UIs) does it fall back to **OmniParser v2**
-   vision (YOLO + Florence-2 on the GPU), scoped to that window.
+   slow cross-process round-trips. Chromium/Electron apps (Spotify, Discord)
+   build their tree *lazily*, so a sparse first read is retried with backoff
+   rather than written off. Only a window that still exposes no useful tree
+   (games, canvas UIs) falls back to **OmniParser v2** vision (YOLO +
+   Florence-2 on the GPU), scoped to that window.
 2. **Decide** — the same local Gemma model that routes commands picks exactly
    one next action from the numbered control list: click a control, type into a
    field, press keys, scroll, launch an app, wait, or declare done/impossible.

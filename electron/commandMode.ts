@@ -15,6 +15,7 @@
 
 import type { RouteResult } from './llmRouter';
 import { getTool, toOpenAiTools, CommandDeps, ToolOutcome } from './commandTools';
+import { matchFastPath } from './fastPath';
 
 export type CommandStage =
     | { stage: 'listening' }
@@ -36,6 +37,8 @@ export interface CommandRuntime {
     deps: CommandDeps;
     emit: (s: CommandStage) => void;
     confirmTimeoutMs?: number;
+    /** Set false to force LLM routing (tests that exercise the router). */
+    fastPath?: boolean;
 }
 
 let pendingConfirmation: ((approved: boolean) => void) | null = null;
@@ -88,13 +91,24 @@ export async function runCommand(transcript: string, rt: CommandRuntime): Promis
     const text = transcript.trim();
     if (!text) return finish({ stage: 'error', message: 'Nothing was heard' });
 
-    rt.emit({ stage: 'routing', transcript: text });
+    // FAST PATH: the commands people repeat all day ("open X", "play Y on
+    // spotify", "search for Z") are unambiguous — match them with patterns in
+    // <1ms instead of paying 600-4000ms for an LLM round-trip. Everything
+    // downstream (rulebook, confirmation, history) is identical; only the
+    // decision is faster. Anything ambiguous returns null and routes normally.
+    const fast = rt.fastPath === false ? null : matchFastPath(text);
 
     let routed: RouteResult;
-    try {
-        routed = await rt.route(text, toOpenAiTools());
-    } catch (e: any) {
-        return finish({ stage: 'error', message: e?.message || 'Routing failed', transcript: text });
+    if (fast) {
+        routed = { tool: fast.tool, args: fast.args, ms: 0 };
+        console.log(`[Command] fast path (${fast.via}) → ${fast.tool} — no LLM`);
+    } else {
+        rt.emit({ stage: 'routing', transcript: text });
+        try {
+            routed = await rt.route(text, toOpenAiTools());
+        } catch (e: any) {
+            return finish({ stage: 'error', message: e?.message || 'Routing failed', transcript: text });
+        }
     }
 
     const tool = getTool(routed.tool);
