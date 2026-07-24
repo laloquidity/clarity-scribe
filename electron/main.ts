@@ -23,6 +23,7 @@ import { captureScreen, captureScreenRegion } from './screenCapture';
 import * as input from './inputControl';
 import { runAgentTask as runAgentLoop, Perception, AgentElement } from './agentLoop';
 import { resolveApp } from './appLauncher';
+import { findPlayButton, titleConfirmsPlayback, TREE_POLL_GAPS_MS } from './mediaControl';
 
 const store = new Store();
 
@@ -331,7 +332,48 @@ async function agentPerceive(pinnedHwnd: number | null, signal?: AbortSignal): P
     }
 }
 
+/**
+ * Press Play on the top search result of a media app (after a deep link put
+ * it on the results page). Chromium builds its accessibility tree lazily and
+ * only once an assistive client asks, so the first dump is the poke and we
+ * poll for the tree to arrive. Returns what actually happened — never throws.
+ */
+async function playTopResult(appNameMatch: RegExp, query: string): Promise<{ played: boolean; title?: string }> {
+    if (!uiaProbe.isAvailable()) return { played: false };
+    let hwnd: number | null = null;
+
+    for (const gap of TREE_POLL_GAPS_MS) {
+        if (hwnd === null) {
+            const wins = await uiaProbe.listWindows();
+            hwnd = wins.find(w => appNameMatch.test(w.title))?.hwnd ?? null;
+        }
+        if (hwnd !== null) {
+            // The dump doubles as the poke that enables Chromium accessibility;
+            // the tree shows up on a LATER poll, not this one.
+            const dump = await uiaProbe.dump(hwnd);
+            if (!dump.ok) {
+                hwnd = null;
+            } else {
+                const elements = (dump.elements ?? []).map(e => ({ id: e.id, name: e.name, type: e.type, invoke: e.invoke || e.select }));
+                const playId = findPlayButton(elements, query);
+                if (playId !== null) {
+                    const r = await uiaProbe.invoke(playId);
+                    if (r.ok) {
+                        await delay(1200); // let the title update
+                        const after = await uiaProbe.listWindows();
+                        const title = after.find(w => w.hwnd === hwnd)?.title ?? '';
+                        return { played: titleConfirmsPlayback(title, query), title };
+                    }
+                }
+            }
+        }
+        await delay(gap);
+    }
+    return { played: false };
+}
+
 const commandDeps: CommandDeps = {
+    playTopResult,
     runAgentTask: async (goal) => {
         const none = { steps: [] as string[], stepsTaken: 0 };
         if (agentAbort) {
