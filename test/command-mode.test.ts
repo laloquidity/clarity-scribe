@@ -37,6 +37,11 @@ function collectRuntime(routeTo: { tool: string; args: any } | Error, deps = mak
             deps,
             emit: (s: CommandStage) => stages.push(s),
             confirmTimeoutMs,
+            // These tests exercise the LLM-routing stage machine with an
+            // injected router, so disable the deterministic fast path (which
+            // would otherwise short-circuit "open …" before routing).
+            // fastPath.test.ts covers the fast path itself.
+            fastPath: false,
         },
     };
 }

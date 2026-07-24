@@ -248,6 +248,12 @@ let agentAbort: AbortController | null = null;
  */
 async function agentPerceive(pinnedHwnd: number | null, signal?: AbortSignal): Promise<Perception> {
     const MIN_LABELED_CONTROLS = 3;
+    const toElements = (d: uiaProbe.UiaDump): AgentElement[] => (d.elements ?? []).map(e => ({
+        id: e.id, name: e.name, type: e.type, rect: e.rect,
+        invoke: e.invoke || e.select, value: e.value,
+    }));
+    const labeledCount = (els: AgentElement[]) => els.filter(e => e.name.trim().length > 0 || e.value).length;
+
     // Follow the foreground window (pinnedHwnd is only a hint). This avoids
     // dumping a stale transient hwnd captured during app launch; the loop's
     // foreground-guard is what keeps physical actions safely scoped.
@@ -255,11 +261,36 @@ async function agentPerceive(pinnedHwnd: number | null, signal?: AbortSignal): P
     if (!dump.ok || !dump.window) {
         dump = await uiaProbe.dump(null); // pinned/hint failed — use true foreground
     }
-    const window = dump.ok && dump.window ? dump.window : null;
-    const uiaElements: AgentElement[] = (dump.elements ?? []).map(e => ({
-        id: e.id, name: e.name, type: e.type, rect: e.rect,
-        invoke: e.invoke || e.select, value: e.value,
-    }));
+    let window = dump.ok && dump.window ? dump.window : null;
+    let uiaElements = toElements(dump);
+
+    // ACCESSIBILITY WARMUP: Chromium/Electron apps (Spotify, Discord, VS Code)
+    // build their accessibility tree LAZILY once an assistive client asks —
+    // measured on Spotify: 4 elements immediately after launch, 93 a few
+    // seconds later. A single sparse dump is not evidence the app has no tree,
+    // so retry with backoff before writing it off. This is what lets us drive
+    // these apps natively instead of falling back to slow, imprecise vision.
+    if (window && labeledCount(uiaElements) < MIN_LABELED_CONTROLS) {
+        const target = window.hwnd;
+        // Cumulative ≈5s — measured: Spotify needed ~4s from launch to a full
+        // tree. Only paid when a real window looks sparse (the Chromium case),
+        // and still far cheaper than a vision parse plus imprecise clicking.
+        for (const wait of [400, 800, 1500, 2500]) {
+            if (signal?.aborted) break;
+            await new Promise(r => setTimeout(r, wait));
+            const retry = await uiaProbe.dump(target);
+            if (!retry.ok) continue;
+            const els = toElements(retry);
+            if (labeledCount(els) >= MIN_LABELED_CONTROLS) {
+                console.log(`[Perceive] accessibility tree warmed after ${wait}ms (${els.length} controls)`);
+                dump = retry;
+                window = retry.window ?? window;
+                uiaElements = els;
+                break;
+            }
+        }
+    }
+
     const uiaPerception: Perception = { source: 'uia', window, elements: uiaElements };
 
     // Accessibility tree is the truth whenever it's USEFUL. A Chromium/CEF app
@@ -268,13 +299,14 @@ async function agentPerceive(pinnedHwnd: number | null, signal?: AbortSignal): P
     // Too few labeled controls on a real window ⇒ fall to vision. A sparse
     // desktop (no window) is NOT a vision trigger — the model should launch_app.
     // Vision must never be fatal: any failure degrades to the UIA passthrough.
-    const labeled = uiaElements.filter(e => e.name.trim().length > 0 || e.value).length;
-    const needsVision = window !== null && labeled < MIN_LABELED_CONTROLS;
-    if (!needsVision) return uiaPerception;
+    // Only after the warmup retries above have failed is a window genuinely
+    // treeless (a game or custom-drawn canvas) and worth the vision cost.
+    if (window === null || labeledCount(uiaElements) >= MIN_LABELED_CONTROLS) return uiaPerception;
+    const visionWindow = window; // narrowed for the async block below
 
     try {
         if (!(await visionSidecar.ensureStarted())) return uiaPerception;
-        const region = window.rect;
+        const region = visionWindow.rect;
         const shot = await captureScreenRegion(region);
         const parsed = await visionSidecar.parseScreen(shot.pngBase64, signal);
         const [ox, oy] = [region[0], region[1]];
@@ -291,7 +323,7 @@ async function agentPerceive(pinnedHwnd: number | null, signal?: AbortSignal): P
                 invoke: false, // vision has no patterns — physical clicks only
                 value: false,
             }));
-        return elements.length ? { source: 'vision', window, elements } : uiaPerception;
+        return elements.length ? { source: 'vision', window: visionWindow, elements } : uiaPerception;
     } catch (e: any) {
         if (signal?.aborted) throw e;
         console.warn(`[Agent] vision fallback failed (${e?.message || e}) — using UIA data`);

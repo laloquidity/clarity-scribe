@@ -63,6 +63,7 @@ export function riskOfOpening(target: string): RiskDecision {
 }
 
 import { assessGoal } from './agentPolicy';
+import { MEDIA_SERVICES } from './fastPath';
 
 export interface AgentTaskResult {
     ok: boolean;
@@ -207,6 +208,36 @@ export const COMMAND_TOOLS: CommandTool[] = [
             if (!q) return { message: 'Empty search' };
             await deps.openExternal(`https://www.google.com/search?q=${encodeURIComponent(q)}`);
             return { message: `Searching for "${q.substring(0, 40)}" ✓` };
+        },
+    },
+    {
+        name: 'play_media',
+        description: 'Search for and play music or video on a streaming service (Spotify, YouTube, Apple Music). Use for "play <song> on spotify", "search youtube for <thing>".',
+        parameters: {
+            type: 'object',
+            properties: {
+                query: { type: 'string', description: 'What to play — song, artist, album, or video' },
+                service: { type: 'string', description: 'Spotify, YouTube, or Apple Music' },
+            },
+            required: ['query'],
+        },
+        assessRisk: () => AUTO, // opening a search in a media app is trivially reversible
+        describe: (a) => `Play "${str(a.query).substring(0, 50)}"${a.service ? ` on ${str(a.service)}` : ''}`,
+        execute: async (a, deps) => {
+            const query = str(a.query).trim();
+            if (!query) return { message: 'Nothing to play' };
+            const wanted = str(a.service) || 'Spotify';
+            const svc = MEDIA_SERVICES.find(s => s.match.test(wanted)) ?? MEDIA_SERVICES[0];
+            // Deep link straight into the desktop app when it registers a URI
+            // scheme — no browser hop, no clicking, ~120ms end to end.
+            if (svc.uri) {
+                try {
+                    await deps.openExternal(svc.uri(query));
+                    return { message: `Searching ${svc.label} for "${query.substring(0, 40)}" ✓` };
+                } catch { /* scheme not registered — fall through to the web */ }
+            }
+            await deps.openExternal(svc.url(query));
+            return { message: `Searching ${svc.label} for "${query.substring(0, 40)}" ✓` };
         },
     },
     {
