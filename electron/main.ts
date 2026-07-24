@@ -477,22 +477,27 @@ const commandDeps: CommandDeps = {
                     getForegroundPid: () => getForegroundPid(),
                     focusWindow: (hwnd) => input.focusWindow(hwnd),
                     findAppWindow: async (name) => {
-                        // Match a launched app to its top-level window by name.
-                        // Titles carry the app name ("Spotify Premium",
-                        // "… — Mozilla Firefox"). Strip filler, then match either
-                        // direction (title⊇query or query⊇title) so "the
-                        // calculator" ↔ "Calculator" both hit.
+                        // Match a launched app to its top-level window. Prefer
+                        // the PROCESS NAME: a window's title is frequently not
+                        // the app's name — Telegram shows the active chat, an
+                        // editor shows the open file — so title-only matching
+                        // silently fails to find windows we just launched.
                         const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
                         const q = norm(name.replace(/^(open|launch|start|the|a|my)\s+/i, ''));
                         if (!q) return null;
                         const wins = await uiaProbe.listWindows();
                         const self = mainWindow?.getTitle?.() ?? '';
-                        const match = wins.find(w => {
-                            if (w.title === self) return false;
-                            const t = norm(w.title);
-                            return t.includes(q) || (q.length >= 4 && q.includes(t) && t.length >= 4);
+                        const candidates = wins.filter(w => w.title !== self);
+                        const byProc = candidates.find(w => {
+                            const p = norm(w.proc || '');
+                            return p && (p.includes(q) || q.includes(p));
                         });
-                        return match ? match.hwnd : null;
+                        if (byProc) return byProc.hwnd;
+                        const byTitle = candidates.find(w => {
+                            const t = norm(w.title);
+                            return t.includes(q) || (q.length >= 4 && t.length >= 4 && q.includes(t));
+                        });
+                        return byTitle ? byTitle.hwnd : null;
                     },
                 },
                 requestConfirm: async (description, reason) => {

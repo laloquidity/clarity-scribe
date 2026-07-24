@@ -2,6 +2,7 @@
   {
     "id": "spotify.play",
     "describe": "Search Spotify and play the top result",
+    "verified": "2026-07-21 on Spotify desktop (Windows)",
     "patterns": [
       "play {query} on spotify",
       "open spotify and play {query}",
@@ -16,40 +17,9 @@
     ]
   },
   {
-    "id": "spotify.control",
-    "describe": "Pause or resume Spotify playback",
-    "patterns": ["pause spotify", "resume spotify", "pause the music", "resume the music"],
-    "slots": [],
-    "source": "builtin",
-    "steps": [
-      { "action": "click", "target": { "name": "Play", "type": "Button", "invokable": true } }
-    ]
-  },
-  {
-    "id": "telegram.compose",
-    "describe": "Open a Telegram chat and fill in a message (does not send)",
-    "stopsBefore": "sending — review it and press Enter yourself",
-    "patterns": [
-      "message {contact} on telegram {message}",
-      "open telegram and message {contact} {message}",
-      "tell {contact} on telegram {message}"
-    ],
-    "slots": ["contact", "message"],
-    "source": "builtin",
-    "steps": [
-      { "action": "launch", "app": "telegram" },
-      { "action": "waitFor", "target": { "name": "Search", "invokable": true }, "timeoutMs": 15000 },
-      { "action": "click", "target": { "name": "Search", "invokable": true } },
-      { "action": "type", "text": "{{contact}}" },
-      { "action": "pause", "ms": 900 },
-      { "action": "click", "target": { "nameFromSlot": "contact" } },
-      { "action": "waitFor", "target": { "name": "Write a message", "editable": true }, "timeoutMs": 8000 },
-      { "action": "type", "target": { "name": "Write a message", "editable": true }, "text": "{{message}}" }
-    ]
-  },
-  {
     "id": "youtube.search",
     "describe": "Search YouTube in the browser",
+    "verified": "URL only — no UI automation involved",
     "patterns": [
       "search youtube for {query}",
       "youtube {query}",
@@ -64,6 +34,7 @@
   {
     "id": "maps.directions",
     "describe": "Open directions in the browser",
+    "verified": "URL only — no UI automation involved",
     "patterns": [
       "directions to {destination}",
       "navigate to {destination}",
@@ -73,20 +44,6 @@
     "source": "builtin",
     "steps": [
       { "action": "deeplink", "uri": "https://www.google.com/maps/dir/?api=1&destination={{destination}}" }
-    ]
-  },
-  {
-    "id": "vscode.open",
-    "describe": "Open a folder in VS Code",
-    "patterns": ["open {folder} in vs code", "open {folder} in vscode"],
-    "slots": ["folder"],
-    "source": "builtin",
-    "steps": [
-      { "action": "launch", "app": "visual studio code" },
-      { "action": "waitFor", "target": { "name": "Search", "invokable": true }, "timeoutMs": 12000 },
-      { "action": "key", "keys": ["ctrl", "r"] },
-      { "action": "pause", "ms": 600 },
-      { "action": "type", "text": "{{folder}}", "submit": true }
     ]
   }
 ]
