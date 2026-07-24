@@ -2,7 +2,7 @@
   {
     "id": "spotify.play",
     "describe": "Search Spotify and play the top result",
-    "verified": "2026-07-21 on Spotify desktop (Windows)",
+    "verified": "2026-07-21 — ran live on Spotify desktop (Windows): deep link opened search, Play resolved in the accessibility tree and was invoked, window title changed to the requested track",
     "patterns": [
       "play {query} on spotify",
       "open spotify and play {query}",
@@ -14,36 +14,6 @@
       { "action": "deeplink", "uri": "spotify:search:{{query}}" },
       { "action": "waitFor", "target": { "nameFromSlot": "query" }, "timeoutMs": 15000 },
       { "action": "click", "target": { "name": "Play", "type": "Button", "invokable": true } }
-    ]
-  },
-  {
-    "id": "youtube.search",
-    "describe": "Search YouTube in the browser",
-    "verified": "URL only — no UI automation involved",
-    "patterns": [
-      "search youtube for {query}",
-      "youtube {query}",
-      "find {query} on youtube"
-    ],
-    "slots": ["query"],
-    "source": "builtin",
-    "steps": [
-      { "action": "deeplink", "uri": "https://www.youtube.com/results?search_query={{query}}" }
-    ]
-  },
-  {
-    "id": "maps.directions",
-    "describe": "Open directions in the browser",
-    "verified": "URL only — no UI automation involved",
-    "patterns": [
-      "directions to {destination}",
-      "navigate to {destination}",
-      "how do i get to {destination}"
-    ],
-    "slots": ["destination"],
-    "source": "builtin",
-    "steps": [
-      { "action": "deeplink", "uri": "https://www.google.com/maps/dir/?api=1&destination={{destination}}" }
     ]
   }
 ]

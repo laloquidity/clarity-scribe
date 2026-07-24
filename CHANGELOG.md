@@ -5,7 +5,8 @@
 ### 🐛 Fixes
 
 - **Apps are now found by process name, not just window title.** A window's title frequently isn't the app's name — Telegram shows the active chat, editors show the open file — so `findAppWindow` silently failed to locate windows the agent had just launched. The probe now reports the process name and matching prefers it.
-- **Pruned the shipped recipe pack to only what was actually verified.** The Telegram and VS Code recipes were written from plausible-looking labels and never checked against a live accessibility tree. Telegram Desktop turns out to expose **no usable UI Automation tree on Windows** (0 controls; it's a custom-rendered Qt app), so that recipe could never have worked — apps like it need the vision fallback, not a recipe. Every remaining builtin now carries a `verified` note recording how and when it was proven, and a test enforces that field's presence.
+- **Pruned the shipped recipe pack to the one recipe that was actually run.** The Telegram and VS Code recipes were written from plausible-looking labels and never checked against a live accessibility tree. Telegram Desktop turns out to expose **no usable UI Automation tree on Windows** (0 controls; it's a custom-rendered Qt app), so that recipe could never have worked — apps like it need the vision fallback, not a recipe. The YouTube and Maps recipes were likewise written from memory and never executed; their `verified` note described their *risk profile* ("URL only") rather than any test, which is the same over-claim in a different costume. Only `spotify.play` — observed end to end, window title confirming playback — ships.
+- **`verified` now means one thing: an observed run.** The field must cite a dated, actually-executed run, enforced by test. Reasoning about why a recipe should work is explicitly not evidence.
 
 ---
 

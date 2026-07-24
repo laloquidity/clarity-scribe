@@ -70,10 +70,14 @@ export interface Recipe {
     /** Human-readable summary shown in the capsule and settings. */
     describe: string;
     /**
-     * How this recipe was proven, and when. A shipped recipe whose selectors
-     * were never checked against a live accessibility tree is a false promise:
-     * it wastes the user's time failing before it quarantines itself. Every
-     * entry in the builtin pack must carry this.
+     * Evidence from an ACTUAL OBSERVED RUN — what was executed, on what, when,
+     * and what was seen to happen. Nothing else counts.
+     *
+     * Specifically it may NOT mean "this looks safe", "it's only a URL", or
+     * "the format is well known". Reasoning about why a recipe should work is
+     * not evidence that it does; a shipped recipe that was never run is a
+     * false promise that wastes the user's time failing until it quarantines
+     * itself. If you did not watch it work, it does not ship.
      */
     verified?: string;
     /**
