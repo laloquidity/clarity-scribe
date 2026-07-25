@@ -31,6 +31,7 @@ import https from 'https';
 import { detectSpeechSegments, isVADReady } from './vadService';
 import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
+import { joinSegments } from './segmentJoin';
 
 // Self-hosted on GitHub releases (reliable CDN, full control)
 // Original source: csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 (INT8 quantized)
@@ -625,7 +626,10 @@ export async function transcribeParakeet(
             totalDec += Date.now() - decStart;
         }
 
-        const fullText = texts.join(' ');
+        // VAD splits on pauses, which can fall mid-sentence — the model then
+        // capitalizes each segment's first word as if it began an utterance.
+        // Repair those seams instead of joining blindly (see segmentJoin).
+        const fullText = joinSegments(texts);
         const totalTime = Date.now() - startTime;
         const rtf = durationSeconds / (totalTime / 1000);
         console.log(`[Parakeet] ⏱ Mel: ${totalMel}ms | Encoder: ${totalEnc}ms | Decoder: ${totalDec}ms | Total: ${totalTime}ms (${rtf.toFixed(1)}x real-time)`);
