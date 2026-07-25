@@ -21,6 +21,8 @@
  */
 
 type SegmentTranscriber = (audio16k: Float32Array) => Promise<string>;
+import { joinSegments } from './segmentJoin';
+
 type PartialListener = (fullTextSoFar: string, segmentIndex: number) => void;
 
 // ── Tunables ────────────────────────────────────────────────────────────────
@@ -84,6 +86,10 @@ interface Session {
     rmsHistory: RmsWindow[];        // per-window RMS of the open segment (for quietest-split)
     peakRms: number;                // loudest window this session (adaptive voice gate)
     texts: string[];                // completed segment texts, in order
+    // Per segment: was the NEXT one cut from it mid-speech (length cap /
+    // quietest-window split) rather than closed at a pause? Certain evidence
+    // the sentence continues across that seam — see segmentJoin.
+    forced: boolean[];
     queue: Promise<void>;           // serializes segment transcriptions
     segmentsQueued: number;
     healthy: boolean;
@@ -129,6 +135,7 @@ export function startSession(sampleRate: number): boolean {
         rmsHistory: [],
         peakRms: 0,
         texts: [],
+        forced: [],
         queue: Promise.resolve(),
         segmentsQueued: 0,
         healthy: true,
@@ -189,7 +196,8 @@ export function pushChunk(chunk: Float32Array): void {
     const openMs = (s.openSamples / s.sampleRate) * 1000;
     const pauseClose = s.silenceRunMs >= SILENCE_CLOSE_MS && s.voicedMsInSegment >= MIN_VOICED_MS;
     if (pauseClose || openMs >= MAX_SEGMENT_MS) {
-        closeOpenSegment(s);
+        // Hitting the hard cap means we cut mid-speech; a pause close did not.
+        closeOpenSegment(s, undefined, !pauseClose);
         return;
     }
 
@@ -214,7 +222,7 @@ export function pushChunk(chunk: Float32Array): void {
  * Close the open segment and queue its transcription. With `splitAt`, only
  * [0, splitAt) closes and the remainder stays as the new open segment.
  */
-function closeOpenSegment(s: Session, splitAt?: number): void {
+function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== undefined): void {
     if (s.openSamples === 0) return;
     const all = new Float32Array(s.openSamples);
     let off = 0;
@@ -250,6 +258,7 @@ function closeOpenSegment(s: Session, splitAt?: number): void {
     if (!hadVoice) return; // pure silence — nothing to transcribe
 
     const index = s.segmentsQueued++;
+    s.forced[index] = forced;
     const sampleRate = s.sampleRate;
     s.queue = s.queue.then(async () => {
         if (!transcriberFn || !s.healthy) return;
@@ -271,7 +280,9 @@ function closeOpenSegment(s: Session, splitAt?: number): void {
 }
 
 function joinedText(s: Session): string {
-    return s.texts.filter(t => !!t).join(' ').replace(/\s+/g, ' ').trim();
+    // Repair seams our own segmentation created (a pause mid-sentence makes
+    // the model capitalize the next segment's first word). See segmentJoin.
+    return joinSegments(s.texts.map((text, i) => ({ text: text ?? '', forcedSplit: s.forced[i] === true })));
 }
 
 /**
