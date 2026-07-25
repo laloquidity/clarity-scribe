@@ -516,6 +516,16 @@ be a "Send" today. Recipes that touch irreversible actions deliberately stop
 short — the shipped Telegram recipe fills your message and leaves it for you
 to send.
 
+## iOS
+
+Not built yet. The architecture is worked out and written down in
+[docs/ios-architecture.md](docs/ios-architecture.md) — including the three
+platform walls that shape it (a keyboard extension cannot access the
+microphone, cannot start a recording in the background, and gets ~77 MB of
+memory), the session model that works around them, and a two-tier on-device
+ASR plan that lets someone dictate immediately while the Parakeet model
+downloads in the background.
+
 ## Privacy
 
 - **Fully offline** — No audio or text ever leaves your machine
