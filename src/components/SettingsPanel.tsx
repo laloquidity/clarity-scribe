@@ -587,13 +587,15 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onUpdateSetting
                 <div className="settings-group">
                     <span className="settings-label" style={{ marginBottom: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
                         Command Mode &amp; Computer Control
-                        <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.04em', color: '#f5b342', border: '1px solid rgba(245,179,66,0.4)', borderRadius: 4, padding: '1px 5px' }}>EXPERIMENTAL</span>
+                        <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.04em', color: '#f5b342', border: '1px solid rgba(245,179,66,0.4)', borderRadius: 4, padding: '1px 5px' }}>RESEARCH PREVIEW</span>
                     </span>
                     <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 6 }}>
-                        Speak commands instead of dictation — "open my downloads folder", "search for…", or multi-step
-                        tasks like "open spotify and play…". A separate hotkey routes your words through a local LLM
-                        (fully offline) and can act on your screen. <strong>Opt-in and early</strong>: needs local model
-                        setup (see README), and consequential actions ask for confirmation. Leave off for pure dictation.
+                        A separate hotkey speaks commands instead of dictation, routed by a local LLM (fully offline).
+                        Simple ones are reliable and fast — "open my downloads folder", "search for…", "play … on
+                        spotify". <strong>Multi-step control of apps is unfinished</strong> and will often fail or fall
+                        back; general computer use is an open research problem, not a solved feature. Requires local
+                        model setup (see README). Dictation is unaffected — leave this off unless you want to
+                        experiment.
                     </span>
                     <label className="settings-toggle">
                         <input
