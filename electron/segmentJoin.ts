@@ -79,7 +79,7 @@ function isAcronym(word: string): boolean {
  * Stitch segment texts into one transcript, repairing seams that our own
  * segmentation broke. Pure and order-preserving; empty segments are dropped.
  */
-export function joinSegments(parts: Array<JoinPart | string>): string {
+export function joinSegments(parts: Array<JoinPart | string>, onRepair?: () => void): string {
     const norm: JoinPart[] = parts
         .map(p => (typeof p === 'string' ? { text: p } : p))
         .map(p => ({ ...p, text: (p.text ?? '').trim() }))
@@ -105,6 +105,7 @@ export function joinSegments(parts: Array<JoinPart | string>): string {
                     right = lower + right.slice(fw.end);
                     // A period we inserted by cutting mid-speech is bogus too.
                     if (forced && leftEnds) out = out.replace(/[.]["'”’)\]]*$/, '');
+                    onRepair?.(); // diagnostics: how often does this actually fire?
                 }
             }
         }

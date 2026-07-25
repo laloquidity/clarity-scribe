@@ -25,6 +25,7 @@ import { runAgentTask as runAgentLoop, Perception, AgentElement } from './agentL
 import { resolveApp } from './appLauncher';
 import { findPlayButton, titleConfirmsPlayback, TREE_POLL_GAPS_MS } from './mediaControl';
 import * as recipeStore from './recipeStore';
+import { logSummary as logDiagnostics, summary as diagnosticsSummary } from './diagnostics';
 import { replayRecipe } from './recipePlayer';
 
 const store = new Store();
@@ -1136,6 +1137,8 @@ function setupIpcHandlers(): void {
         resolveConfirmation(false);
         return agentAbort !== null;
     });
+    // Counts and milliseconds only — safe to read aloud or paste into an issue.
+    ipcMain.handle('get-diagnostics', () => diagnosticsSummary());
     ipcMain.handle('get-command-status', () => ({
         enabled: isCommandModeEnabled(),
         ...llmRouter.getStatus(),
@@ -1391,6 +1394,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('will-quit', () => {
+    logDiagnostics(); // what actually happened this run — counts only, no text
     if (isLocalApiRunning()) stopLocalApi();
     llmRouter.stop();
     visionSidecar.stop();

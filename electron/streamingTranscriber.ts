@@ -22,6 +22,7 @@
 
 type SegmentTranscriber = (audio16k: Float32Array) => Promise<string>;
 import { joinSegments } from './segmentJoin';
+import { diag } from './diagnostics';
 
 type PartialListener = (fullTextSoFar: string, segmentIndex: number) => void;
 
@@ -125,6 +126,7 @@ export function isSessionActive(): boolean {
  */
 export function startSession(sampleRate: number): boolean {
     if (!transcriberFn || !(sampleRate > 0)) return false;
+    diag.sessionStarted();
     session = {
         sampleRate,
         chunks: [],
@@ -259,6 +261,7 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
 
     const index = s.segmentsQueued++;
     s.forced[index] = forced;
+    diag.segmentClosed(forced);
     const sampleRate = s.sampleRate;
     s.queue = s.queue.then(async () => {
         if (!transcriberFn || !s.healthy) return;
@@ -268,13 +271,17 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
             const text = (await transcriberFn(audio16k)).trim();
             s.texts[index] = text;
             const secs = (audio16k.length / 16000).toFixed(1);
-            console.log(`[Stream] Segment ${index + 1} (${secs}s) done in ${Date.now() - t0}ms: "${text.substring(0, 60)}"`);
+            const decodeMs = Date.now() - t0;
+            diag.segmentDecode(decodeMs);
+            console.log(`[Stream] Segment ${index + 1} (${secs}s) done in ${decodeMs}ms: "${text.substring(0, 60)}"`);
             if (text && partialListener) {
                 partialListener(joinedText(s), index);
             }
         } catch (e) {
             console.error(`[Stream] Segment ${index + 1} failed — session falls back to batch:`, e);
             s.healthy = false;
+            diag.errored();
+            diag.streamingFellBack();
         }
     });
 }
@@ -282,7 +289,10 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
 function joinedText(s: Session): string {
     // Repair seams our own segmentation created (a pause mid-sentence makes
     // the model capitalize the next segment's first word). See segmentJoin.
-    return joinSegments(s.texts.map((text, i) => ({ text: text ?? '', forcedSplit: s.forced[i] === true })));
+    return joinSegments(
+        s.texts.map((text, i) => ({ text: text ?? '', forcedSplit: s.forced[i] === true })),
+        diag.seamRepaired,
+    );
 }
 
 /**
