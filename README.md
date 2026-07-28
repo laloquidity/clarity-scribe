@@ -16,7 +16,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 ## Features
 
 - **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to ~150x real-time on Apple Silicon), Whisper for all others. Manual override available in settings.
-- **Live Streaming Transcription** — Speech is transcribed *while you talk*: segments are processed at natural pauses in the background, and at stop only the last phrase remains — **text lands ~0.5 s after you stop, no matter how long you spoke** (median 504 ms measured across 30 real dictations, 3s–98s). A live transcript box grows under the widget as you speak (capped, newest words pinned). Automatic fallback to classic batch processing if anything fails. (Parakeet engine; toggle in Settings.)
+- **Live Streaming Transcription** — Speech is transcribed *while you talk*: segments are processed at natural pauses in the background, and at stop only the last phrase remains — **text lands about half a second after you stop, no matter how long you spoke.** Measured over 160 real dictations (63 minutes of speech, 1.3 s–2:53): **p50 490 ms · p90 677 ms · p99 888 ms**, and the median holds flat from short clips to multi-minute recordings — see [measured latency](#measured-latency). A live transcript box grows under the widget as you speak (capped, newest words pinned). Automatic fallback to classic batch processing if anything fails. (Parakeet engine; toggle in Settings.)
 - **Per-Dictation Stats** — Every history entry shows `45.3s audio · 396ms transcribe · 114× real-time`: audio length, true stop→pasted latency, and speed vs real time.
 - **Smart Formatting (ITN)** (opt-in) — Spoken forms become written forms: "two thirty pm" → "2:30 PM", "fifty million dollars" → "$50,000,000" (with thousands separators), dates, ordinals, punctuation commands.
 - **Spoken Punctuation** (opt-in) — Say "comma", "period", "new line", "question mark" — with context-aware "dot" that only activates in URLs ("google dot com" → "google.com").
@@ -93,6 +93,34 @@ Long recordings are processed through a hardened pipeline:
 4. **Hallucination Detection** — If looping detected, retries with adjusted temperature
 5. **Overlap Dedup** — Removes repeated words at segment boundaries
 6. **Result Assembly** — Clean, continuous transcription output
+
+## Measured latency
+
+What matters in dictation isn't how fast the model runs — it's **how long you
+wait after you stop talking.** Because speech is transcribed while you speak,
+only the final phrase is left to process at stop, so that wait barely moves as
+recordings get longer.
+
+Measured from **160 real dictations** (63 minutes of speech, 1.3 s to 2:53) on
+a Windows RTX 3090 with the Parakeet engine, DirectML:
+
+| Audio length | Dictations | Median stop→text | p90 |
+|---|---|---|---|
+| 0–10 s | 58 | 492 ms | 731 ms |
+| 10–30 s | 60 | 456 ms | 654 ms |
+| 30–60 s | 30 | 498 ms | 703 ms |
+| 60–120 s | 8 | 582 ms | 633 ms |
+| 120 s+ | 4 | 143 ms | 597 ms |
+
+**Overall: p50 490 ms · p90 677 ms · p99 888 ms.** The slowest wait ever
+recorded across all 160 was 888 ms.
+
+The flat median column is the point: a three-minute recording returns as fast
+as a three-second one. The fastest single result was a **2 m 53 s recording
+that finished 143 ms after the stop key** — but note that ratios like
+"1212× real-time" are just audio length ÷ wait, so they grow mechanically with
+recording length and say more about the clip than the engine. The honest claim
+is the one above: **about half a second, regardless of how long you spoke.**
 
 ## Requirements
 
