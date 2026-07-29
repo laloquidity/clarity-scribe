@@ -215,6 +215,20 @@ function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Engine-only timing: audio handed to the engine → text ready. Excludes the
+ * paste and the renderer's post-processing, so it is always FASTER than what
+ * the user experienced. Useful for isolating engine regressions; not the
+ * headline number (see logDictationSummary).
+ */
+function logEngineTime(audioSec: number, startedAt: number, path: 'streaming' | 'batch'): void {
+    const ms = Math.max(1, Date.now() - startedAt); // a streamed finalize can be sub-millisecond
+    console.log(
+        `[Main] ⏱ Engine (${path}): ${formatAudioLength(audioSec)} audio · ${ms}ms to text · ` +
+        `${(audioSec / (ms / 1000)).toFixed(0)}× real-time`
+    );
+}
+
 /** "2:53" for long clips, "7.3s" for short ones — matches the history UI. */
 function formatAudioLength(sec: number): string {
     if (sec < 60) return `${sec.toFixed(1)}s`;
@@ -222,18 +236,23 @@ function formatAudioLength(sec: number): string {
 }
 
 /**
- * The line the history row shows, mirrored into the terminal: how much audio,
- * how long the user actually waited after pressing stop, and the resulting
- * real-time multiple. The per-stage `[Parakeet] ⏱` lines report ONE segment;
- * this reports the whole dictation, which is the number that matches the UI.
+ * The authoritative dictation timing, mirroring the history row exactly.
+ *
+ * Measured by the renderer from the moment recording stops to AFTER the text
+ * is pasted, so it covers the whole path the user actually experiences —
+ * transcription, post-processing, and the paste itself. The engine-side line
+ * below reports a narrower window (audio in → text ready) and the per-stage
+ * `[Parakeet] ⏱` lines report a SINGLE segment; neither is the user's number.
  */
-function logDictationSummary(audioSec: number, startedAt: number, path: 'streaming' | 'batch'): void {
-    const ms = Math.max(1, Date.now() - startedAt); // guard: streaming can finish sub-millisecond
-    const multiple = audioSec / (ms / 1000);
-    diag.stopToText(ms);
+function logDictationSummary(entry: HistoryEntry): void {
+    const audioMs = entry.audioMs;
+    const latencyMs = entry.latencyMs;
+    if (!(audioMs && audioMs > 0) || !(latencyMs && latencyMs > 0)) return;
+    diag.stopToText(latencyMs);
+    const multiple = audioMs / latencyMs;
     console.log(
-        `[Main] ⏱ Dictation: ${formatAudioLength(audioSec)} audio · ${ms}ms to text · ` +
-        `${multiple.toFixed(0)}× real-time (${path})`
+        `[Main] ⏱ Dictation: ${formatAudioLength(audioMs / 1000)} audio · ` +
+        `${latencyMs}ms end-to-end (stop → pasted) · ${multiple.toFixed(0)}× real-time`
     );
 }
 
@@ -990,7 +1009,7 @@ function setupIpcHandlers(): void {
                 const result = await streaming.finalizeSession();
                 if (result.healthy && result.text) {
                     console.log(`[Main] Streamed transcription finalized in ${Date.now() - t0}ms (${result.segments} segments): "${result.text.substring(0, 80)}"`);
-                    logDictationSummary(audioSec, dictationStart, 'streaming');
+                    logEngineTime(audioSec, dictationStart, 'streaming');
                     if (isCommandSession) return dispatchCommand(result.text);
                     mainWindow?.webContents.send('transcription-result', result.text);
                     emitEvent({ type: 'result', text: result.text });
@@ -1009,7 +1028,7 @@ function setupIpcHandlers(): void {
                 },
             });
             console.log(`[Main] Transcribed: "${text.substring(0, 80)}"`);
-            logDictationSummary(audioSec, dictationStart, 'batch');
+            logEngineTime(audioSec, dictationStart, 'batch');
             if (isCommandSession) return dispatchCommand(text);
             mainWindow?.webContents.send('transcription-result', text);
             emitEvent({ type: 'result', text });
@@ -1127,7 +1146,10 @@ function setupIpcHandlers(): void {
 
     // History
     ipcMain.handle('get-history', () => getHistory());
-    ipcMain.handle('add-history', (_, entry: HistoryEntry) => addHistoryEntry(entry));
+    ipcMain.handle('add-history', (_, entry: HistoryEntry) => {
+        logDictationSummary(entry); // the true end-to-end number, same as the history row
+        return addHistoryEntry(entry);
+    });
     ipcMain.handle('clear-history', () => clearHistory());
     ipcMain.handle('delete-history-entry', (_, id: string) => deleteHistoryEntry(id));
 
