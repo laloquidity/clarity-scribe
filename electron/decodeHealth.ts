@@ -101,6 +101,38 @@ export function assessDecode(s: DecodeStats): DecodeVerdict {
 }
 
 /**
+ * PREVENTIVE REFRESH.
+ *
+ * Recovering from a degraded session is second best: by then the user has
+ * already waited through a bad decode. Since the observed failure correlates
+ * with session AGE (~24h of uptime), the cheaper answer is to not let sessions
+ * get old — rebuild them periodically while nobody is dictating.
+ *
+ * Rebuilding costs about a second of idle GPU time, so doing it every few
+ * hours is free in practice and removes the failure mode entirely if the
+ * age hypothesis is right. If it's wrong, we've lost nothing: the reactive
+ * detection above still catches it.
+ *
+ * Two hard rules: never rebuild while a transcription is in flight (sessions
+ * are being read concurrently), and never rebuild on the path to producing
+ * text — only after, when the user has what they asked for.
+ */
+export const SESSION_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+export function shouldRefreshSessions(opts: {
+    /** When the current sessions were created. */
+    builtAt: number;
+    now: number;
+    /** Transcriptions currently using the sessions. Must be 0 to rebuild. */
+    inFlight: number;
+    maxAgeMs?: number;
+}): boolean {
+    if (opts.inFlight > 0) return false;
+    if (!(opts.builtAt > 0)) return false;
+    return opts.now - opts.builtAt >= (opts.maxAgeMs ?? SESSION_MAX_AGE_MS);
+}
+
+/**
  * After a retry, keep the better of the two decodes. "Better" = reached
  * further into the audio; ties go to the one that produced more text, and to
  * the original when neither is clearly better (never churn for nothing).

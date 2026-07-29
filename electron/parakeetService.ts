@@ -32,7 +32,7 @@ import { detectSpeechSegments, isVADReady } from './vadService';
 import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
 import { joinSegments } from './segmentJoin';
-import { assessDecode, preferBetterDecode } from './decodeHealth';
+import { assessDecode, preferBetterDecode, shouldRefreshSessions } from './decodeHealth';
 import { diag } from './diagnostics';
 
 // Self-hosted on GitHub releases (reliable CDN, full control)
@@ -368,6 +368,7 @@ async function initParakeetOnnx(
         console.log(`[Parakeet] ✓ Vocabulary loaded: ${vocabulary.length} tokens (blank=${BLANK_ID})`);
 
         isInitialized = true;
+        sessionsBuiltAt = Date.now(); // starts the preventive-refresh clock
 
         // Warm up the graphs so the FIRST dictation doesn't pay cold-start cost
         // (kernel init, CPU memory-arena allocation). Non-fatal on failure.
@@ -412,6 +413,11 @@ async function initParakeetOnnx(
  * did. This is that restart, scoped to the sessions and done in about a
  * second. Returns false if re-creation fails (we then keep what we have).
  */
+/** When the current inference sessions were created (for preventive refresh). */
+let sessionsBuiltAt = 0;
+/** Transcriptions currently reading the sessions — never rebuild above zero. */
+let inFlightTranscriptions = 0;
+
 async function rebuildSessions(): Promise<boolean> {
     try {
         const modelDir = getModelDir();
@@ -424,12 +430,28 @@ async function rebuildSessions(): Promise<boolean> {
             join(modelDir, 'decoder.int8.onnx'), core.smallModelSessionOptions());
         joinerSession = await ort.InferenceSession.create(
             join(modelDir, 'joiner.int8.onnx'), core.smallModelSessionOptions());
+        sessionsBuiltAt = Date.now();
         console.log(`[Parakeet] ✓ Sessions rebuilt in ${Date.now() - t0}ms`);
         return true;
     } catch (e) {
         console.error('[Parakeet] Session rebuild failed — keeping existing sessions:', e);
         return false;
     }
+}
+
+/**
+ * Rebuild the sessions if they've aged past the threshold and nothing is using
+ * them. Called AFTER a transcription, never before — the user already has
+ * their text, so the ~1s rebuild is invisible. Fire-and-forget by design; a
+ * failure here is harmless because the old sessions stay in place.
+ */
+function maybeRefreshSessions(): void {
+    if (useSidecar || !isInitialized) return;
+    if (!shouldRefreshSessions({ builtAt: sessionsBuiltAt, now: Date.now(), inFlight: inFlightTranscriptions })) return;
+    const ageHours = ((Date.now() - sessionsBuiltAt) / 3_600_000).toFixed(1);
+    console.log(`[Parakeet] Preventive refresh: sessions are ${ageHours}h old, rebuilding while idle`);
+    diag.sessionRefreshed();
+    void rebuildSessions();
 }
 
 /**
@@ -527,6 +549,21 @@ export async function transcribeParakeet(
     if (!isInitialized) {
         throw new Error('Parakeet not initialized');
     }
+    // Hold the sessions open for the duration — the preventive refresh must
+    // never swap them out from under a decode in progress.
+    inFlightTranscriptions++;
+    try {
+        return await runTranscription(audioData, options);
+    } finally {
+        inFlightTranscriptions--;
+        maybeRefreshSessions(); // idle moment: the user already has their text
+    }
+}
+
+async function runTranscription(
+    audioData: Float32Array,
+    options: { language?: string; onProgress?: (progress: number) => void } = {}
+): Promise<string> {
 
     const durationSeconds = audioData.length / 16000;
 

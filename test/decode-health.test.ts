@@ -6,7 +6,7 @@
  * handed "So that way we can get".
  */
 import { describe, it, expect } from 'vitest';
-import { assessDecode, preferBetterDecode, DecodeStats } from '../electron/decodeHealth';
+import { assessDecode, preferBetterDecode, shouldRefreshSessions, SESSION_MAX_AGE_MS, DecodeStats } from '../electron/decodeHealth';
 
 const stats = (o: Partial<DecodeStats>): DecodeStats =>
     ({ lastTokenFrame: 80, totalFrames: 85, collapseRecoveries: 0, blankRatio: 0.3, ...o });
@@ -61,6 +61,34 @@ describe('assessDecode — must not cry wolf', () => {
 
     it('handles a degenerate empty decode without dividing by zero', () => {
         expect(assessDecode({ lastTokenFrame: 0, totalFrames: 0, collapseRecoveries: 0, blankRatio: 0 }).degraded).toBe(false);
+    });
+});
+
+describe('shouldRefreshSessions — prevention beats recovery', () => {
+    const HOUR = 3_600_000;
+    const now = 1_000_000_000;
+
+    it('refreshes once the sessions are older than the threshold', () => {
+        expect(shouldRefreshSessions({ builtAt: now - 5 * HOUR, now, inFlight: 0 })).toBe(true);
+    });
+
+    it('leaves young sessions alone', () => {
+        expect(shouldRefreshSessions({ builtAt: now - 1 * HOUR, now, inFlight: 0 })).toBe(false);
+    });
+
+    it('NEVER rebuilds while a transcription is using the sessions', () => {
+        // Swapping sessions mid-decode is the one thing that would make this
+        // feature worse than the bug it prevents.
+        expect(shouldRefreshSessions({ builtAt: now - 100 * HOUR, now, inFlight: 1 })).toBe(false);
+    });
+
+    it('does nothing before sessions exist', () => {
+        expect(shouldRefreshSessions({ builtAt: 0, now, inFlight: 0 })).toBe(false);
+    });
+
+    it('would have fired long before the reported 24h failure', () => {
+        expect(shouldRefreshSessions({ builtAt: now - 24 * HOUR, now, inFlight: 0 })).toBe(true);
+        expect(SESSION_MAX_AGE_MS).toBeLessThan(24 * HOUR);
     });
 });
 
