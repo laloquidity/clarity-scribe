@@ -32,6 +32,8 @@ import { detectSpeechSegments, isVADReady } from './vadService';
 import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
 import { joinSegments } from './segmentJoin';
+import { assessDecode, preferBetterDecode } from './decodeHealth';
+import { diag } from './diagnostics';
 
 // Self-hosted on GitHub releases (reliable CDN, full control)
 // Original source: csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 (INT8 quantized)
@@ -400,6 +402,45 @@ async function initParakeetOnnx(
  * frame count (excluding STFT edge-padding frames) to match the reference
  * onnx-asr pipeline exactly.
  */
+/**
+ * Rebuild the ONNX sessions in place.
+ *
+ * A long-lived DirectML session can degrade: after ~24h of uptime a user hit
+ * an encoder running an order of magnitude slow AND producing output the
+ * joiner scored as blank almost everywhere, silently dropping 3.8s of a 6.8s
+ * utterance. Resetting the decoder LSTM didn't help — only restarting the app
+ * did. This is that restart, scoped to the sessions and done in about a
+ * second. Returns false if re-creation fails (we then keep what we have).
+ */
+async function rebuildSessions(): Promise<boolean> {
+    try {
+        const modelDir = getModelDir();
+        const providers = getExecutionProviders();
+        console.warn('[Parakeet] Rebuilding inference sessions (suspected degraded session)…');
+        const t0 = Date.now();
+        encoderSession = await ort.InferenceSession.create(
+            join(modelDir, 'encoder.int8.onnx'), core.encoderSessionOptions(providers));
+        decoderSession = await ort.InferenceSession.create(
+            join(modelDir, 'decoder.int8.onnx'), core.smallModelSessionOptions());
+        joinerSession = await ort.InferenceSession.create(
+            join(modelDir, 'joiner.int8.onnx'), core.smallModelSessionOptions());
+        console.log(`[Parakeet] ✓ Sessions rebuilt in ${Date.now() - t0}ms`);
+        return true;
+    } catch (e) {
+        console.error('[Parakeet] Session rebuild failed — keeping existing sessions:', e);
+        return false;
+    }
+}
+
+/**
+ * One mel → encoder → decode pass, with a health check on the result.
+ *
+ * If the decode shows signs of having eaten the user's speech (see
+ * decodeHealth), rebuild the sessions and try ONCE more, keeping whichever
+ * attempt reached further into the audio. Dropped speech is invisible until
+ * the user re-reads what was pasted, so a rare extra second beats a confident
+ * fragment.
+ */
 async function transcribeSinglePass(audioData: Float32Array): Promise<{
     text: string;
     melTime: number;
@@ -407,6 +448,35 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     decTime: number;
     lastTokenFrame: number;
     totalFrames: number;
+}> {
+    const first = await runSinglePass(audioData);
+    const verdict = assessDecode(first);
+    if (!verdict.degraded) return first;
+
+    console.warn(`[Parakeet] ⚠ Degraded transcription: ${verdict.reason}. Rebuilding sessions and retrying once.`);
+    diag.decodeDegraded();
+    if (!(await rebuildSessions())) return first;
+
+    const second = await runSinglePass(audioData);
+    const better = preferBetterDecode(first, second);
+    if (better === second) {
+        diag.decodeRecovered();
+        console.log(`[Parakeet] ✓ Retry recovered speech (reached frame ${second.lastTokenFrame} vs ${first.lastTokenFrame})`);
+    } else {
+        console.warn('[Parakeet] Retry did not improve the result — keeping the original.');
+    }
+    return better;
+}
+
+async function runSinglePass(audioData: Float32Array): Promise<{
+    text: string;
+    melTime: number;
+    encTime: number;
+    decTime: number;
+    lastTokenFrame: number;
+    totalFrames: number;
+    collapseRecoveries: number;
+    blankRatio: number;
 }> {
     const melStart = Date.now();
     const { features, nFrames, validFrames } = core.computeMelSpectrogram(audioData, 16000);
@@ -433,10 +503,11 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
 
     // Transducer greedy decode
     const decStart = Date.now();
-    const { text, lastTokenFrame, totalFrames } = await core.transducerGreedyDecode(encoderOut, encoderLen, decodeCtx());
+    const { text, lastTokenFrame, totalFrames, collapseRecoveries, blankRatio } =
+        await core.transducerGreedyDecode(encoderOut, encoderLen, decodeCtx());
     const decTime = Date.now() - decStart;
 
-    return { text, melTime, encTime, decTime, lastTokenFrame, totalFrames };
+    return { text, melTime, encTime, decTime, lastTokenFrame, totalFrames, collapseRecoveries, blankRatio };
 }
 
 /**

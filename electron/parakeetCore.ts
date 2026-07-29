@@ -292,7 +292,15 @@ export async function transducerGreedyDecode(
     encoderOut: ort.Tensor,
     encoderOutLen: number,
     ctx: DecodeContext,
-): Promise<{ text: string; lastTokenFrame: number; totalFrames: number }> {
+): Promise<{
+    text: string;
+    lastTokenFrame: number;
+    totalFrames: number;
+    /** LSTM-state resets triggered by the collapse detector (0 = healthy). */
+    collapseRecoveries: number;
+    /** Share of decode iterations that emitted blank, 0–1. */
+    blankRatio: number;
+}> {
     const { decoderSession, joinerSession, vocabulary, blankId, predRnnLayers, predHidden } = ctx;
     if (!decoderSession || !joinerSession) {
         throw new Error('Decoder/Joiner not initialized');
@@ -497,7 +505,13 @@ export async function transducerGreedyDecode(
     const totalTimeSec = (encoderOutLen * 0.08).toFixed(1);
     const unusedFrames = encoderOutLen - lastTokenFrame;
     console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames | blanks: ${totalBlanks}/${totalIterations} (${blankRatio}%) | decoderCalls: ${decoderCalls}/${totalIterations} | maxSkip: ${maxSkipSeen} | maxConsecBlanks: ${maxConsecutiveBlanks} | lastToken: frame ${lastTokenFrame} (${lastTokenTimeSec}s/${totalTimeSec}s) | unusedTail: ${unusedFrames} frames${collapseRecoveries > 0 ? ` | ⚠ recoveries: ${collapseRecoveries}` : ''}`);
-    return { text: tokensToText(tokens, vocabulary), lastTokenFrame, totalFrames: encoderOutLen };
+    return {
+        text: tokensToText(tokens, vocabulary),
+        lastTokenFrame,
+        totalFrames: encoderOutLen,
+        collapseRecoveries,
+        blankRatio: totalIterations > 0 ? totalBlanks / totalIterations : 0,
+    };
 }
 
 /**
