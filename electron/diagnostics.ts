@@ -32,6 +32,8 @@ const state = {
     decodesDegraded: 0,
     /** …of those, how many a session rebuild + retry actually rescued. */
     decodesRecovered: 0,
+    /** Preventive rebuilds performed while idle, before anything went wrong. */
+    sessionRefreshes: 0,
     stopToText: { count: 0, ms: [] } as Stat,
     segmentDecode: { count: 0, ms: [] } as Stat,
 };
@@ -57,6 +59,7 @@ export const diag = {
     errored: () => { state.errors++; },
     decodeDegraded: () => { state.decodesDegraded++; },
     decodeRecovered: () => { state.decodesRecovered++; },
+    sessionRefreshed: () => { state.sessionRefreshes++; },
     stopToText: (ms: number) => sample(state.stopToText, ms),
     segmentDecode: (ms: number) => sample(state.segmentDecode, ms),
 };
@@ -74,6 +77,7 @@ export interface DiagnosticsSummary {
     errors: number;
     decodesDegraded: number;
     decodesRecovered: number;
+    sessionRefreshes: number;
     stopToTextMs: { p50: number; p90: number; p99: number; n: number };
     segmentDecodeMs: { p50: number; p90: number; p99: number; n: number };
 }
@@ -95,6 +99,7 @@ export function summary(): DiagnosticsSummary {
         errors: state.errors,
         decodesDegraded: state.decodesDegraded,
         decodesRecovered: state.decodesRecovered,
+        sessionRefreshes: state.sessionRefreshes,
         stopToTextMs: p(state.stopToText),
         segmentDecodeMs: p(state.segmentDecode),
     };
@@ -108,7 +113,7 @@ export function logSummary(): void {
         `[Diag] ${s.sessions} sessions · ${s.segments} segments (${s.segmentsPerSession}/session)\n` +
         `[Diag] seam repairs: ${s.seamRepairs} (${(s.seamRepairRate * 100).toFixed(1)}% of seams were false sentence breaks)\n` +
         `[Diag] forced splits: ${s.forcedSplits} · streaming fallbacks: ${s.streamingFallbacks} (${(s.streamingFallbackRate * 100).toFixed(1)}%) · errors: ${s.errors}\n` +
-        `[Diag] degraded decodes: ${s.decodesDegraded} (rescued by session rebuild: ${s.decodesRecovered})\n` +
+        `[Diag] degraded decodes: ${s.decodesDegraded} (rescued by rebuild: ${s.decodesRecovered}) · preventive refreshes: ${s.sessionRefreshes}\n` +
         `[Diag] stop→text ms: p50 ${s.stopToTextMs.p50} / p90 ${s.stopToTextMs.p90} / p99 ${s.stopToTextMs.p99} (n=${s.stopToTextMs.n})\n` +
         `[Diag] segment decode ms: p50 ${s.segmentDecodeMs.p50} / p90 ${s.segmentDecodeMs.p90} / p99 ${s.segmentDecodeMs.p99} (n=${s.segmentDecodeMs.n})`
     );
