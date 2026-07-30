@@ -1,6 +1,6 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using. With **live streaming transcription** (v3), speech is processed *while you talk* — text lands roughly **half a second after you stop, no matter how long you spoke** (median 504 ms across real dictations from 3s to 98s, Windows RTX 3090; up to ~150x real-time on Apple Silicon).
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using. With **live streaming transcription** (v3), speech is processed *while you talk*, so text lands **about half a second after you stop, no matter how long you spoke** — up to **1212× real-time**, measured across 160 real dictations on a Windows RTX 3090 ([the numbers](#speed)).
 
 Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ONNX Runtime (DirectML GPU) on Windows, for fully offline, hardware-accelerated speech-to-text.
 
@@ -15,7 +15,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 
 ## Features
 
-- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (up to ~150x real-time on Apple Silicon), Whisper for all others. Manual override available in settings.
+- **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (fast, fully on-device), Whisper for all others. Manual override available in settings.
 - **Live Streaming Transcription** — Speech is transcribed *while you talk*: segments are processed at natural pauses in the background, and at stop only the last phrase remains, so **text lands about half a second after you stop no matter how long you spoke** — up to **1212× real-time** on a 2 m 53 s recording, measured across 160 real dictations ([full numbers](#speed)). A live transcript box grows under the widget as you speak (capped, newest words pinned). Automatic fallback to classic batch processing if anything fails. (Parakeet engine; toggle in Settings.)
 - **Per-Dictation Stats** — Every history entry shows `45.3s audio · 396ms transcribe · 114× real-time`: audio length, true stop→pasted latency, and speed vs real time.
 - **Smart Formatting (ITN)** (opt-in) — Spoken forms become written forms: "two thirty pm" → "2:30 PM", "fifty million dollars" → "$50,000,000" (with thousands separators), dates, ordinals, punctuation commands.
@@ -35,7 +35,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 - **Overlap Deduplication** — Removes duplicate words at chunk boundaries for seamless output
 - **Transcription Progress** — Real-time progress percentage shown during long recordings
 - **Global Hotkey** — Configurable system-wide shortcut (default: `Option+Space` on Mac, `Alt+Space` on Windows)
-- **Hardware-Accelerated Transcription** — Parakeet runs on the **Apple Neural Engine** (CoreML) on Apple Silicon (~150× real-time on typical dictation) and on the **DirectML GPU** on Windows, each with automatic fallback to an optimized CPU path, then Whisper
+- **Hardware-Accelerated Transcription** — Parakeet runs on the **Apple Neural Engine** (CoreML) on Apple Silicon and on the **DirectML GPU** on Windows, each with automatic fallback to an optimized CPU path, then Whisper
 - **Native Paste-to-Target** — Transcriptions instantly pasted into your active app via native Win32 FFI (11ms on Windows) or consolidated AppleScript (~50ms on Mac)
 - **Transcription History** — Timestamped log of all dictations with click-to-copy, individual delete, and clear all
 - **Always-on-Top Widget** — Minimal floating bar with mic button, waveform visualization, and expandable history panel
@@ -62,7 +62,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | stop→text ~0.5s at any length (streaming, Windows GPU); ~150x real-time (Mac ANE), ~74x batch (Windows GPU) |
+| Speed | stop→text ~0.5s at any length — up to **1212× real-time** streaming (Windows RTX 3090); ~74× batch (Windows GPU) |
 | Model Size | ~470 MB (CoreML, macOS) / ~890 MB (INT8 ONNX, Windows & fallback) |
 
 ### Whisper Large V3 Turbo
@@ -263,18 +263,16 @@ This is the engine used on Windows, and the fallback on macOS. The Parakeet enco
 
 **Windows (RTX 3090) — real-world dictation measurements (v3, streaming on):**
 
-With **live streaming transcription** (default on), segments are processed *during* recording, so the wait after you stop speaking is only the final phrase — **length-independent**. Measured across 30 real dictations (stop → text pasted, end-to-end including paste):
+With **live streaming transcription** (default on), segments are processed *during* recording, so the wait after you stop speaking is only the final phrase — **length-independent**. Measured across **160 real dictations** (stop → text pasted, end-to-end including paste) — see [Speed](#speed) for the full breakdown:
 
-| Audio | Stop→Text | Speed vs real time |
-|-------|-----------|--------------------|
-| 5.5s | 205ms | 27× |
-| 15.0s | 326ms | 46× |
-| 28.0s | 531ms | 53× |
-| 45.3s | 396ms | **114×** |
-| 61.3s | 596ms | **103×** |
-| 97.8s | 633ms | **155×** |
+| You spoke for | Dictations | Typical stop→text | Typical speed | Best |
+|---|---|---|---|---|
+| Under 10s | 58 | ~490ms | 10× | 122× |
+| 10–30s | 60 | ~460ms | 38× | 304× |
+| 30–60s | 30 | ~500ms | 80× | 432× |
+| Over a minute | 12 | ~580ms | 167× | **1212×** |
 
-*Median stop→text across all 30: **504 ms** — a 98-second dictation lands as fast as a 5-second one.*
+*Across all 160: **p50 490 ms · p90 677 ms · p99 888 ms** — a three-minute dictation lands as fast as a three-second one. Longest wait ever recorded: 0.9 s.*
 
 Batch-mode numbers (streaming off, or when the fallback engages) on the same hardware:
 
