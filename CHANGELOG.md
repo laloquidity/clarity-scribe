@@ -1,5 +1,20 @@
 # Changelog
 
+## v3.8.0 — Custom vocabulary that reaches the decoder
+
+### ✨ New Features
+
+- **Rare words can now beat the common words they lose to.** A speech model collapses an unusual name onto the frequent near-homophone it has seen far more often, and a find-and-replace cannot undo that: a rule broad enough to catch the mistake also rewrites the common word the model was getting right. Personal Dictionary terms now bias the decode itself, and **both sides of an entry are boosted** — the replacement (what you meant) and the original (a spelling the model can actually reach). Feeding only the replacement, as before, meant an entry for a word the model never writes could never fire at all.
+- **Apple Silicon gets biasing via a hybrid split.** The CoreML joint model takes its own argmax on the Neural Engine and never exposes logits, so nothing inside the sidecar can be biased — a Swift port of the trie was impossible, not merely unwritten. Instead the sidecar gained an `encode` command: the ANE returns encoder output and Scribe runs the decode itself, where the bias applies. The encoder is ~80% of the work and stays on the Neural Engine. Measured on 7.3s of audio, the split runs **50ms against the sidecar's 61ms** (ANE encode 30ms + biased ONNX decode 19ms), because CoreML's per-call overhead on the two tiny decode models exceeds ONNX-CPU's. It needs the 18MB decoder/joiner, never the 622MB ONNX encoder, and with no dictionary terms the sidecar runs end to end exactly as before.
+- **A tuning harness instead of a guessed constant.** `test/bias-sweep.test.ts` re-decodes one recording across a range of boost values, and `SCRIBE_DUMP_AUDIO=<dir>` captures real dictations to feed it. Measured against recordings of a name and its common homophone: the intended term starts winning around 4, the competing word holds until about 8, and past that the boost overrides words it should leave alone. Default is now **6.0** (`SCRIBE_BIAS_BOOST` overrides), up from 2.0 — which measurement showed was a literal no-op on a real misrecognition, byte-identical to unbiased.
+
+### 🐛 Fixes
+
+- **The boost no longer invents words out of silence.** Every term-start id is boosted on every frame, so a boost strong enough to beat blank would emit a dictionary term into a pause and then cascade through the trie, spraying it ahead of the first real word. The rule now is that biasing may redistribute among words but never create one: the unbiased argmax is taken first, and if the model wanted blank, blank wins untouched. Pinned by a test that decodes 1.5s of prepended silence with five terms configured and asserts the transcript is unchanged.
+- **A half-matched term no longer drifts into a spelling nothing can repair.** With a flat boost the decoder could enter a term, leave the trie mid-word, and emit a form present in neither the dictionary nor the model's usual output — so no downstream replacement could fix it. Continuations are now pulled twice as hard as term starts, committing a term that has already begun.
+
+---
+
 ## v3.7.1 — Honest recipe pack, correct window matching
 
 ### 🐛 Fixes

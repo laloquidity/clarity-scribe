@@ -1,6 +1,6 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using. With **live streaming transcription** (v3), speech is processed *while you talk*, so text lands **about half a second after you stop, no matter how long you spoke** — up to **1212× real-time**, measured across 160 real dictations on a Windows RTX 3090 ([the numbers](#speed)).
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using. With **live streaming transcription** (v3), speech is processed *while you talk*, so text lands **about half a second after you stop, no matter how long you spoke** — up to **1212× real-time** on Windows (RTX 3090, measured across 160 real dictations) and **1055× on Apple Silicon** ([the numbers](#speed)).
 
 Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ONNX Runtime (DirectML GPU) on Windows, for fully offline, hardware-accelerated speech-to-text.
 
@@ -16,12 +16,12 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 ## Features
 
 - **Dual Transcription Engine** — Auto-selects the best engine: Parakeet TDT for English/European languages (fast, fully on-device), Whisper for all others. Manual override available in settings.
-- **Live Streaming Transcription** — Speech is transcribed *while you talk*: segments are processed at natural pauses in the background, and at stop only the last phrase remains, so **text lands about half a second after you stop no matter how long you spoke** — up to **1212× real-time** on a 2 m 53 s recording, measured across 160 real dictations ([full numbers](#speed)). A live transcript box grows under the widget as you speak (capped, newest words pinned). Automatic fallback to classic batch processing if anything fails. (Parakeet engine; toggle in Settings.)
+- **Live Streaming Transcription** — Speech is transcribed *while you talk*: segments are processed at natural pauses in the background, and at stop only the last phrase remains, so **text lands about half a second after you stop no matter how long you spoke** — up to **1212× real-time** (Windows RTX 3090, a 2 m 53 s recording pasted 143 ms after stop, measured across 160 real dictations) and **1055× on Apple Silicon** (an 8 m 38 s dictation pasted 491 ms after stop) ([full numbers](#speed)). A live transcript box grows under the widget as you speak (capped, newest words pinned). Automatic fallback to classic batch processing if anything fails. (Parakeet engine; toggle in Settings.)
 - **Per-Dictation Stats** — Every history entry shows `45.3s audio · 396ms transcribe · 114× real-time`: audio length, true stop→pasted latency, and speed vs real time.
 - **Smart Formatting (ITN)** (opt-in) — Spoken forms become written forms: "two thirty pm" → "2:30 PM", "fifty million dollars" → "$50,000,000" (with thousands separators), dates, ordinals, punctuation commands.
 - **Spoken Punctuation** (opt-in) — Say "comma", "period", "new line", "question mark" — with context-aware "dot" that only activates in URLs ("google dot com" → "google.com").
 - **Sound Cues** (opt-in) — Subtle generated blips on recording start/stop.
-- **Personal Dictionary with decoder-level recognition** — Add custom word corrections that apply to every transcription (e.g. `Chat GPT` to `ChatGPT`), with full CRUD, Export/Import JSON, and ~12 auto-generated variants per entry. Dictionary terms also feed **shallow-fusion vocabulary biasing inside the decoder** (ONNX engine): the model is nudged toward emitting your custom terms as it hears them, not just string-replaced afterwards.
+- **Personal Dictionary with decoder-level recognition** — Add custom word corrections that apply to every transcription (e.g. `Chat GPT` to `ChatGPT`), with full CRUD, Export/Import JSON, and ~12 auto-generated variants per entry. Dictionary terms also feed **shallow-fusion vocabulary biasing inside the decoder** on every platform: the model is nudged toward emitting your custom terms as it hears them, instead of only being string-replaced afterwards. Both sides of an entry are boosted, which is what makes rare words recoverable — see [Custom vocabulary](#custom-vocabulary-words-the-model-gets-wrong).
 - **Local API** (opt-in) — Loopback-only HTTP API + SSE event stream: scripts and agents can start/stop dictation and consume live transcripts. See [Local API](#local-api-programmable-voice-layer).
 - **MCP Server** — Scribe is callable as a tool provider from Claude Desktop, Claude Code, and any MCP-speaking agent: `dictate`, `start/stop_dictation`, `get_recent_transcripts`. See [MCP server](#mcp-server-use-scribe-from-ai-agents).
 - **Command Mode** (experimental, opt-in, default OFF) — Speak commands instead of dictation: a second hotkey (F10) routes your words through a **local LLM** (llama.cpp + Gemma 4, fully offline) to actions — open apps/folders, search the web, type text, show transcripts. A **risk rulebook** governs execution: benign actions **just run**; consequential ones (launching executables, contacting people) show a Confirm/Cancel proposal that auto-cancels if unanswered; severe tiers (money, credentials, bulk deletion) refuse outright. Unsupported requests get an honest "I can't do that" instead of a wrong action. Requires `llama-server` + a Gemma 4 GGUF (auto-discovered from `C:\llama-server` / overridable via `SCRIBE_LLAMA_SERVER` + `SCRIBE_ROUTER_MODEL`).
@@ -62,7 +62,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | stop→text ~0.5s at any length — up to **1212× real-time** streaming (Windows RTX 3090); ~74× batch (Windows GPU) |
+| Speed | stop→text ~0.5s at any length — up to **1212× real-time** streaming (Windows RTX 3090) / **1055×** (Apple Silicon); ~74× batch (Windows GPU) |
 | Model Size | ~470 MB (CoreML, macOS) / ~890 MB (INT8 ONNX, Windows & fallback) |
 
 ### Whisper Large V3 Turbo
@@ -117,6 +117,10 @@ pauses, so when you stop there's only the last phrase left to process. The wait
 stays roughly constant no matter how long you spoke — about half a second, and
 the longest wait across all 160 dictations was 0.9 s — so a longer recording
 simply divides that same short wait into a bigger number.
+
+The same architecture runs on **Apple Silicon** (CoreML / Apple Neural Engine):
+an 8 m 38 s dictation there landed **491 ms after the stop key — 1055×
+real-time**, end-to-end.
 
 ## Requirements
 
@@ -212,8 +216,8 @@ clarity-scribe/
 │   ├── nativeWhisper.ts   # Engine router, Whisper, GPU detection, chunking
 │   ├── vadService.ts      # Silero VAD speech detection (ONNX Runtime)
 │   ├── parakeetService.ts # Parakeet engine router (CoreML sidecar / ONNX) + batched long-audio path
-│   ├── parakeetCore.ts    # Pure DSP + TDT decode (mel/FFT, decoder caching, collapse recovery) — unit-tested
-│   ├── parakeetSidecar.ts # CoreML ANE sidecar manager (spawn/protocol/model download, macOS)
+│   ├── parakeetCore.ts    # Pure DSP + TDT decode (mel/FFT, decoder caching, collapse recovery, vocabulary bias) — unit-tested
+│   ├── parakeetSidecar.ts # CoreML ANE sidecar manager (spawn/protocol/model download, encode-only handoff, macOS)
 │   ├── streamingTranscriber.ts # Transcribe-while-recording: RMS segmenter, segment queue, partials — unit-tested
 │   ├── localApi.ts        # Loopback SSE event stream + record/command control (opt-in) — unit-tested
 │   ├── llmRouter.ts       # Resident llama-server lifecycle + local command routing (Gemma 4)
@@ -286,7 +290,9 @@ Batch-mode numbers (streaming off, or when the fallback engages) on the same har
 
 **macOS (Apple Silicon M-series):**
 
-The default engine is the CoreML sidecar with the encoder on the Apple Neural Engine. Measured on an M-series Mac:
+The default engine is the CoreML sidecar with the encoder on the Apple Neural Engine. With **live streaming transcription** on (default), the same length-independent wait applies as on Windows — an **8 m 38 s dictation landed 491 ms after the stop key: 1055× real-time**, end-to-end including paste.
+
+Engine-only throughput (streaming off, audio in → text ready), measured on the same M-series Mac:
 
 | Audio | Engine | Total | RTF |
 |-------|--------|-------|-----|
@@ -309,6 +315,64 @@ The default engine is the CoreML sidecar with the encoder on the Apple Neural En
 ### Whisper Large V3 Turbo (whisper.cpp)
 
 Uses CUDA, Vulkan, or Metal depending on platform. GPU DLLs are loaded automatically from `resources/win-gpu/{cuda,vulkan}/` on Windows.
+
+## Custom vocabulary (words the model gets wrong)
+
+Speech models collapse rare words onto common ones they have seen far more
+often, so an unusual name or product term can lose every time to a common
+near-homophone. Fixing that afterwards with a find-and-replace does not work:
+a rule broad enough to catch the mistake also rewrites the common word the
+model was getting right.
+
+Scribe biases the decoder instead. Personal Dictionary terms are tokenized into
+the model's SentencePiece inventory and stored in a trie; while decoding, any
+token that would extend one of your terms gets a logit boost before the argmax.
+Two rules keep it contained:
+
+- The boost only reaches ids that share a token prefix with your terms, so an
+  unrelated transcript is untouched.
+- The boost may redistribute among words, never create one. If the model was
+  going to emit silence, silence wins untouched. Without that rule a strong
+  enough boost sprays custom terms across pauses.
+
+Both are pinned by regression tests, including one that decodes a padded clip
+to prove nothing appears in the silence.
+
+**Entries are `original → replacement`, where the original is a spelling the
+model can actually produce.** For an ordinary fix (`Chat GPT` → `ChatGPT`) the
+model already writes both. For a word it never writes at all, use the nearest
+spelling it does reach, and pick one rare enough that rewriting it is safe.
+Both sides of an entry are boosted: the decoder is steered toward the reachable
+spelling, and the replacement is what lands in your text.
+
+The boost is a logit addend, so the useful range depends on the gap between
+your term and whatever common word competes with it. Measured against real
+recordings, an intended term starts winning around 4, the competing common word
+holds until about 8, and past that the boost begins overriding words it should
+have left alone. The shipped default is 6. Retune against your own audio rather
+than guessing:
+
+```bash
+SWEEP_AUDIO=clip.f32 SWEEP_TERMS=YourTerm SWEEP_BOOSTS=0,4,6,8 npx vitest run test/bias-sweep.test.ts
+```
+
+Capture a clip with `SCRIBE_DUMP_AUDIO=<dir> npm run dev`, and override the
+shipped value with `SCRIBE_BIAS_BOOST`.
+
+**How this works on Apple Silicon.** The CoreML joint model takes its own argmax
+on the Neural Engine and never exposes logits, so nothing inside the sidecar can
+be biased. When you have dictionary terms, Scribe takes the encoder output back
+from the ANE and runs the decode itself, where the bias applies. The encoder is
+~80% of the work and stays on the Neural Engine; only the decode moves, and that
+is 19 ms for 7 s of audio against 123 ms for the encoder. It needs the two small
+ONNX models (~18 MB), never the 622 MB ONNX encoder. With no dictionary terms
+the sidecar runs end-to-end exactly as before, and windows longer than 15 s stay
+on the sidecar's own chunking.
+
+Expect improvement rather than perfection. In ordinary speech the intended term
+is recovered most of the time while its common neighbour is preserved. Isolated
+repetitions with no surrounding context can push the multilingual model into
+another script entirely, and no boost recovers that.
 
 ## Local API (programmable voice layer)
 

@@ -76,6 +76,40 @@ do {
 
 // MARK: - Request loop
 
+/// `{"cmd":"encode","id":…,"audioPath":…,"outPath":…}` runs preprocessor +
+/// encoder only and writes raw float32 `[1, hidden, frames]` to `outPath`,
+/// replying with the geometry needed to wrap it as a tensor. The caller decodes
+/// itself — see Pipeline.encode for why.
+@MainActor
+func handleEncode(_ obj: [String: Any]) {
+    let id = obj["id"] as? String
+    guard let audioPath = obj["audioPath"] as? String else {
+        errorResponse(id: id, message: "missing audioPath")
+        return
+    }
+    guard let outPath = obj["outPath"] as? String else {
+        errorResponse(id: id, message: "missing outPath")
+        return
+    }
+    do {
+        let samples = try readF32(audioPath)
+        let (data, frames, hidden, timings) = try pipeline.encode(samples: samples)
+        try data.write(to: URL(fileURLWithPath: outPath))
+        writeLine([
+            "id": id ?? "",
+            "frames": frames,
+            "hidden": hidden,
+            "ms": [
+                "mel": Int(timings.mel.rounded()),
+                "encoder": Int(timings.encoder.rounded()),
+                "total": Int(timings.total.rounded()),
+            ],
+        ])
+    } catch {
+        errorResponse(id: id, message: "\(error)")
+    }
+}
+
 @MainActor
 func handle(line: String) {
     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -92,6 +126,10 @@ func handle(line: String) {
     if let cmd = obj["cmd"] as? String {
         if cmd == "ready" {
             writeLine(["ready": true])
+        } else if cmd == "encode" {
+            handleEncode(obj)
+        } else if cmd == "limits" {
+            writeLine(["maxEncodeSamples": Pipeline.maxEncodeSamples])
         } else {
             errorResponse(id: obj["id"] as? String, message: "unknown cmd: \(cmd)")
         }

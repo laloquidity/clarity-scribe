@@ -68,11 +68,15 @@ export function setCoreMLEnabled(enabled: boolean): void {
 }
 
 // --- Decoder-level custom vocabulary (shallow-fusion biasing) ---
-// Terms come from the Personal Dictionary's "replacement" values (what the
-// user MEANT). The trie is built lazily against the loaded vocabulary and
-// rebuilt whenever the dictionary changes. Applies to the ONNX decode path
-// (Windows/Linux and the macOS ONNX fallback); the CoreML sidecar decodes in
-// Swift and does not support biasing yet.
+// Terms come from the Personal Dictionary: both the "replacement" (what the
+// user MEANT) and the "original" (the spelling the model is able to emit).
+// Boosting the original matters when the replacement is not in the model's
+// reachable output at all — a name it never writes can still be steered to a
+// near spelling it does write, which the dictionary then rewrites. The trie is
+// built lazily against the loaded vocabulary and rebuilt whenever the
+// dictionary changes. Applies to the ONNX decode path (Windows/Linux and the
+// macOS ONNX fallback); the CoreML sidecar's joint model performs the argmax
+// on-device and never exposes logits, so biasing cannot apply there.
 let boostTerms: string[] = [];
 let biasContext: core.BiasContext | null = null;
 let biasDirty = false;
@@ -86,9 +90,12 @@ function currentBias(): core.BiasContext | null {
     if (biasDirty && vocabulary.length > 0) {
         biasDirty = false;
         try {
-            biasContext = core.buildBiasContext(boostTerms, vocabulary);
+            // SCRIBE_BIAS_BOOST overrides the tuned default for experiments.
+            const override = parseFloat(process.env.SCRIBE_BIAS_BOOST || '');
+            const boost = isNaN(override) ? core.DEFAULT_BIAS_BOOST : override;
+            biasContext = core.buildBiasContext(boostTerms, vocabulary, boost);
             if (biasContext) {
-                console.log(`[Parakeet] Vocabulary bias active: ${biasContext.termCount}/${boostTerms.length} terms tokenized`);
+                console.log(`[Parakeet] Vocabulary bias active: ${biasContext.termCount}/${boostTerms.length} terms tokenized (boost ${boost})`);
             } else if (boostTerms.length > 0) {
                 console.log('[Parakeet] Vocabulary bias: no terms tokenizable');
             }
@@ -560,6 +567,74 @@ export async function transcribeParakeet(
     }
 }
 
+// --- Hybrid: Apple Neural Engine encoder + biased ONNX decode (macOS) ---
+//
+// The sidecar's CoreML joint model takes its own argmax on-device, so a custom
+// term can never be boosted inside it. When the user has dictionary terms we
+// therefore take the encoder output back from the ANE and decode it here.
+// The encoder is ~80% of the work and stays on the Neural Engine; only the
+// decode (~19ms for 7s of audio) moves, so the speed cost is close to nothing.
+//
+// Only the two small models are needed for this (~18MB), never the 622MB ONNX
+// encoder, so a CoreML-only install stays CoreML-only.
+let hybridDecodeReady = false;
+let hybridUnavailable = false;
+
+async function ensureHybridDecode(): Promise<boolean> {
+    if (hybridDecodeReady) return true;
+    if (hybridUnavailable) return false;
+    if (decoderSession && joinerSession && vocabulary.length > 0) {
+        hybridDecodeReady = true;
+        return true;
+    }
+    try {
+        const modelDir = getModelDir();
+        const needed = MODEL_FILES.filter(f => f.name !== 'encoder.int8.onnx');
+        for (const f of needed) {
+            const p = join(modelDir, f.name);
+            if (isModelFileValid(p, f.size)) continue;
+            console.log(`[Parakeet] Hybrid bias: fetching ${f.label} (${(f.size / 1e6).toFixed(0)}MB)...`);
+            try { require('fs').unlinkSync(p); } catch { /* absent */ }
+            await downloadFile(`${MODEL_BASE_URL}/${f.name}`, p);
+            if (!isModelFileValid(p, f.size)) throw new Error(`${f.name} failed validation`);
+        }
+        decoderSession ||= await ort.InferenceSession.create(
+            join(modelDir, 'decoder.int8.onnx'), core.smallModelSessionOptions());
+        joinerSession ||= await ort.InferenceSession.create(
+            join(modelDir, 'joiner.int8.onnx'), core.smallModelSessionOptions());
+        if (vocabulary.length === 0) vocabulary = core.loadTokens(join(modelDir, 'tokens.txt'));
+        biasDirty = true; // trie must be rebuilt against the vocabulary just loaded
+        hybridDecodeReady = true;
+        console.log('[Parakeet] Hybrid bias decode ready (ANE encoder + ONNX decode)');
+        return true;
+    } catch (e) {
+        console.warn('[Parakeet] Hybrid bias decode unavailable — sidecar stays unbiased:', e);
+        hybridUnavailable = true;
+        return false;
+    }
+}
+
+/**
+ * Returns the biased transcript, or null when the hybrid path does not apply
+ * and the caller should use the sidecar's own end-to-end transcribe.
+ *
+ * Windows above ~15s is left to the sidecar: it chunks and merges long audio
+ * internally, and reproducing that here would risk the long-audio path for a
+ * case streaming already avoids (live segments are only a few seconds).
+ */
+async function tryHybridDecode(audioData: Float32Array): Promise<string | null> {
+    if (audioData.length === 0 || audioData.length > sidecar.MAX_ENCODE_SAMPLES) return null;
+    if (boostTerms.length === 0) return null;           // nothing to bias — keep the fast path
+    if (!(await ensureHybridDecode())) return null;
+    const bias = currentBias();
+    if (!bias) return null;
+
+    const enc = await sidecar.encode(audioData);
+    const tensor = new ort.Tensor('float32', enc.data, [1, enc.hidden, enc.frames]);
+    const out = await core.transducerGreedyDecode(tensor, enc.frames, { ...decodeCtx(), bias });
+    return out.text;
+}
+
 async function runTranscription(
     audioData: Float32Array,
     options: { language?: string; onProgress?: (progress: number) => void } = {}
@@ -573,6 +648,12 @@ async function runTranscription(
     if (useSidecar) {
         try {
             const sStart = Date.now();
+            const hybrid = await tryHybridDecode(audioData);
+            if (hybrid !== null) {
+                const ms = Date.now() - sStart;
+                console.log(`[Parakeet] \u2713 CoreML ANE + biased decode: ${ms}ms (${(durationSeconds / (ms / 1000)).toFixed(1)}x real-time): "${hybrid.substring(0, 80)}"`);
+                return hybrid;
+            }
             console.log(`[Parakeet] Transcribing ${durationSeconds.toFixed(1)}s via CoreML ANE sidecar...`);
             const text = await sidecar.transcribe(audioData);
             const ms = Date.now() - sStart;
