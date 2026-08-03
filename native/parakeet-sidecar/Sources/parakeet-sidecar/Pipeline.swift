@@ -133,6 +133,90 @@ final class Pipeline {
         return (text, tokens, timings)
     }
 
+    /// Longest window `encode` accepts, in samples. Callers segment to this.
+    static var maxEncodeSamples: Int { maxModelSamples }
+
+    /// Encode-only: preprocessor + encoder for a single window, returning the
+    /// encoder output as contiguous float32 in `[1, hidden, frames]` layout.
+    ///
+    /// This exists so the caller can run the TDT decode itself. The CoreML
+    /// JointDecision model takes its own argmax on-device and never exposes
+    /// logits, so custom-vocabulary biasing is impossible inside this process;
+    /// handing back encoder output lets the caller decode with biasing while
+    /// the expensive part still runs on the Neural Engine.
+    func encode(samples: [Float]) throws -> (
+        data: Data, frames: Int, hidden: Int, timings: StageTimings
+    ) {
+        let totalStart = Date()
+        var timings = StageTimings()
+        guard !samples.isEmpty else { throw SidecarError.io("encode: empty audio") }
+        guard samples.count <= Self.maxModelSamples else {
+            throw SidecarError.io(
+                "encode: window of \(samples.count) samples exceeds \(Self.maxModelSamples)")
+        }
+
+        let originalLength = samples.count
+        let padded = padAudio(samples, targetLength: Self.maxModelSamples)
+
+        let melStart = Date()
+        let audioArray = try ANEMemory.makeAlignedArray(
+            shape: [1, NSNumber(value: padded.count)], dataType: .float32)
+        padded.withUnsafeBufferPointer { buf in
+            let dst = audioArray.dataPointer.bindMemory(to: Float.self, capacity: padded.count)
+            dst.update(from: buf.baseAddress!, count: padded.count)
+        }
+        let audioLength = try MLMultiArray(shape: [1], dataType: .int32)
+        audioLength[0] = NSNumber(value: originalLength)
+        let preInput = try MLDictionaryFeatureProvider(dictionary: [
+            "audio_signal": MLFeatureValue(multiArray: audioArray),
+            "audio_length": MLFeatureValue(multiArray: audioLength),
+        ])
+        let preOutput = try models.preprocessor.prediction(from: preInput, options: predictionOptions)
+        timings.mel = Date().timeIntervalSince(melStart) * 1000
+
+        guard let mel = preOutput.featureValue(for: "mel")?.multiArrayValue,
+            let melLength = preOutput.featureValue(for: "mel_length")?.multiArrayValue
+        else {
+            throw SidecarError.shape("Preprocessor output missing mel/mel_length")
+        }
+
+        let encStart = Date()
+        let encInput = try MLDictionaryFeatureProvider(dictionary: [
+            "mel": MLFeatureValue(multiArray: mel),
+            "mel_length": MLFeatureValue(multiArray: melLength),
+        ])
+        let encOutput = try models.encoder.prediction(from: encInput, options: predictionOptions)
+        timings.encoder = Date().timeIntervalSince(encStart) * 1000
+
+        guard let encoder = encOutput.featureValue(for: "encoder")?.multiArrayValue,
+            let encoderLength = encOutput.featureValue(for: "encoder_length")?.multiArrayValue
+        else {
+            throw SidecarError.shape("Encoder output missing encoder/encoder_length")
+        }
+
+        // Trim to the frames the audio actually produced, so the caller never
+        // decodes into the zero padding above.
+        let validFrames = min(
+            encoderLength[0].intValue, encoderFrames(from: originalLength))
+        let hidden = config.encoderHiddenSize
+        let view = try EncoderFrameView(
+            encoderOutput: encoder, validLength: validFrames, expectedHiddenSize: hidden)
+        let frames = view.count
+
+        // Repack (possibly strided) CoreML output into contiguous
+        // [1, hidden, frames]: element (h, t) lives at h * frames + t.
+        var out = [Float](repeating: 0, count: frames * hidden)
+        try out.withUnsafeMutableBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            for t in 0..<frames {
+                try view.copyFrame(at: t, into: base.advanced(by: t), destinationStride: frames)
+            }
+        }
+        timings.total = Date().timeIntervalSince(totalStart) * 1000
+        let data = out.withUnsafeBufferPointer { Data(buffer: $0) }
+        return (data, frames, hidden, timings)
+    }
+
     // MARK: - Single chunk inference
 
     private func runChunk(

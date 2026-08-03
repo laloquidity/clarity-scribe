@@ -6,6 +6,7 @@
  */
 import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, shell, Tray, Menu, nativeImage, screen, powerMonitor, systemPreferences } from 'electron';
 import { exec, execSync } from 'child_process';
+import { mkdirSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
@@ -612,17 +613,25 @@ function applyCommandModeSettings(): void {
 }
 
 /**
- * Feed Personal Dictionary "replacement" terms (what the user MEANT) into the
- * decoder's shallow-fusion vocabulary bias, so custom terms are recognized at
- * decode time instead of only string-replaced afterwards.
+ * Feed Personal Dictionary terms into the decoder's shallow-fusion vocabulary
+ * bias, so custom terms are recognized at decode time instead of only being
+ * string-replaced afterwards.
+ *
+ * Both sides of each entry are boosted. The "replacement" is what the user
+ * meant, and biasing it works whenever the model can spell it. When it cannot
+ * — a name whose spelling the model never produces, losing every time to a
+ * common near-homophone — the "original" is the reachable spelling that stands
+ * in for the sound, so boosting it is what makes the entry fire at all; the
+ * post-processing replace then turns it into what the user wanted.
  */
 function syncVocabularyBoost(): void {
     try {
         const raw = store.get('personalDictionary') as any[];
         const terms = Array.isArray(raw)
-            ? raw.map(e => (typeof e === 'string' ? e : e?.replacement)).filter((t: any) => typeof t === 'string' && t.trim())
+            ? raw.flatMap(e => (typeof e === 'string' ? [e] : [e?.replacement, e?.original]))
+                .filter((t: any) => typeof t === 'string' && t.trim())
             : [];
-        setVocabularyBoostTerms(terms);
+        setVocabularyBoostTerms([...new Set(terms)]);
     } catch (e) {
         console.warn('[Main] Vocabulary boost sync failed:', e);
     }
@@ -991,6 +1000,25 @@ function dispatchCommand(transcript: string): { success: boolean; command: true 
     return { success: true, command: true };
 }
 
+/**
+ * Debug capture: set SCRIBE_DUMP_AUDIO=<dir> to write every dictation's raw
+ * mono f32 PCM to disk, for replaying a real recording through the decoder
+ * offline (tuning custom-vocabulary bias, reproducing a misrecognition).
+ * Unset — the default — this is a single env check and does nothing.
+ */
+function dumpAudioIfRequested(audio: Float32Array, sampleRate: number): void {
+    const dir = process.env.SCRIBE_DUMP_AUDIO;
+    if (!dir) return;
+    try {
+        mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, `dictation-${Date.now()}-${sampleRate}hz.f32`);
+        writeFileSync(file, Buffer.from(audio.buffer, audio.byteOffset, audio.byteLength));
+        console.log(`[Main] 🎙 Audio dumped: ${file} (${(audio.length / sampleRate).toFixed(1)}s)`);
+    } catch (e) {
+        console.warn('[Main] Audio dump failed:', e);
+    }
+}
+
 // --- IPC Handlers ---
 function setupIpcHandlers(): void {
     ipcMain.handle('transcribe', async (_, audioData: Float32Array | number[], sampleRate: number) => {
@@ -999,6 +1027,7 @@ function setupIpcHandlers(): void {
         try {
             const audioBuffer = audioData instanceof Float32Array ? audioData : new Float32Array(audioData);
             const audioSec = audioBuffer.length / (sampleRate || 16000);
+            dumpAudioIfRequested(audioBuffer, sampleRate || 16000);
 
             // Streaming-first: if a live session transcribed segments during
             // recording, its finalize only has the tail left — near-instant.

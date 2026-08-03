@@ -14,7 +14,7 @@
  */
 
 import { spawn, ChildProcess, execFile } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync, createWriteStream } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, statSync, createWriteStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import https from 'https';
@@ -38,7 +38,8 @@ const REQUIRED_MODEL_FILES = [
 ];
 
 interface Pending {
-    resolve: (text: string) => void;
+    /** The whole response object — transcribe reads `text`, encode reads geometry. */
+    resolve: (msg: any) => void;
     reject: (err: Error) => void;
     timer: NodeJS.Timeout;
 }
@@ -173,7 +174,7 @@ function handleStdoutLine(line: string): void {
         pending.delete(msg.id);
         clearTimeout(p.timer);
         if (msg.error) p.reject(new Error(String(msg.error)));
-        else p.resolve(typeof msg.text === 'string' ? msg.text : '');
+        else p.resolve(msg);
     }
 }
 
@@ -271,19 +272,71 @@ export function isReady(): boolean {
  * temp raw f32le file (the sidecar's audio contract) and awaits the response.
  */
 export async function transcribe(audio: Float32Array): Promise<string> {
+    const msg = await request(audio, id => ({ id }));
+    return typeof msg.text === 'string' ? msg.text : '';
+}
+
+/**
+ * Longest window `encode` accepts (15s at 16kHz). Mirrors the sidecar's
+ * Pipeline.maxEncodeSamples; callers must segment longer audio themselves.
+ */
+export const MAX_ENCODE_SAMPLES = 240_000;
+
+export interface EncodedWindow {
+    /** Contiguous float32 in `[1, hidden, frames]` layout. */
+    data: Float32Array;
+    frames: number;
+    hidden: number;
+}
+
+/**
+ * Run preprocessor + encoder on the Neural Engine and hand the encoder output
+ * back, leaving the TDT decode to the caller.
+ *
+ * The sidecar's CoreML joint model takes its own argmax on-device, so custom
+ * vocabulary cannot be biased inside it. Splitting here keeps the expensive
+ * ~80% of the work (the encoder) on the ANE while the caller runs the cheap
+ * decode through ONNX, where the bias trie applies.
+ */
+export async function encode(audio: Float32Array): Promise<EncodedWindow> {
+    if (audio.length > MAX_ENCODE_SAMPLES) {
+        throw new Error(`encode window ${audio.length} exceeds ${MAX_ENCODE_SAMPLES} samples`);
+    }
+    const outPath = join(tmpdir(), `scribe-parakeet-enc-${process.pid}-${++reqCounter}.f32`);
+    try {
+        const msg = await request(audio, id => ({ cmd: 'encode', id, outPath }));
+        const frames = Number(msg.frames), hidden = Number(msg.hidden);
+        if (!(frames > 0) || !(hidden > 0)) throw new Error('sidecar returned no encoder frames');
+        const buf = readFileSync(outPath);
+        const expected = frames * hidden * 4;
+        if (buf.byteLength !== expected) {
+            throw new Error(`encoder output is ${buf.byteLength} bytes, expected ${expected}`);
+        }
+        // Copy out of the file buffer: the Float32Array must own memory that
+        // outlives this function, and Buffer may be pooled.
+        const data = new Float32Array(frames * hidden);
+        data.set(new Float32Array(buf.buffer, buf.byteOffset, frames * hidden));
+        return { data, frames, hidden };
+    } finally {
+        try { unlinkSync(outPath); } catch { /* ignore */ }
+    }
+}
+
+/** Write audio to the sidecar's temp-file contract and await one response. */
+async function request(audio: Float32Array, build: (id: string) => any): Promise<any> {
     if (!isReady()) throw new Error('CoreML sidecar not ready');
     const id = `r${++reqCounter}`;
     const audioPath = join(tmpdir(), `scribe-parakeet-${process.pid}-${id}.f32`);
     writeFileSync(audioPath, Buffer.from(audio.buffer, audio.byteOffset, audio.byteLength));
 
     try {
-        return await new Promise<string>((resolve, reject) => {
+        return await new Promise<any>((resolve, reject) => {
             const timer = setTimeout(() => {
                 pending.delete(id);
                 reject(new Error('sidecar request timed out'));
             }, REQUEST_TIMEOUT_MS);
             pending.set(id, { resolve, reject, timer });
-            if (!send({ id, audioPath })) {
+            if (!send({ ...build(id), audioPath })) {
                 clearTimeout(timer);
                 pending.delete(id);
                 reject(new Error('failed to write request to sidecar'));

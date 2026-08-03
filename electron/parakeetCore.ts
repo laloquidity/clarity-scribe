@@ -46,9 +46,27 @@ export interface DecodeContext {
 // biases the decoder toward producing "Kubernetes" as the model hears it,
 // instead of fixing "cooper netties" after the fact with string replacement.
 //
-// The boost only tips near-ties (confident emissions have logit gaps far
-// larger than the boost), and with no terms configured the code path is
-// completely inert — guarded by the golden regression test.
+// With no terms configured the code path is completely inert, guarded by the
+// golden regression test.
+//
+// Choosing the boost. It is a logit addend, so the useful range is set by the
+// gap between the rare term and whatever common word the model prefers. 2.0
+// only breaks near-ties and was measured to be a literal no-op against a real
+// misrecognition (a name losing to a common homophone). Sweeping a recorded
+// pair of near-homophones showed the intended term winning from ~4 upward, the
+// competing common word holding until ~8, and above that the boost starts
+// injecting the term into silence. 6.0 sits in the middle of that window.
+// Retune with test/bias-sweep.test.ts against real audio rather than guessing.
+export const DEFAULT_BIAS_BOOST = 6.0;
+
+/**
+ * How much harder a term is pulled toward completion once it has started,
+ * relative to the boost that started it. Guards against half-matched terms:
+ * without it the decoder can leave the trie mid-word and emit a spelling that
+ * is in neither the dictionary nor the model's normal output, which no
+ * downstream replacement can repair.
+ */
+export const CONTINUATION_BOOST_MULTIPLIER = 2.0;
 
 interface TrieNode {
     children: Map<number, TrieNode>;
@@ -98,7 +116,7 @@ export function tokenizeTerm(term: string, pieceToId: Map<string, number>, maxPi
  * Each term is added as-given; an additional Capitalized variant is added for
  * all-lowercase terms because the model capitalizes sentence starts.
  */
-export function buildBiasContext(terms: string[], vocabulary: string[], boost = 2.0): BiasContext | null {
+export function buildBiasContext(terms: string[], vocabulary: string[], boost = DEFAULT_BIAS_BOOST): BiasContext | null {
     if (!terms || terms.length === 0) return null;
 
     const pieceToId = new Map<string, number>();
@@ -349,14 +367,25 @@ export async function transducerGreedyDecode(
     // --- Custom-vocabulary bias state (inert when no bias context) ---
     // activeNodes holds trie prefixes matched by the most recent emissions;
     // the ids extending any of them (or starting a new term) get the boost.
+    // Starting a term and finishing one are boosted differently. Entering a
+    // term is a genuine judgement call against the audio, so it gets the plain
+    // boost. Once inside one, a half-matched term is the worst outcome: the
+    // decoder drifts off the trie and invents a spelling in neither the
+    // dictionary nor the model's usual output, so nothing downstream rewrites
+    // it. Continuations therefore get a stronger pull, which commits a term
+    // that has already started rather than letting it wander.
     const bias = ctx.bias ?? null;
     let activeNodes: Array<{ children: Map<number, unknown>; terminal: boolean }> = [];
-    const collectBoosted = (): Set<number> | null => {
+    const collectBoosted = (): Map<number, number> | null => {
         if (!bias) return null;
-        const boosted = new Set<number>();
-        for (const id of bias.root.children.keys()) boosted.add(id);
+        const boosted = new Map<number, number>();
+        for (const id of bias.root.children.keys()) boosted.set(id, bias.boost);
+        const continueBoost = bias.boost * CONTINUATION_BOOST_MULTIPLIER;
         for (const node of activeNodes) {
-            for (const id of (node.children as Map<number, unknown>).keys()) boosted.add(id);
+            for (const id of (node.children as Map<number, unknown>).keys()) {
+                const prev = boosted.get(id);
+                if (prev === undefined || prev < continueBoost) boosted.set(id, continueBoost);
+            }
         }
         return boosted.size > 0 ? boosted : null;
     };
@@ -406,17 +435,34 @@ export async function transducerGreedyDecode(
         // that extend a matched custom-vocabulary prefix (or start one) get a
         // logit boost first — shallow fusion. The plain loop is kept separate
         // so the unbiased path stays bit-identical (golden-tested).
+        //
+        // The boost may only redistribute among words, never create one. Every
+        // term-start id is boosted on every frame, so without this rule a term
+        // can out-score blank during silence, and once one lands the trie keeps
+        // boosting its continuations — a name sprayed across a pause. So: take
+        // the unbiased argmax first, and if the model wanted blank, blank wins
+        // untouched. Biasing only arbitrates once a token is being emitted.
         let y = 0;
         let maxVal = logitsData[0];
         const boosted = collectBoosted();
         if (boosted) {
-            maxVal = logitsData[0] + (boosted.has(0) ? bias!.boost : 0);
-            for (let i = 1; i < vocabSize; i++) {
-                const v = logitsData[i] + (boosted.has(i) ? bias!.boost : 0);
-                if (v > maxVal) {
-                    maxVal = v;
-                    y = i;
-                }
+            let plainY = 0;
+            let plainMax = logitsData[0];
+            let biasedY = -1;
+            let biasedMax = -Infinity;
+            for (let i = 0; i < vocabSize; i++) {
+                const raw = logitsData[i];
+                if (raw > plainMax) { plainMax = raw; plainY = i; }
+                if (i === blankId) continue; // blank never competes on boosted terms
+                const v = raw + (boosted.get(i) ?? 0);
+                if (v > biasedMax) { biasedMax = v; biasedY = i; }
+            }
+            if (plainY === blankId || biasedY < 0) {
+                y = plainY;
+                maxVal = plainMax;
+            } else {
+                y = biasedY;
+                maxVal = biasedMax;
             }
         } else {
             for (let i = 1; i < vocabSize; i++) {

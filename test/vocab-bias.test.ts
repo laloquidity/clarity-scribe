@@ -76,6 +76,7 @@ const MODEL_DIR = join(homedir(), '.smart-whisper', 'models', 'parakeet-tdt-0.6b
 const hasModels = existsSync(join(MODEL_DIR, 'decoder.int8.onnx'));
 const ENC_FIXTURE = join(__dirname, 'fixtures', 'encoder-output.f32');
 const ENC_META = join(__dirname, 'fixtures', 'encoder-output.json');
+const AUDIO_FIXTURE = join(__dirname, 'fixtures', 'sample-16k.f32');
 
 describe('biased decode (real models)', () => {
     it.skipIf(!hasModels || !existsSync(ENC_FIXTURE))(
@@ -102,6 +103,80 @@ describe('biased decode (real models)', () => {
             const sameBias = core.buildBiasContext(['quick', 'lazy dog'], vocab, 2.0);
             expect(sameBias).not.toBeNull();
             const biased = await core.transducerGreedyDecode(encoderOut, meta.encoderLen, { ...base, bias: sameBias });
+            expect(biased.text).toBe(plain.text);
+        }
+    );
+
+    // The shipped boost is high enough to overturn a confident common word in
+    // favour of a rare custom term, which is the whole point of it. This pins
+    // the other half: at that same strength, terms the audio does not contain
+    // must not bleed into a clean transcript.
+    it.skipIf(!hasModels || !existsSync(ENC_FIXTURE))(
+        'at the shipped default boost, unrelated terms do not corrupt the transcript',
+        async () => {
+            const decoder = await ort.InferenceSession.create(join(MODEL_DIR, 'decoder.int8.onnx'), core.smallModelSessionOptions());
+            const joiner = await ort.InferenceSession.create(join(MODEL_DIR, 'joiner.int8.onnx'), core.smallModelSessionOptions());
+            const vocab = core.loadTokens(join(MODEL_DIR, 'tokens.txt'));
+            const meta = JSON.parse(readFileSync(ENC_META, 'utf-8'));
+            const buf = readFileSync(ENC_FIXTURE);
+            const encData = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+            const encoderOut = new ort.Tensor('float32', encData, meta.dims);
+
+            const base = {
+                decoderSession: decoder, joinerSession: joiner, vocabulary: vocab,
+                blankId: core.BLANK_ID, predRnnLayers: 2, predHidden: 640,
+            };
+            const plain = await core.transducerGreedyDecode(encoderOut, meta.encoderLen, base);
+
+            // Names and jargon that never occur in the fixture speech, including
+            // one that begins like a word that does ("quick" → "Quixote").
+            const absent = core.buildBiasContext(
+                ['Rayyan', 'Kubernetes', 'Quixote', 'deBridge'], vocab, core.DEFAULT_BIAS_BOOST);
+            expect(absent).not.toBeNull();
+            const biased = await core.transducerGreedyDecode(encoderOut, meta.encoderLen, { ...base, bias: absent });
+            expect(biased.text).toBe(plain.text);
+        }
+    );
+
+    // Regression: every term-start id is boosted on every frame, so a boost
+    // strong enough to beat blank will spray custom terms across a pause and
+    // then cascade through the trie ("deBridge D D D D D" ahead of the first
+    // real word). Silence is where that shows up, so decode some.
+    it.skipIf(!hasModels || !existsSync(join(MODEL_DIR, 'encoder.int8.onnx')) || !existsSync(AUDIO_FIXTURE))(
+        'bias never emits into silence, however many terms are configured',
+        async () => {
+            const encoder = await ort.InferenceSession.create(
+                join(MODEL_DIR, 'encoder.int8.onnx'), core.encoderSessionOptions(['cpu']));
+            const decoder = await ort.InferenceSession.create(join(MODEL_DIR, 'decoder.int8.onnx'), core.smallModelSessionOptions());
+            const joiner = await ort.InferenceSession.create(join(MODEL_DIR, 'joiner.int8.onnx'), core.smallModelSessionOptions());
+            const vocab = core.loadTokens(join(MODEL_DIR, 'tokens.txt'));
+
+            // 1.5s of silence, then the speech fixture: the boost has a long
+            // stretch of nothing to hallucinate into before any real audio.
+            const buf = readFileSync(AUDIO_FIXTURE);
+            const speech = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+            const padded = new Float32Array(24_000 + speech.length);
+            padded.set(speech, 24_000);
+
+            const { features, nFrames, validFrames } = core.computeMelSpectrogram(padded, 16000);
+            const inputs: Record<string, ort.Tensor> = {};
+            inputs[encoder.inputNames[0]] = new ort.Tensor('float32', features, [1, 128, nFrames]);
+            inputs[encoder.inputNames[1]] = new ort.Tensor('int64', BigInt64Array.from([BigInt(validFrames)]), [1]);
+            const res = await encoder.run(inputs);
+            const encoderOut = res[encoder.outputNames[0]] as ort.Tensor;
+            const encoderLen = Number((res[encoder.outputNames[1]] as ort.Tensor).data[0]);
+
+            const base = {
+                decoderSession: decoder, joinerSession: joiner, vocabulary: vocab,
+                blankId: core.BLANK_ID, predRnnLayers: 2, predHidden: 640,
+            };
+            const plain = await core.transducerGreedyDecode(encoderOut, encoderLen, base);
+
+            // A realistic dictionary: several terms, none of them spoken here.
+            const bias = core.buildBiasContext(
+                ['deBridge', 'Rayan', 'Rayyan', 'ChatGPT', 'Kubernetes'], vocab, core.DEFAULT_BIAS_BOOST);
+            expect(bias).not.toBeNull();
+            const biased = await core.transducerGreedyDecode(encoderOut, encoderLen, { ...base, bias });
             expect(biased.text).toBe(plain.text);
         }
     );
