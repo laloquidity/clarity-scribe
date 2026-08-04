@@ -99,12 +99,12 @@ Long recordings are processed through a hardened pipeline:
 Measured from **160 real dictations** — 63 minutes of actual speech, 1.3 s to
 2 m 53 s — on a Windows RTX 3090 with the Parakeet engine (DirectML):
 
-| You spoke for | Dictations | Typical speed\* | Best |
-|---|---|---|---|
-| Under 10 s | 58 | **10× real-time** | 122× |
-| 10–30 s | 60 | **38× real-time** | 304× |
-| 30–60 s | 30 | **80× real-time** | 432× |
-| Over a minute | 12 | **167× real-time** | **1212×** |
+| You spoke for | Dictations | Up To |
+|---|---|---|
+| Under 10 s | 58 | **122×** |
+| 10–30 s | 60 | **304×** |
+| 30–60 s | 30 | **432×** |
+| Over a minute | 12 | **1212×** |
 
 \* **× real-time** = how much audio you recorded, divided by how long you waited
 — measured from **the moment you stop speaking to the text appearing in your
@@ -269,12 +269,12 @@ This is the engine used on Windows, and the fallback on macOS. The Parakeet enco
 
 With **live streaming transcription** (default on), segments are processed *during* recording, so the wait after you stop speaking is only the final phrase — **length-independent**. Measured across **160 real dictations** (stop → text pasted, end-to-end including paste) — see [Speed](#speed) for the full breakdown:
 
-| You spoke for | Dictations | Typical stop→text | Typical speed | Best |
-|---|---|---|---|---|
-| Under 10s | 58 | ~490ms | 10× | 122× |
-| 10–30s | 60 | ~460ms | 38× | 304× |
-| 30–60s | 30 | ~500ms | 80× | 432× |
-| Over a minute | 12 | ~580ms | 167× | **1212×** |
+| You spoke for | Dictations | Typical stop→text | Up To |
+|---|---|---|---|
+| Under 10s | 58 | ~490ms | **122×** |
+| 10–30s | 60 | ~460ms | **304×** |
+| 30–60s | 30 | ~500ms | **432×** |
+| Over a minute | 12 | ~580ms | **1212×** |
 
 *Across all 160: **p50 490 ms · p90 677 ms · p99 888 ms** — a three-minute dictation lands as fast as a three-second one. Longest wait ever recorded: 0.9 s.*
 
