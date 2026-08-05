@@ -57,6 +57,13 @@ export interface HistoryEntry {
     latencyMs?: number;
     /** 'command' = spoken command (app holds the tool name); absent = dictation. */
     kind?: 'command';
+    /**
+     * Why the paste fell back to the clipboard ('poller-down', 'no-target',
+     * 'focus-failed', 'process-dead', 'automation-denied', 'unknown').
+     * Absent when the paste succeeded. Makes "app: clipboard" entries
+     * self-explaining instead of a mystery after the 2s widget message fades.
+     */
+    pasteReason?: string;
 }
 
 /**
