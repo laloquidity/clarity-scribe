@@ -94,6 +94,60 @@ let lastSuccessfulPollTimestamp = 0;
 let isCurrentlyRecording = false;
 let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
+// --- Front-app poller health ---
+// The poller is the ONLY source of the macOS paste target, and it shells out
+// to osascript (or PowerShell) on a timer. Every failure used to be swallowed,
+// so a poller that stopped working left a fossil target behind and turned
+// every paste into a silent "Copied" with no reason logged anywhere. Track
+// its health so both the log and the capsule can say what actually happened.
+const POLLER_DEAD_MS = 10_000; // ~20 missed polls on macOS, ~7 on Windows
+const POLL_FAILURE_LOG_INTERVAL_MS = 60_000;
+let pollFailureCount = 0;
+let lastPollFailureLog = 0;
+
+/** Turn an exec error from the poller into something a human can act on. */
+function describePollFailure(error: any): string {
+    const msg = String(error?.message ?? error);
+    if (error?.killed || error?.signal === 'SIGTERM') return 'timed out (machine under load?)';
+    if (msg.includes('-1743') || msg.includes('Not authorized')) {
+        return 'not authorized to send Apple events — grant Automation + Accessibility in System Settings › Privacy & Security';
+    }
+    if (msg.includes('-1728')) return 'no frontmost process';
+    return msg.split('\n')[0].slice(0, 160);
+}
+
+function notePollFailure(error: any): void {
+    pollFailureCount++;
+    const now = Date.now();
+    if (now - lastPollFailureLog < POLL_FAILURE_LOG_INTERVAL_MS) return;
+    lastPollFailureLog = now;
+    console.warn(
+        `[Main] ⚠ Front-app polling failing (${pollFailureCount} consecutive): ${describePollFailure(error)}. ` +
+        `Dictations will fall back to the clipboard until it recovers.`
+    );
+}
+
+/**
+ * A poll that reached the OS and got an answer — including "the front app is
+ * us", which the caller deliberately does not cache. That distinction matters:
+ * this timestamp means "the mechanism works", while lastKnownFrontApp.timestamp
+ * means "when we last saw an external app". Idling inside Scribe advances only
+ * the former, which is exactly what keeps the health check free of false alarms.
+ */
+function notePollSuccess(): void {
+    if (pollFailureCount > 0) {
+        console.log(`[Main] ✓ Front-app polling recovered after ${pollFailureCount} consecutive failures`);
+        pollFailureCount = 0;
+    }
+    lastSuccessfulPollTimestamp = Date.now();
+}
+
+/** False when the poller has gone quiet — any target it left behind is a fossil. */
+function isPollerHealthy(): boolean {
+    if (lastSuccessfulPollTimestamp === 0) return false; // never got a single answer
+    return Date.now() - lastSuccessfulPollTimestamp < POLLER_DEAD_MS;
+}
+
 function isProcessAlive(pid: number): boolean {
     try {
         process.kill(pid, 0);
@@ -164,17 +218,18 @@ function startActiveAppPolling(): void {
 
             exec(`osascript -e '${script}'`, { encoding: 'utf-8', timeout: 3000 }, (error, stdout) => {
                 isPolling = false;
-                if (error) return;
+                if (error) { notePollFailure(error); return; }
                 try {
                     const [activeApp, pidStr] = stdout.trim().split('|');
                     const activePid = parseInt(pidStr, 10);
-                    if (activeApp && activePid !== ourPid && activeApp !== 'Clarity Scribe') {
+                    if (!activeApp || isNaN(activePid)) { notePollFailure(new Error('unparseable poll output')); return; }
+                    notePollSuccess();
+                    if (activePid !== ourPid && activeApp !== 'Clarity Scribe') {
                         // Only cache external apps — skip ourselves so lastKnownFrontApp
                         // always points to the app the user was in before clicking our widget
                         lastKnownFrontApp = { name: activeApp, pid: activePid, timestamp: Date.now() };
-                        lastSuccessfulPollTimestamp = Date.now();
                     }
-                } catch { /* ignore */ }
+                } catch (e) { notePollFailure(e); }
             });
         }, 500);
     } else {
@@ -187,16 +242,17 @@ function startActiveAppPolling(): void {
 
             exec(PS_COMMAND, { encoding: 'utf-8', timeout: 3000, windowsHide: true }, (error, stdout) => {
                 isPolling = false;
-                if (error) return;
+                if (error) { notePollFailure(error); return; }
                 try {
                     const result = stdout.trim();
                     const [name, pidStr] = result.split('|');
                     const pid = parseInt(pidStr, 10);
-                    if (name && !isNaN(pid) && pid !== ourPid && name !== 'Clarity Scribe') {
+                    if (!name || isNaN(pid)) { notePollFailure(new Error('unparseable poll output')); return; }
+                    notePollSuccess();
+                    if (pid !== ourPid && name !== 'Clarity Scribe') {
                         lastKnownFrontApp = { name, pid, timestamp: Date.now() };
-                        lastSuccessfulPollTimestamp = Date.now();
                     }
-                } catch { /* ignore */ }
+                } catch (e) { notePollFailure(e); }
             });
         }, 1500);
     }
@@ -641,12 +697,21 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
     const targetApp = targetAppBeforeRecording;
     if (!targetApp) {
         clipboard.writeText(text);
-        return { success: false, fallback: 'clipboard' };
+        // Used to return here with no log at all — the single biggest reason a
+        // broken paste was invisible. Name the cause: a dead poller and a
+        // genuinely unknown target are very different problems.
+        const pollerDown = !isPollerHealthy();
+        console.warn(
+            `[Main] No paste target (confidence: ${targetAppConfidence}) — text left on clipboard` +
+            (pollerDown ? `; front-app polling is down (${pollFailureCount} consecutive failures)` : '')
+        );
+        return { success: false, fallback: 'clipboard', reason: pollerDown ? 'poller-down' : 'no-target' };
     }
 
     if (!isProcessAlive(targetApp.pid)) {
         clipboard.writeText(text);
         targetAppBeforeRecording = null;
+        console.warn(`[Main] Target "${targetApp.name}" (pid ${targetApp.pid}) is gone — text left on clipboard`);
         return { success: false, fallback: 'clipboard', reason: 'process-dead' };
     }
 
@@ -678,6 +743,19 @@ async function pasteToTarget(text: string): Promise<{ success: boolean; fallback
                     console.log('[Main] Focus verification failed, clipboard fallback');
                     targetAppBeforeRecording = null;
                     return { success: false, fallback: 'clipboard', reason: 'focus-failed' };
+                }
+                // -1743: macOS is refusing us Apple events entirely. Nothing
+                // about the target is wrong and retrying will never help — the
+                // user has to grant Automation access, so say exactly that.
+                const detail = `${e?.message ?? ''}${e?.stderr ?? ''}`;
+                if (detail.includes('-1743') || detail.includes('Not authorized')) {
+                    console.error(
+                        '[Main] Paste blocked: not authorized to send Apple events to System Events. ' +
+                        'Grant Automation (and Accessibility) to this app in System Settings › Privacy & Security.'
+                    );
+                    clipboard.writeText(text);
+                    targetAppBeforeRecording = null;
+                    return { success: false, fallback: 'clipboard', reason: 'automation-denied' };
                 }
                 throw e;
             }
@@ -836,6 +914,22 @@ function createTray(): void {
 // --- Global Hotkey (via hotkeyService) ---
 function captureTargetBeforeRecording(): void {
     captureTargetWindow();
+    // A dead poller leaves lastKnownFrontApp frozen at whatever was foreground
+    // when it died. That pid is not just stale — it may since have been recycled
+    // onto an unrelated app, in which case pasting would fire the dictation into
+    // a window the user never chose. Refuse the fossil and say why.
+    if (lastKnownFrontApp && !isPollerHealthy()) {
+        const downFor = lastSuccessfulPollTimestamp
+            ? `${Math.round((Date.now() - lastSuccessfulPollTimestamp) / 1000)}s`
+            : 'the whole session';
+        console.warn(
+            `[Main] Refusing stale target "${lastKnownFrontApp.name}" (pid ${lastKnownFrontApp.pid}) — ` +
+            `front-app polling has been down for ${downFor}. Text will go to the clipboard.`
+        );
+        targetAppBeforeRecording = null;
+        targetAppConfidence = 'unknown';
+        return;
+    }
     if (lastKnownFrontApp) {
         const cacheAge = Date.now() - lastKnownFrontApp.timestamp;
         targetAppBeforeRecording = lastKnownFrontApp;
@@ -1115,6 +1209,7 @@ function setupIpcHandlers(): void {
             targetAppBeforeRecording = detected;
             targetAppConfidence = 'confirmed';
             lastKnownFrontApp = { ...detected, timestamp: Date.now() };
+            notePollSuccess(); // a direct query IS a working front-app read
             // Capture native HWND for fast paste (before our window steals focus)
             captureTargetWindow();
         }
@@ -1141,10 +1236,15 @@ function setupIpcHandlers(): void {
                     // Capture native HWND for fast paste
                     captureTargetWindow();
                 } else {
+                    console.warn(
+                        `[Main] Widget: target "${lastKnownFrontApp.name}" is ${Math.round(cacheAge / 1000)}s stale` +
+                        `${isPollerHealthy() ? '' : ' (front-app polling is down)'} — text will go to the clipboard`
+                    );
                     targetAppBeforeRecording = null;
                     targetAppConfidence = 'stale';
                 }
             } else {
+                console.warn('[Main] Widget: no known front app — text will go to the clipboard');
                 targetAppBeforeRecording = null;
                 targetAppConfidence = 'unknown';
             }
@@ -1465,7 +1565,10 @@ app.whenReady().then(async () => {
     powerMonitor.on('resume', () => {
         lastWakeTimestamp = Date.now();
         const detected = inlineDetectActiveApp();
-        if (detected) lastKnownFrontApp = { ...detected, timestamp: Date.now() };
+        if (detected) {
+            lastKnownFrontApp = { ...detected, timestamp: Date.now() };
+            notePollSuccess(); // don't let a wake look like a dead poller
+        }
     });
     powerMonitor.on('unlock-screen', () => { lastWakeTimestamp = Date.now(); });
 });

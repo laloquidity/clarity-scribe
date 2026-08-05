@@ -157,7 +157,7 @@ export interface ElectronAPI {
 
     getTargetApp: () => Promise<{ targetApp: { name: string; pid: number } | null; confidence: string }>;
     clearTargetApp: () => Promise<void>;
-    pasteToTarget: (text: string) => Promise<{ success: boolean; fallback?: string; app?: string }>;
+    pasteToTarget: (text: string) => Promise<{ success: boolean; fallback?: string; app?: string; reason?: string }>;
 
     // Widget mic button — captures target from cache before focus steal
     widgetToggleRecording: () => Promise<{ success: boolean }>;
