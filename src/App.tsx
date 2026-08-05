@@ -29,6 +29,22 @@ const SETUP_HEIGHT = 300;
 const LIVE_BOX_MAX_CONTENT = 96;
 const LIVE_BOX_CHROME = 26; // padding + margins around the content
 
+/**
+ * Why the text landed on the clipboard instead of in an app. Kept short — the
+ * capsule is 340px wide — and phrased as the thing the user can act on. The
+ * matching log line in main.ts carries the full detail.
+ */
+function describeFallback(reason?: string): string {
+    switch (reason) {
+        case 'automation-denied': return 'Copied — needs Automation access';
+        case 'poller-down': return 'Copied — lost track of active app';
+        case 'process-dead': return 'Copied — target app closed';
+        case 'focus-failed': return 'Copied — could not focus target';
+        case 'no-target': return 'Copied — no target app';
+        default: return 'Copied ✓';
+    }
+}
+
 const App: React.FC = () => {
     const [appState, setAppState] = useState<AppState>('IDLE');
     const [expanded, setExpanded] = useState(false);
@@ -392,8 +408,10 @@ const App: React.FC = () => {
             await api.addHistory(entry);
             setHistory(prev => [entry, ...prev]);
 
-            // Show accurate feedback
-            setStatusMessage(didPaste ? `Pasted → ${targetAppName} ✓` : 'Copied ✓');
+            // Show accurate feedback. A bare "Copied ✓" hides the difference
+            // between "you had no target app" and "the OS is refusing us
+            // permission" — the latter never fixes itself, so name it.
+            setStatusMessage(didPaste ? `Pasted → ${targetAppName} ✓` : describeFallback(result.reason));
             setTimeout(() => setStatusMessage(undefined), 2000);
 
             setAppState('IDLE');
