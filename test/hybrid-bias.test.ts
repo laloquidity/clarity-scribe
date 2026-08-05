@@ -10,7 +10,7 @@
  * produces on its own), and biasing actually reaches the ANE path.
  *
  *   npx vitest run test/hybrid-bias.test.ts
- *   SWEEP_AUDIO=<file.f32> SWEEP_TERMS=Rayan npx vitest run test/hybrid-bias.test.ts
+ *   SWEEP_AUDIO=<file.f32> SWEEP_TERMS=YourTerm npx vitest run test/hybrid-bias.test.ts
  */
 import { describe, it, expect } from 'vitest';
 import * as ort from 'onnxruntime-node';
@@ -69,7 +69,7 @@ describe('hybrid ANE-encode + ONNX-decode', () => {
 
             // 2. Terms absent from the audio must not corrupt it, at the boost
             //    that ships.
-            const absent = core.buildBiasContext(['Rayyan', 'Kubernetes'], vocab, core.DEFAULT_BIAS_BOOST);
+            const absent = core.buildBiasContext(['Postgres', 'Kubernetes'], vocab, core.DEFAULT_BIAS_BOOST);
             expect(await hybrid(audio, absent)).toBe(viaHybrid);
 
             // 3. Optional: a real recording of a term the model gets wrong.

@@ -68,6 +68,32 @@ export const DEFAULT_BIAS_BOOST = 6.0;
  */
 export const CONTINUATION_BOOST_MULTIPLIER = 2.0;
 
+/**
+ * How many vocabulary pieces may share a term's FIRST token as a prefix before
+ * that term is considered too generic to bias at all.
+ *
+ * Every term-start id is boosted on every frame, so a start token is only as
+ * safe as it is specific — and specificity is not length. Two-character starts
+ * span the whole range: some are shared by a single piece, others by more than
+ * thirty, depending on how common the opening letters are. A term starting with
+ * one letter, or with a very common two-letter opener, is therefore a prefix of
+ * a large slice of ordinary vocabulary.
+ *
+ * Measured against real dictations, terms whose start is shared by twenty or
+ * more pieces pull ordinary words into the term mid-sentence: the real word is
+ * truncated and the custom term appears in its place, or an isolated letter
+ * turns into the head of the term. Terms whose start is shared by four or fewer
+ * never did this, even at boosts well above the shipped default. The threshold
+ * sits in the empty middle of that range.
+ *
+ * Rejecting the sequence outright (rather than merely declining to boost its
+ * start) matters: left in the trie, an organically emitted start token would
+ * still collect the continuation pull and complete the term. Rejected terms
+ * fall back to post-processing replacement — where they were before decoder
+ * biasing existed, and which already handles them through the variants list.
+ */
+export const MAX_TERM_START_BRANCHING = 8;
+
 interface TrieNode {
     children: Map<number, TrieNode>;
     terminal: boolean;
@@ -78,6 +104,8 @@ export interface BiasContext {
     boost: number;
     /** Number of terms successfully tokenized (diagnostics). */
     termCount: number;
+    /** Terms dropped because their first token was too generic to bias safely. */
+    rejectedTerms: string[];
 }
 
 /**
@@ -144,6 +172,23 @@ export function buildBiasContext(terms: string[], vocabulary: string[], boost = 
         node.terminal = true;
     };
 
+    // A start token carries evidence only if few other pieces share it as a
+    // prefix — see MAX_TERM_START_BRANCHING. Memoized: the scan is over the
+    // whole inventory, and dictionary terms routinely share a start.
+    const branchingCache = new Map<string, number>();
+    const startIsSpecific = (ids: number[]): boolean => {
+        const piece = vocabulary[ids[0]] ?? '';
+        if (!piece) return false;
+        let branching = branchingCache.get(piece);
+        if (branching === undefined) {
+            branching = 0;
+            for (const p of vocabulary) if (p && p.startsWith(piece)) branching++;
+            branchingCache.set(piece, branching);
+        }
+        return branching <= MAX_TERM_START_BRANCHING;
+    };
+
+    const rejectedTerms: string[] = [];
     for (const raw of terms) {
         const term = (raw || '').trim();
         if (!term) continue;
@@ -152,14 +197,29 @@ export function buildBiasContext(terms: string[], vocabulary: string[], boost = 
             variants.add(term.charAt(0).toUpperCase() + term.slice(1));
         }
         let added = false;
+        let rejected = false;
         for (const v of variants) {
             const ids = tokenizeTerm(v, pieceToId, maxPieceLen);
-            if (ids) { addSequence(ids); added = true; }
+            if (!ids) continue;
+            if (!startIsSpecific(ids)) { rejected = true; continue; }
+            addSequence(ids);
+            added = true;
         }
         if (added) termCount++;
+        else if (rejected) rejectedTerms.push(term);
     }
 
-    return termCount > 0 ? { root, boost, termCount } : null;
+    // Logged here rather than by the caller so it still surfaces when every
+    // term was rejected and the whole context collapses to null.
+    if (rejectedTerms.length > 0) {
+        console.warn(
+            `[Parakeet] Not biasing ${rejectedTerms.length} dictionary term(s) — ` +
+            `first token too generic to boost safely: ${rejectedTerms.join(', ')}. ` +
+            `Still applied as post-processing replacements.`
+        );
+    }
+
+    return termCount > 0 ? { root, boost, termCount, rejectedTerms } : null;
 }
 
 /**

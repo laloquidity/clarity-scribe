@@ -35,7 +35,7 @@ describe('hybrid bias path cost', () => {
         const decoder = await ort.InferenceSession.create(join(MODEL_DIR, 'decoder.int8.onnx'), core.smallModelSessionOptions());
         const joiner = await ort.InferenceSession.create(join(MODEL_DIR, 'joiner.int8.onnx'), core.smallModelSessionOptions());
         const vocab = core.loadTokens(join(MODEL_DIR, 'tokens.txt'));
-        const bias = core.buildBiasContext(['deBridge', 'ChatGPT', 'Kubernetes'], vocab, core.DEFAULT_BIAS_BOOST);
+        const bias = core.buildBiasContext(['Postgres', 'ChatGPT', 'Kubernetes'], vocab, core.DEFAULT_BIAS_BOOST);
         const base = {
             decoderSession: decoder, joinerSession: joiner, vocabulary: vocab,
             blankId: core.BLANK_ID, predRnnLayers: 2, predHidden: 640,
