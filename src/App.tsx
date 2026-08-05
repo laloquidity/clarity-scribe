@@ -404,6 +404,10 @@ const App: React.FC = () => {
                 app: targetAppName,
                 audioMs: metrics?.audioMs,
                 latencyMs: metrics ? Date.now() - metrics.stoppedAt : undefined,
+                // Why a paste fell back to the clipboard. The widget shows this
+                // for 2 seconds and it was gone — undebuggable after the fact.
+                // Stored, "app: clipboard" entries carry their own explanation.
+                pasteReason: didPaste ? undefined : (result.reason || 'unknown'),
             };
             await api.addHistory(entry);
             setHistory(prev => [entry, ...prev]);
