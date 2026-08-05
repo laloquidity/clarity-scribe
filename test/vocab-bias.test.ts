@@ -11,9 +11,13 @@ import { homedir } from 'os';
 import * as core from '../electron/parakeetCore';
 
 // Synthetic piece inventory (id = array index).
+// Appended-only: earlier entries' ids are asserted by index below. The ▁de*
+// family exists so one start token is genuinely branchy (9 pieces share "▁de"),
+// mirroring the real inventory where "▁de" is shared by 32.
 const PIECES = [
     '▁hello', '▁he', 'llo', '▁world', '▁K', 'ub', 'ern', 'et', 'es',
     '▁Kub', '▁chat', 'G', 'PT', '▁', 'a', 'b', 'c', '<unk>',
+    '▁de', '▁dec', '▁dep', '▁del', '▁dea', '▁dee', '▁def', '▁deg', '▁deh',
 ];
 const pieceMap = new Map(PIECES.map((p, i) => [p, i] as [string, number]));
 const MAX_LEN = Math.max(...PIECES.map(p => p.length));
@@ -69,6 +73,32 @@ describe('buildBiasContext', () => {
         const ctx = core.buildBiasContext(['Kubernetes', 'ñ'], PIECES)!;
         expect(ctx.termCount).toBe(1);
     });
+
+    // Regression: a term-start id is boosted on EVERY frame, so a start that
+    // many pieces share drags ordinary speech into the term — the real word is
+    // truncated and the custom term replaces it mid-sentence. Such a term must
+    // not enter the trie AT ALL: left in, an organically emitted start would
+    // still collect the 2x continuation pull and complete the term.
+    it('refuses terms whose first token is shared by too many pieces', () => {
+        // 9 pieces begin '▁de'; only 1 begins '▁Kub'.
+        expect(core.buildBiasContext(['de'], PIECES)).toBeNull();
+
+        const mixed = core.buildBiasContext(['Kubernetes', 'de'], PIECES)!;
+        expect(mixed.termCount).toBe(1);
+        expect(mixed.rejectedTerms).toEqual(['de']);
+        // The generic start must be absent from the trie root, not merely unboosted.
+        expect(mixed.root.children.has(pieceMap.get('▁de')!)).toBe(false);
+        expect(mixed.root.children.has(pieceMap.get('▁Kub')!)).toBe(true);
+    });
+
+    // Length is not the discriminator: two-character starts range from one
+    // shared piece to more than thirty. A short start is fine when it is rare —
+    // rejecting on length alone would have gutted the feature.
+    it('keeps a short start token when few pieces share it', () => {
+        const ctx = core.buildBiasContext(['hello'], PIECES)!;
+        expect(ctx.termCount).toBe(1);
+        expect(ctx.rejectedTerms).toEqual([]);
+    });
 });
 
 // ── Live decode integration (models required; skipped otherwise) ────────────
@@ -77,6 +107,31 @@ const hasModels = existsSync(join(MODEL_DIR, 'decoder.int8.onnx'));
 const ENC_FIXTURE = join(__dirname, 'fixtures', 'encoder-output.f32');
 const ENC_META = join(__dirname, 'fixtures', 'encoder-output.json');
 const AUDIO_FIXTURE = join(__dirname, 'fixtures', 'sample-16k.f32');
+
+describe('real vocabulary term safety', () => {
+    // Against the real SentencePiece inventory rather than the synthetic one.
+    // A term opening on a single letter, or on a heavily shared two-letter
+    // piece, is the shape that corrupted real dictations.
+    it.skipIf(!hasModels)('rejects terms opening on a widely shared token', () => {
+        const vocab = core.loadTokens(join(MODEL_DIR, 'tokens.txt'));
+        // '▁D' is shared by ~28 pieces, '▁N' by ~20.
+        expect(core.buildBiasContext(['D-Link'], vocab)).toBeNull();
+        expect(core.buildBiasContext(['Nginx'], vocab)).toBeNull();
+
+        const ctx = core.buildBiasContext(['D-Link', 'Nginx', 'Kubernetes'], vocab)!;
+        expect(ctx.termCount).toBe(1);
+        expect(ctx.rejectedTerms.sort()).toEqual(['D-Link', 'Nginx']);
+    });
+
+    // Rare starts must survive — these are what the feature exists for.
+    it.skipIf(!hasModels)('keeps rare-start terms', () => {
+        const vocab = core.loadTokens(join(MODEL_DIR, 'tokens.txt'));
+        for (const t of ['Kubernetes', 'Postgres', 'Zanzibar', 'Helsinki']) {
+            const ctx = core.buildBiasContext([t], vocab);
+            expect(ctx, `${t} should still be biased`).not.toBeNull();
+        }
+    });
+});
 
 describe('biased decode (real models)', () => {
     it.skipIf(!hasModels || !existsSync(ENC_FIXTURE))(
@@ -131,7 +186,7 @@ describe('biased decode (real models)', () => {
             // Names and jargon that never occur in the fixture speech, including
             // one that begins like a word that does ("quick" → "Quixote").
             const absent = core.buildBiasContext(
-                ['Rayyan', 'Kubernetes', 'Quixote', 'deBridge'], vocab, core.DEFAULT_BIAS_BOOST);
+                ['Postgres', 'Kubernetes', 'Quixote', 'Zanzibar'], vocab, core.DEFAULT_BIAS_BOOST);
             expect(absent).not.toBeNull();
             const biased = await core.transducerGreedyDecode(encoderOut, meta.encoderLen, { ...base, bias: absent });
             expect(biased.text).toBe(plain.text);
@@ -140,7 +195,7 @@ describe('biased decode (real models)', () => {
 
     // Regression: every term-start id is boosted on every frame, so a boost
     // strong enough to beat blank will spray custom terms across a pause and
-    // then cascade through the trie ("deBridge D D D D D" ahead of the first
+    // then cascade through the trie (the term sprayed ahead of the first
     // real word). Silence is where that shows up, so decode some.
     it.skipIf(!hasModels || !existsSync(join(MODEL_DIR, 'encoder.int8.onnx')) || !existsSync(AUDIO_FIXTURE))(
         'bias never emits into silence, however many terms are configured',
@@ -174,7 +229,7 @@ describe('biased decode (real models)', () => {
 
             // A realistic dictionary: several terms, none of them spoken here.
             const bias = core.buildBiasContext(
-                ['deBridge', 'Rayan', 'Rayyan', 'ChatGPT', 'Kubernetes'], vocab, core.DEFAULT_BIAS_BOOST);
+                ['Postgres', 'Zanzibar', 'Helsinki', 'ChatGPT', 'Kubernetes'], vocab, core.DEFAULT_BIAS_BOOST);
             expect(bias).not.toBeNull();
             const biased = await core.transducerGreedyDecode(encoderOut, encoderLen, { ...base, bias });
             expect(biased.text).toBe(plain.text);

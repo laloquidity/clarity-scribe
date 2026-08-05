@@ -21,7 +21,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 - **Smart Formatting (ITN)** (opt-in) — Spoken forms become written forms: "two thirty pm" → "2:30 PM", "fifty million dollars" → "$50,000,000" (with thousands separators), dates, ordinals, punctuation commands.
 - **Spoken Punctuation** (opt-in) — Say "comma", "period", "new line", "question mark" — with context-aware "dot" that only activates in URLs ("google dot com" → "google.com").
 - **Sound Cues** (opt-in) — Subtle generated blips on recording start/stop.
-- **Personal Dictionary with decoder-level recognition** — Add custom word corrections that apply to every transcription (e.g. `Chat GPT` to `ChatGPT`), with full CRUD, Export/Import JSON, and ~12 auto-generated variants per entry. Dictionary terms also feed **shallow-fusion vocabulary biasing inside the decoder** on every platform: the model is nudged toward emitting your custom terms as it hears them, instead of only being string-replaced afterwards. Both sides of an entry are boosted, which is what makes rare words recoverable — see [Custom vocabulary](#custom-vocabulary-words-the-model-gets-wrong).
+- **Personal Dictionary with decoder-level recognition** — Add custom word corrections that apply to every transcription (e.g. `Chat GPT` to `ChatGPT`), with full CRUD, Export/Import JSON, and ~12 auto-generated variants per entry. Dictionary terms also feed **shallow-fusion vocabulary biasing inside the decoder** on every platform: the model is nudged toward emitting your custom terms as it hears them, instead of only being string-replaced afterwards. Both sides of an entry are boosted where the term is specific enough to be safe, which is what makes rare words recoverable — see [Custom vocabulary](#custom-vocabulary-words-the-model-gets-wrong).
 - **Local API** (opt-in) — Loopback-only HTTP API + SSE event stream: scripts and agents can start/stop dictation and consume live transcripts. See [Local API](#local-api-programmable-voice-layer).
 - **MCP Server** — Scribe is callable as a tool provider from Claude Desktop, Claude Code, and any MCP-speaking agent: `dictate`, `start/stop_dictation`, `get_recent_transcripts`. See [MCP server](#mcp-server-use-scribe-from-ai-agents).
 - **Command Mode** (experimental, opt-in, default OFF) — Speak commands instead of dictation: a second hotkey (F10) routes your words through a **local LLM** (llama.cpp + Gemma 4, fully offline) to actions — open apps/folders, search the web, type text, show transcripts. A **risk rulebook** governs execution: benign actions **just run**; consequential ones (launching executables, contacting people) show a Confirm/Cancel proposal that auto-cancels if unanswered; severe tiers (money, credentials, bulk deletion) refuse outright. Unsupported requests get an honest "I can't do that" instead of a wrong action. Requires `llama-server` + a Gemma 4 GGUF (auto-discovered from `C:\llama-server` / overridable via `SCRIBE_LLAMA_SERVER` + `SCRIBE_ROUTER_MODEL`).
@@ -327,23 +327,50 @@ model was getting right.
 Scribe biases the decoder instead. Personal Dictionary terms are tokenized into
 the model's SentencePiece inventory and stored in a trie; while decoding, any
 token that would extend one of your terms gets a logit boost before the argmax.
-Two rules keep it contained:
+Three rules keep it contained:
 
 - The boost only reaches ids that share a token prefix with your terms, so an
   unrelated transcript is untouched.
 - The boost may redistribute among words, never create one. If the model was
   going to emit silence, silence wins untouched. Without that rule a strong
   enough boost sprays custom terms across pauses.
+- A term is biased only if **few vocabulary pieces share its first token**. That
+  token is boosted on every frame, so it is only as safe as it is specific — and
+  specificity is not length. Two-character starts range from one shared piece to
+  more than thirty, depending on how common the opening letters are. Measured on
+  real recordings, terms starting with a widely shared token pull ordinary words
+  into the term mid-sentence, truncating the real word; terms with a rare start
+  stay clean well above the shipped boost. Terms over the threshold are dropped
+  from the trie entirely — not merely left unboosted, since an organically
+  emitted start token would otherwise still collect the continuation pull and
+  complete the term.
 
-Both are pinned by regression tests, including one that decodes a padded clip
-to prove nothing appears in the silence.
+All three are pinned by regression tests, including one that decodes a padded
+clip to prove nothing appears in the silence.
 
 **Entries are `original → replacement`, where the original is a spelling the
 model can actually produce.** For an ordinary fix (`Chat GPT` → `ChatGPT`) the
 model already writes both. For a word it never writes at all, use the nearest
 spelling it does reach, and pick one rare enough that rewriting it is safe.
-Both sides of an entry are boosted: the decoder is steered toward the reachable
-spelling, and the replacement is what lands in your text.
+Both sides of an entry are boosted where they qualify: the decoder is steered
+toward the reachable spelling, and the replacement is what lands in your text.
+An entry whose start token is too common still works as a post-processing
+replacement — the variants list already catches whatever the model writes — so
+only its decoder biasing is declined, and the startup log names any term this
+applies to.
+
+The boost is global, so a term needing an unusually strong pull cannot get one
+without over-firing the rest. If a rare word keeps losing to a common
+near-homophone, add the spelling the model actually produces as the entry's
+`original` rather than raising the boost; the sweep harness below tells you what
+that spelling is.
+
+Near-homophones are the limit of this approach. Biasing can recover a word the
+model would otherwise collapse into a commoner neighbour, but the boost is
+context-free — it pulls equally whether you meant the custom term or the
+everyday word that sounds like it. Where the two occur in the same sentence,
+expect the occasional wrong pick in either direction, and note that lowering the
+boost trades misses for false hits rather than removing the error.
 
 The boost is a logit addend, so the useful range depends on the gap between
 your term and whatever common word competes with it. Measured against real

@@ -1,7 +1,7 @@
 /**
  * Custom-vocabulary bias sweep (opt-in tuning harness, not an assertion test).
  *
- *   SWEEP_AUDIO=/path/to/dictation.f32 SWEEP_TERMS=Rayyan \
+ *   SWEEP_AUDIO=/path/to/dictation.f32 SWEEP_TERMS=YourTerm \
  *     npx vitest run test/bias-sweep.test.ts
  *
  * Encodes a real recording once, then re-runs the TDT decode at a range of
