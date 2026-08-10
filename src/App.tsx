@@ -368,8 +368,12 @@ const App: React.FC = () => {
 
             // Optional Inverse Text Normalization (spoken-form → written-form).
             // Strictly opt-in: when disabled, output is byte-identical to before.
+            // Punctuation commands are passed through to ITN only when the
+            // SPOKEN PUNCTUATION setting is on — smart formatting alone must
+            // never convert "period"/"comma" (it doubled the model's own
+            // punctuation: "that time period?" → "that time.?").
             if (itnEnabledRef.current) {
-                text = applyITN(text);
+                text = applyITN(text, { punctuation: spokenPunctRef.current });
             }
 
             if (!text || text.trim().length === 0) {
