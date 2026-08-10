@@ -559,11 +559,22 @@ async function runSinglePass(audioData: Float32Array): Promise<{
 
     // Pad the mel width to the ONE fixed encoder shape (DML only — see
     // padToFixedShape). DirectML compiles its plan for the first shape a
-    // session runs and re-JITs every run whose shape differs (~350-450ms each)
-    // — one fixed shape removes that entirely (~115ms warm at 2800 frames,
-    // measured). Transcript-identical: the fill is each bin's own silence
-    // floor, and validFrames still tells the encoder how much is real.
-    // Longer inputs run at natural shape (rare; amortized).
+    // session runs and re-JITs every run whose shape differs, so a unique
+    // length per dictation meant a recompile every time.
+    //
+    // MEASURED IN THE REAL APP, not a benchmark: encoder went from ~360-575ms
+    // (varying, recompiling) to ~284-305ms (fixed shape). ~140ms saved per
+    // dictation, and the spread collapsed from ~200ms to ~20ms, which is the
+    // point — cost is now predictable rather than a coin toss.
+    //
+    // An isolated Node process shows 115-133ms for the same call. The gap is
+    // this process: Electron composites the UI on the same GPU. Do not quote
+    // the isolated figure as the app's performance — that mistake was made
+    // once already.
+    //
+    // Transcript-identical: the fill is each bin's own silence floor, and
+    // validFrames still tells the encoder how much is real. Longer inputs run
+    // at natural shape (rare; amortized).
     const padded = padToFixedShape
         ? core.padMelToWidth(features, nFrames, 128)
         : { features, frames: nFrames };
