@@ -62,8 +62,6 @@ function unusedTailRatio(s: DecodeStats): number {
 const MIN_FRAMES = 25;
 /** A collapse recovery is a smoking gun; pair it with any real tail. */
 const TAIL_AFTER_RECOVERY = 0.2;
-/** With no recovery logged, only a very large dead tail is suspicious. */
-const TAIL_ALONE = 0.5;
 /** Near-total blanks on a segment that should contain speech. */
 const BLANK_RATIO_ALONE = 0.8;
 
@@ -87,10 +85,13 @@ export function assessDecode(s: DecodeStats): DecodeVerdict {
         };
     }
 
-    // No recovery logged, but a huge silent tail on a voiced segment.
-    if (tail >= TAIL_ALONE) {
-        return { degraded: true, reason: `${pct(tail)} of the segment produced no tokens` };
-    }
+    // NOTE: a large dead tail on its own is NOT evidence of a fault, and used
+    // to be treated as such. It fired on a real dictation ending in "Thank
+    // you." — 0.5s of speech followed by 1.9s of genuine silence, an 80% tail
+    // — and cost the user 3.1 seconds rebuilding sessions to reproduce the
+    // same correct transcript. Trailing silence is ordinary; our segmenter
+    // does not trim it as tightly as that rule assumed. Only a tail that
+    // accompanies a collapse (above) tells us speech was actually lost.
 
     // Almost everything came back blank.
     if (s.blankRatio >= BLANK_RATIO_ALONE) {
