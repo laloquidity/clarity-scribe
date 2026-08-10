@@ -905,6 +905,16 @@ export function isParakeetAvailable(): boolean {
     return isInitialized;
 }
 
+/**
+ * Did init VERIFY the encoder is genuinely fast (on-GPU at the fixed shape)?
+ * True only after the warm fixed-shape timing check passes. Callers use this
+ * to gate work that is cheap on a ~300ms encoder but ruinous on a CPU
+ * fallback — e.g. the live mid-segment preview decodes.
+ */
+export function isEncoderGpuVerified(): boolean {
+    return isInitialized && padToFixedShape;
+}
+
 export function isLanguageSupported(language: string): boolean {
     const SUPPORTED = [
         'en', 'de', 'fr', 'es', 'it', 'pt', 'nl', 'pl', 'uk', 'cs',

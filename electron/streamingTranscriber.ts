@@ -46,6 +46,25 @@ const MAX_SEGMENT_MS = 28_000;      // hard cap (matches vadService segment cap)
 const MIN_TAIL_MS = 250;            // tail shorter than this (and unvoiced) is dropped
 const WINDOW_MS = 32;               // RMS analysis window
 
+// ── Live mid-segment preview ────────────────────────────────────────────────
+// The partial events above fire only when a segment CLOSES — a ≥650ms pause,
+// or up to ~15s for a no-pause talker, so during continuous speech the live
+// box showed nothing. When enabled, the OPEN segment is additionally decoded
+// as it grows and the result is emitted as a partial. Display-only: preview
+// text never enters `texts` and never reaches the final transcript.
+//
+// Cost model: previews share the serialized decode queue (the ONNX decode
+// path holds shared state, so concurrent runs are not safe). One preview can
+// therefore delay a real segment decode — or the stop-finalize — by at most
+// one decode (~300-500ms with the fixed-shape GPU encoder). That is why this
+// is OFF unless the encoder is VERIFIED on-GPU: on a CPU fallback a preview
+// of a long open segment costs seconds and would starve the real decodes.
+// Throttled by AUDIO time, not wall clock (audio arrives in real time anyway,
+// and it keeps the segmenter deterministic for tests).
+const PREVIEW_EVERY_MS = 1200;       // min NEW audio in the open segment between previews
+const PREVIEW_MIN_VOICED_MS = 400;   // no preview until the segment holds real speech
+const PREVIEW_SKIP_SILENCE_MS = 320; // mid-pause: no new words, and a real close is imminent
+
 /**
  * Cubic (Catmull-Rom) resampler — same algorithm as src/workers/audioWorker.ts
  * (keep in sync) so streamed segments match the batch path's audio quality.
@@ -95,6 +114,10 @@ interface Session {
     segmentsQueued: number;
     healthy: boolean;
     finalized: boolean;
+    // Live preview bookkeeping (see tunables above)
+    pendingDecodes: number;         // real segment decodes queued or running
+    previewInFlight: boolean;       // at most one preview outstanding
+    previewedSamples: number;       // openSamples when the last preview started
 }
 
 /** Adaptive voice gate: scales with the session's loudest window, clamped. */
@@ -104,11 +127,20 @@ function voiceGate(s: Session): number {
 
 let transcriberFn: SegmentTranscriber | null = null;
 let partialListener: PartialListener | null = null;
+let previewEnabled = false;
 let session: Session | null = null;
 
 /** Inject the segment transcriber (parakeet single-pass). Enables streaming. */
 export function configureStreaming(transcribe: SegmentTranscriber): void {
     transcriberFn = transcribe;
+}
+
+/**
+ * Enable mid-segment preview decodes. Only pass true when the encoder is
+ * verified fast (parakeetService.isEncoderGpuVerified) — see tunables above.
+ */
+export function setLivePreview(on: boolean): void {
+    previewEnabled = on;
 }
 
 /** Subscribe to partial-transcript updates (joined text after each segment). */
@@ -142,6 +174,9 @@ export function startSession(sampleRate: number): boolean {
         segmentsQueued: 0,
         healthy: true,
         finalized: false,
+        pendingDecodes: 0,
+        previewInFlight: false,
+        previewedSamples: 0,
     };
     return true;
 }
@@ -216,8 +251,58 @@ export function pushChunk(chunk: Float32Array): void {
         }
         if (quietest && quietest.startSample > 0) {
             closeOpenSegment(s, quietest.startSample);
+            return;
         }
     }
+
+    maybeEnqueuePreview(s);
+}
+
+/**
+ * Decode the OPEN segment for the live preview when it is cheap and useful:
+ * the decode queue is idle, the segment holds real speech, enough NEW audio
+ * arrived since the last preview, and the user is not mid-pause (a pause is
+ * about to close the segment and produce the real text anyway).
+ */
+function maybeEnqueuePreview(s: Session): void {
+    if (!previewEnabled || !transcriberFn || !partialListener) return;
+    if (!s.healthy || s.finalized) return;
+    if (s.previewInFlight || s.pendingDecodes > 0) return;
+    if (s.voicedMsInSegment < PREVIEW_MIN_VOICED_MS) return;
+    if (s.silenceRunMs >= PREVIEW_SKIP_SILENCE_MS) return;
+    const newMs = ((s.openSamples - s.previewedSamples) / s.sampleRate) * 1000;
+    if (newMs < PREVIEW_EVERY_MS) return;
+
+    // Snapshot the open audio NOW — chunks keep mutating under us.
+    const raw = new Float32Array(s.openSamples);
+    let off = 0;
+    for (const c of s.chunks) { raw.set(c, off); off += c.length; }
+
+    s.previewInFlight = true;
+    s.previewedSamples = s.openSamples;
+    const indexAtStart = s.segmentsQueued; // which open segment this previews
+    const sampleRate = s.sampleRate;
+    s.queue = s.queue.then(async () => {
+        try {
+            // Stale? The segment closed (its REAL decode is queued right
+            // behind us) or the session ended — skip the wasted decode.
+            if (!transcriberFn || !s.healthy || s.finalized) return;
+            if (s.segmentsQueued !== indexAtStart) return;
+            const t0 = Date.now();
+            const audio16k = resampleCubic(raw, sampleRate, 16000);
+            const text = (await transcriberFn(audio16k)).trim();
+            // Re-check: the world may have moved on during the decode.
+            if (!text || s.finalized || s.segmentsQueued !== indexAtStart || !partialListener) return;
+            console.log(`[Stream] Preview (${(audio16k.length / 16000).toFixed(1)}s open) in ${Date.now() - t0}ms`);
+            const done = joinedText(s);
+            partialListener(done ? `${done} ${text}` : text, indexAtStart);
+        } catch {
+            // Preview is best-effort — a failure must NOT mark the session
+            // unhealthy or trigger the batch fallback. The real decodes decide.
+        } finally {
+            s.previewInFlight = false;
+        }
+    });
 }
 
 /**
@@ -257,15 +342,19 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
         s.voicedMsInSegment = 0;
     }
 
+    // The open segment is new — restart the preview clock for it.
+    s.previewedSamples = 0;
+
     if (!hadVoice) return; // pure silence — nothing to transcribe
 
     const index = s.segmentsQueued++;
     s.forced[index] = forced;
     diag.segmentClosed(forced);
     const sampleRate = s.sampleRate;
+    s.pendingDecodes++;
     s.queue = s.queue.then(async () => {
-        if (!transcriberFn || !s.healthy) return;
         try {
+            if (!transcriberFn || !s.healthy) return;
             const t0 = Date.now();
             const audio16k = resampleCubic(raw, sampleRate, 16000);
             const text = (await transcriberFn(audio16k)).trim();
@@ -282,6 +371,8 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
             s.healthy = false;
             diag.errored();
             diag.streamingFellBack();
+        } finally {
+            s.pendingDecodes--;
         }
     });
 }
