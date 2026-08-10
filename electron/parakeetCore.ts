@@ -715,6 +715,70 @@ function getMelFilterbank(sampleRate: number, nFft: number, nMels: number): { fi
  * frame count. The encoder length tensor should use validFrames, not
  * totalFrames, so that padding-contaminated edge frames are ignored.
  */
+/**
+ * Encoder input widths we round up to, in mel frames (100 frames ≈ 1s).
+ *
+ * NOT CURRENTLY USED IN THE PIPELINE — kept because the groundwork is sound
+ * and the question is worth reopening with better measurement.
+ *
+ * The theory: ONNX Runtime compiles an execution plan per input shape and
+ * caches it, so bucketing would let dictations reuse plans instead of
+ * recompiling. An isolated probe supported this strongly (RTX 3090 / DirectML:
+ * ~451ms on a new shape, ~65ms on a repeat, ~76ms when returning to an earlier
+ * shape). But an end-to-end benchmark over realistic dictation lengths did NOT
+ * reproduce the win: with only four distinct shapes, repeat uses still cost
+ * ~420-540ms, and the measured saving collapsed to ~38ms, inside the noise.
+ * The same shape measured fast in one harness and slow in another, which means
+ * the mechanism is not understood well enough to ship.
+ *
+ * What IS established: `padMelToBucket` is transcript-identical (see
+ * test/encoder-padding.test.ts), and the fill value is the subtle part — zeros
+ * and edge replication both shifted punctuation.
+ */
+const ENCODER_FRAME_BUCKETS = [300, 600, 1000, 1500, 2100, 2800];
+/** Past the largest bucket, round to this granularity to bound shape variety. */
+const ENCODER_BUCKET_STEP = 500;
+
+/** Smallest bucket that fits `frames`. */
+export function encoderBucketFrames(frames: number): number {
+    for (const b of ENCODER_FRAME_BUCKETS) if (frames <= b) return b;
+    return Math.ceil(frames / ENCODER_BUCKET_STEP) * ENCODER_BUCKET_STEP;
+}
+
+/**
+ * Widen mel features to a bucketed width so the encoder reuses a compiled plan.
+ *
+ * CRITICAL — the fill value. Padding with zeros changes the transcript: a
+ * log-mel frame of true silence is a large negative number, so zeros are
+ * out-of-distribution and leak through the encoder's attention, nudging
+ * marginal punctuation decisions ("…lazy dog, testing" became "…lazy dog.
+ * Testing"). Filling each mel bin with ITS OWN minimum from the real frames —
+ * that bin's observed silence floor — reproduces the unpadded transcript
+ * exactly. Edge replication was also tried and also altered the output.
+ *
+ * `validFrames` is unchanged; that is the input telling the encoder how much
+ * of the tensor is real audio.
+ */
+export function padMelToBucket(
+    features: Float32Array,
+    nFrames: number,
+    melBins = 128,
+): { features: Float32Array; frames: number } {
+    const target = encoderBucketFrames(nFrames);
+    if (target <= nFrames) return { features, frames: nFrames };
+
+    const out = new Float32Array(melBins * target);
+    for (let bin = 0; bin < melBins; bin++) {
+        const row = features.subarray(bin * nFrames, (bin + 1) * nFrames);
+        out.set(row, bin * target);
+        let floor = Infinity;
+        for (let t = 0; t < row.length; t++) if (row[t] < floor) floor = row[t];
+        if (!isFinite(floor)) floor = 0;
+        out.fill(floor, bin * target + nFrames, (bin + 1) * target);
+    }
+    return { features: out, frames: target };
+}
+
 export function computeMelSpectrogram(
     audio: Float32Array,
     sampleRate: number = 16000
