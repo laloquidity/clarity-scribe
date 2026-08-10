@@ -11,7 +11,7 @@ import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
 import * as streaming from './streamingTranscriber';
-import { transcribeParakeet, setVocabularyBoostTerms } from './parakeetService';
+import { transcribeParakeet, setVocabularyBoostTerms, isEncoderGpuVerified } from './parakeetService';
 import { startLocalApi, stopLocalApi, emitEvent, isRunning as isLocalApiRunning } from './localApi';
 import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow, getForegroundPid } from './winPaste';
 import { initHotkeyService, registerHotkeyService, registerCommandHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
@@ -1491,6 +1491,14 @@ app.whenReady().then(async () => {
                     emitEvent({ type: 'partial', text });
                 });
                 console.log('[Main] ✓ Live streaming transcription enabled');
+
+                // Mid-segment preview: decode the in-progress segment so words
+                // appear WHILE speaking, not only at each pause. Display-only,
+                // and gated on the init-verified GPU encoder (~300ms/decode) —
+                // on a CPU fallback each preview would cost seconds.
+                const preview = isEncoderGpuVerified();
+                streaming.setLivePreview(preview);
+                console.log(`[Main] Live preview (mid-segment): ${preview ? 'ENABLED' : 'disabled (encoder not GPU-verified)'}`);
 
                 // Decoder-level custom vocabulary from the Personal Dictionary
                 syncVocabularyBoost();
