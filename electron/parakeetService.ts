@@ -389,6 +389,9 @@ async function initParakeetOnnx(
             onProgress?.(98, 'Warming up...');
             const warmupStart = Date.now();
             padToFixedShape = gpuProvider === 'dml';
+            // State the decision outright. Diagnosing this from its absence
+            // cost a round of guesswork; an explicit line costs nothing.
+            console.log(`[Parakeet] Fixed encoder shape: ${padToFixedShape ? 'ENABLED' : 'disabled'} (provider "${gpuProvider}", width ${core.FIXED_ENCODER_FRAMES} frames)`);
             await transcribeSinglePass(new Float32Array(8000)); // 0.5s @ 16kHz — padded if flag set
             if (padToFixedShape) {
                 // Verify the encoder actually landed on the GPU: a warm run at
@@ -564,6 +567,9 @@ async function runSinglePass(audioData: Float32Array): Promise<{
     const padded = padToFixedShape
         ? core.padMelToWidth(features, nFrames, 128)
         : { features, frames: nFrames };
+    if (padToFixedShape && padded.frames !== nFrames) {
+        console.log(`[Parakeet] Encoder shape: ${nFrames} → ${padded.frames} frames (fixed)`);
+    }
 
     // audio_signal: [1, 128, frames] — full spectrogram including edge frames
     const audioTensor = new ort.Tensor('float32', padded.features, [1, 128, padded.frames]);
