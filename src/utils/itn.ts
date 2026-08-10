@@ -616,11 +616,33 @@ function applyCardinals(text: string): string {
 // Public API
 // ---------------------------------------------------------------------------
 
+export interface ITNOptions {
+    /**
+     * Convert spoken punctuation commands ("comma" → ",", "new line", quotes,
+     * parentheses). DEFAULT FALSE, and that default is the point.
+     *
+     * These commands belong to the Spoken Punctuation feature, which has its
+     * own setting and its own better implementation (src/utils/spokenPunctuation.ts:
+     * a token walk that REPLACES punctuation the model already wrote). The
+     * version here is naive regex substitution that does not, so with smart
+     * formatting on and spoken punctuation off, a user who merely SAID the
+     * word "period" got the model's punctuation and ours, both:
+     *   "…about that time period?"  →  "…about that time.?"
+     *   "…is off comma, it's still" →  "…is off,, it's still"
+     * Reported from real dictation 2026-08-10. Smart formatting must mean
+     * numbers, currency, times, and dates — nothing else.
+     *
+     * Pass true only when the Spoken Punctuation setting is on; it then adds
+     * the forms the token walk lacks (parentheses, quotes, "dash").
+     */
+    punctuation?: boolean;
+}
+
 /**
  * Apply Inverse Text Normalization to a transcript.
  *
  * Order matters:
- *   1. Punctuation commands.
+ *   1. Punctuation commands — ONLY with opts.punctuation (see ITNOptions).
  *   2. Currency  (consumes "<n> dollars" before cardinals touch "<n>").
  *   3. Times     (consumes "<n> <n> am" before cardinals).
  *   4. Dates     (consumes "<month> <ordinal>" before ordinals/cardinals).
@@ -630,11 +652,13 @@ function applyCardinals(text: string): string {
  * Idempotent and conservative: already-written text returns unchanged, and
  * applying twice equals applying once.
  */
-export function applyITN(text: string): string {
+export function applyITN(text: string, opts: ITNOptions = {}): string {
     if (!text || text.trim().length === 0) return text;
 
     let out = text;
-    out = applyPunctuation(out);
+    // Punctuation commands belong to the SPOKEN PUNCTUATION feature, not to
+    // smart formatting — see ITNOptions. Off unless the caller opts in.
+    if (opts.punctuation) out = applyPunctuation(out);
     out = applyCurrency(out);
     out = applyTimes(out);
     out = applyDates(out);

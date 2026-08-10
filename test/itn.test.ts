@@ -8,37 +8,71 @@ function expectIdempotent(input: string) {
     expect(twice).toBe(once);
 }
 
-describe('applyITN — punctuation commands', () => {
+/** Punctuation commands are opt-in — this is the caller that asked for them. */
+const punct = (s: string) => applyITN(s, { punctuation: true });
+
+describe('applyITN — punctuation commands (opt-in)', () => {
     it('converts standalone comma attached to preceding word', () => {
-        expect(applyITN('hello comma world')).toBe('hello, world');
+        expect(punct('hello comma world')).toBe('hello, world');
     });
     it('converts period and full stop', () => {
-        expect(applyITN('done period')).toBe('done.');
-        expect(applyITN('done full stop')).toBe('done.');
+        expect(punct('done period')).toBe('done.');
+        expect(punct('done full stop')).toBe('done.');
     });
     it('converts question mark and exclamation mark/point', () => {
-        expect(applyITN('really question mark')).toBe('really?');
-        expect(applyITN('wow exclamation mark')).toBe('wow!');
-        expect(applyITN('wow exclamation point')).toBe('wow!');
+        expect(punct('really question mark')).toBe('really?');
+        expect(punct('wow exclamation mark')).toBe('wow!');
+        expect(punct('wow exclamation point')).toBe('wow!');
     });
     it('converts colon and semicolon', () => {
-        expect(applyITN('note colon here')).toBe('note: here');
-        expect(applyITN('apples semicolon oranges')).toBe('apples; oranges');
+        expect(punct('note colon here')).toBe('note: here');
+        expect(punct('apples semicolon oranges')).toBe('apples; oranges');
     });
     it('converts new line and new paragraph', () => {
-        expect(applyITN('line one new line line two')).toBe('line one\nline two');
-        expect(applyITN('para one new paragraph para two')).toBe('para one\n\npara two');
-        expect(applyITN('a newline b')).toBe('a\nb');
+        expect(punct('line one new line line two')).toBe('line one\nline two');
+        expect(punct('para one new paragraph para two')).toBe('para one\n\npara two');
+        expect(punct('a newline b')).toBe('a\nb');
     });
     it('converts parens and quotes', () => {
-        expect(applyITN('open paren note close paren')).toBe('(note)');
-        expect(applyITN('open quote hi close quote')).toBe('"hi"');
+        expect(punct('open paren note close paren')).toBe('(note)');
+        expect(punct('open quote hi close quote')).toBe('"hi"');
     });
     it('converts hyphen and dash', () => {
-        expect(applyITN('state hyphen of hyphen the art')).toContain('-');
+        expect(punct('state hyphen of hyphen the art')).toContain('-');
     });
     it('does not invent leading space before attached punctuation', () => {
-        expect(applyITN('yes comma no')).toBe('yes, no');
+        expect(punct('yes comma no')).toBe('yes, no');
+    });
+});
+
+describe('applyITN — smart formatting alone NEVER touches punctuation words', () => {
+    // Regression: smart formatting shipped with its own naive punctuation
+    // substitution that ignored the Spoken Punctuation setting AND ignored
+    // punctuation the model had already written, so it doubled it. Reported
+    // from real dictation 2026-08-10 with spokenPunctuation:false,
+    // itnEnabled:true. Both strings below are verbatim from that report.
+    it('leaves a spoken "period" alone instead of doubling the model\'s "?"', () => {
+        expect(applyITN('What do you think about that time period?'))
+            .toBe('What do you think about that time period?');
+    });
+    it('does not turn a spoken "comma" into a second comma', () => {
+        expect(applyITN('the spoken punctuation is off comma, it is still functioning.'))
+            .toBe('the spoken punctuation is off comma, it is still functioning.');
+    });
+    it('leaves every other punctuation command word untouched', () => {
+        for (const s of [
+            'done period', 'hello comma world', 'really question mark',
+            'note colon here', 'line one new line line two',
+            'open paren note close paren', 'state hyphen of hyphen the art',
+        ]) {
+            expect(applyITN(s)).toBe(s);
+        }
+    });
+    it('still formats numbers, currency, times and dates', () => {
+        // The point of the split: smart formatting keeps doing its actual job.
+        expect(applyITN('twenty three')).toBe('23');
+        expect(applyITN('five dollars and fifty cents')).toBe('$5.50');
+        expect(applyITN('two thirty pm')).toBe('2:30 PM');
     });
 });
 
@@ -211,13 +245,13 @@ describe('applyITN — already-written / negative passthrough', () => {
 
 describe('applyITN — combined / realistic sentences', () => {
     it('mixes punctuation and numbers', () => {
-        expect(applyITN('I owe you twenty three dollars period')).toBe('I owe you $23.');
+        expect(punct('I owe you twenty three dollars period')).toBe('I owe you $23.');
     });
     it('handles a meeting sentence', () => {
         expect(applyITN('lets meet january fifth at nine am')).toBe('lets meet January 5 at 9 AM');
     });
     it('handles a list with new lines', () => {
-        expect(applyITN('one new line two new line three')).toBe('one\ntwo\nthree');
+        expect(punct('one new line two new line three')).toBe('one\ntwo\nthree');
     });
 });
 
@@ -225,15 +259,15 @@ describe('applyITN — line-break commands absorb ASR punctuation', () => {
     it('drops the period the ASR attached to the spoken command', () => {
         // Real artifact from dictation: "…thing. New line. I added" produced
         // "thing.\n. I added" — the "." after the command must be absorbed.
-        expect(applyITN('one more thing. New line. I added the feature'))
+        expect(punct('one more thing. New line. I added the feature'))
             .toBe('one more thing.\nI added the feature');
     });
     it('drops a comma attached to the command', () => {
-        expect(applyITN('when I tell you new line, it actually works'))
+        expect(punct('when I tell you new line, it actually works'))
             .toBe('when I tell you\nit actually works');
     });
     it('keeps the sentence-final punctuation BEFORE the command', () => {
-        expect(applyITN('done. new paragraph. Next topic'))
+        expect(punct('done. new paragraph. Next topic'))
             .toBe('done.\n\nNext topic');
     });
 });

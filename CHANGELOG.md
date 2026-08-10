@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### 🐛 Fixes
+
+- **Smart formatting no longer converts punctuation words behind the Spoken Punctuation setting's back.** Two separate features were converting spoken punctuation, and only one of them had a toggle. With Spoken Punctuation **off** and Smart formatting **on**, saying the ordinary word "period" or "comma" still produced a symbol — and because smart formatting used plain regex substitution rather than the token walk that replaces punctuation the model already wrote, it emitted **both**: "…about that time period?" became "…about that time.?", and "…is off comma, it's still" became "…is off,, it's still". Punctuation conversion is now opt-in inside ITN (`applyITN(text, { punctuation })`) and is passed through only when Spoken Punctuation is on, so smart formatting means numbers, currency, times, and dates — exactly what its description promised. Guarded by tests using the verbatim reported strings.
+
+---
+
 ## v3.8.0 — Custom vocabulary that reaches the decoder
 
 ### ✨ New Features
