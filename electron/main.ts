@@ -48,6 +48,7 @@ interface HistoryEntry {
     app: string;
     audioMs?: number;   // recorded audio duration
     latencyMs?: number; // stop→pasted (transcription + paste)
+    captureLatencyMs?: number; // press→first sample: speech missed at the start
     kind?: 'command';   // spoken command (app = tool name); absent = dictation
 }
 
@@ -311,6 +312,14 @@ function logDictationSummary(entry: HistoryEntry): void {
         `[Main] ⏱ Dictation: ${formatAudioLength(audioMs / 1000)} audio · ` +
         `${latencyMs}ms end-to-end (stop → pasted) · ${multiple.toFixed(0)}× real-time`
     );
+    // Startup latency is measured in the renderer, whose console does not reach
+    // this terminal — so report it here. This is the window where the user was
+    // already speaking but the microphone was not yet capturing.
+    const capture = entry.captureLatencyMs;
+    if (capture && capture > 0) {
+        const verdict = capture <= 100 ? 'good' : capture <= 250 ? 'noticeable' : 'HIGH — first words likely lost';
+        console.log(`[Main] ⏱ Capture start: ${capture}ms after press (${verdict})`);
+    }
 }
 
 // --- Command mode (voice → action) ---

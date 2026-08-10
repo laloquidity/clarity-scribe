@@ -85,7 +85,7 @@ const App: React.FC = () => {
 
     // Per-dictation metrics (audio length + stop instant), captured when audio
     // is handed to the engine and consumed when the result is pasted.
-    const pendingMetricsRef = useRef<{ audioMs: number; stoppedAt: number } | null>(null);
+    const pendingMetricsRef = useRef<{ audioMs: number; stoppedAt: number; captureLatencyMs?: number } | null>(null);
 
     // Audio recording — disable silence detection in hold-to-talk mode
     const { startRecording, stopRecording, isRecordingRef } = useAudioRecording({
@@ -404,6 +404,7 @@ const App: React.FC = () => {
                 app: targetAppName,
                 audioMs: metrics?.audioMs,
                 latencyMs: metrics ? Date.now() - metrics.stoppedAt : undefined,
+                captureLatencyMs: metrics?.captureLatencyMs,
                 // Why a paste fell back to the clipboard. The widget shows this
                 // for 2 seconds and it was gone — undebuggable after the fact.
                 // Stored, "app: clipboard" entries carry their own explanation.

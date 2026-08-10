@@ -17,7 +17,7 @@ interface UseAudioRecordingOptions {
      * is the instant the user stopped recording, so the consumer can measure
      * true stop→pasted latency once the result lands.
      */
-    onRecordingComplete?: (metrics: { audioMs: number; stoppedAt: number }) => void;
+    onRecordingComplete?: (metrics: { audioMs: number; stoppedAt: number; captureLatencyMs: number }) => void;
 }
 
 export function useAudioRecording(options: UseAudioRecordingOptions) {
@@ -41,6 +41,8 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     const recordPressedAtRef = useRef<number>(0);
     const micOpenMsRef = useRef<number>(0);
     const firstAudioLoggedRef = useRef<boolean>(false);
+    /** Press → first captured sample. The width of the window where speech is lost. */
+    const captureLatencyMsRef = useRef<number>(0);
     const isRecordingRef = useRef(false);
     const isToggleBusyRef = useRef(false);
     const silenceIntervalRef = useRef<number | null>(null);
@@ -209,6 +211,10 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
                         onRecordingCompleteRef.current?.({
                             audioMs: Math.round((processedAudio.length / 16000) * 1000),
                             stoppedAt: stoppedAtRef.current,
+                            // How much speech the mic missed at the start. Logged
+                            // in the main process so it lands in the terminal with
+                            // everything else — renderer console output does not.
+                            captureLatencyMs: Math.round(captureLatencyMsRef.current),
                         });
                         // If a streaming session ran during recording, the main
                         // process finalizes it inside 'transcribe' (tail only);
@@ -334,11 +340,7 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
                 if (event.data.type === 'audio' && event.data.buffer) {
                     if (!firstAudioLoggedRef.current) {
                         firstAudioLoggedRef.current = true;
-                        const total = Math.round(performance.now() - recordPressedAtRef.current);
-                        console.log(
-                            `[Audio] Capture started ${total}ms after press ` +
-                            `(mic open ${Math.round(micOpenMsRef.current)}ms) — speech before this was not recorded`
-                        );
+                        captureLatencyMsRef.current = performance.now() - recordPressedAtRef.current;
                     }
                     audioBuffersRef.current.push(event.data.buffer);
                     if (streamingActiveRef.current) {
