@@ -26,8 +26,14 @@ describe('assessDecode — the reported failure', () => {
         expect(assessDecode(stats({ lastTokenFrame: 60, totalFrames: 85, collapseRecoveries: 1 })).degraded).toBe(true);
     });
 
-    it('flags a large dead tail even with no collapse logged', () => {
-        expect(assessDecode(stats({ lastTokenFrame: 30, totalFrames: 85 })).degraded).toBe(true);
+    it('does NOT flag a large dead tail on its own — that is ordinary silence', () => {
+        // Regression: this fired on a real dictation ending "Thank you." —
+        // 0.5s of speech then 1.9s of genuine trailing silence (80% tail) —
+        // and cost 3.1s rebuilding sessions to produce the same correct text.
+        expect(assessDecode({
+            lastTokenFrame: 6, totalFrames: 30, collapseRecoveries: 0, blankRatio: 0.692,
+        }).degraded).toBe(false);
+        expect(assessDecode(stats({ lastTokenFrame: 30, totalFrames: 85 })).degraded).toBe(false);
     });
 
     it('flags near-total blanks', () => {

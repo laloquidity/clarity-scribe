@@ -543,7 +543,15 @@ function applyOrdinals(text: string): string {
     // second" — where "2nd" would be wrong. Ordinal readings ("the second
     // option", "second place") still convert. Per design principle #1
     // (CONSERVATIVE), the ambiguous "a second X" stays unconverted.
-    const SECOND_DURATION_PRECEDERS = new Set(['per', 'a', 'one']);
+    // A COUNT before "second" makes it a unit of time, not a position: "five
+    // second recording" is a duration, and turning it into "five 2nd recording"
+    // is nonsense. This missed real dictations ("a quick five second
+    // recording", "a fifteen second recording") because the guard was a short
+    // literal list. Any cardinal — spelled or already digitised by an earlier
+    // ITN pass — now counts.
+    const SECOND_DURATION_PRECEDERS = new Set(['per', 'a', 'an', 'every', 'each']);
+    const isCount = (w: string): boolean =>
+        /^\d+$/.test(w) || w in ONES || w in TENS || w in SCALES;
     const reSimple = new RegExp(`\\b(${ordAlt})\\b`, 'gi');
     out = out.replace(reSimple, (match, ord: string, offset: number, whole: string) => {
         const n = ORDINAL_WORDS[ord.toLowerCase()];
@@ -551,7 +559,7 @@ function applyOrdinals(text: string): string {
         if (ord.toLowerCase() === 'second') {
             const before = whole.slice(0, offset).trimEnd();
             const prevWord = before.slice(before.lastIndexOf(' ') + 1).toLowerCase();
-            if (SECOND_DURATION_PRECEDERS.has(prevWord)) return match;
+            if (SECOND_DURATION_PRECEDERS.has(prevWord) || isCount(prevWord)) return match;
         }
         return `${n}${ordinalSuffix(n)}`;
     });

@@ -98,6 +98,16 @@ describe('applyITN — ordinals', () => {
         expect(applyITN('second place')).toBe('2nd place');
         expect(applyITN('second')).toBe('2nd');
     });
+
+    it('treats any count before "second" as a duration, not an ordinal', () => {
+        // Caught in real dictation: "a quick five second recording" was being
+        // written as "five 2nd recording". ("five" itself stays spelled out —
+        // standalone cardinals under ten are left as words by design.)
+        expect(applyITN('a quick five second recording')).toBe('a quick five second recording');
+        expect(applyITN('a fifteen second recording')).toBe('a 15 second recording');
+        expect(applyITN('a ten second delay')).toBe('a 10 second delay');
+        expect(applyITN('every second counts')).toBe('every second counts');
+    });
 });
 
 describe('applyITN — currency', () => {
