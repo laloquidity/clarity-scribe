@@ -1,19 +1,18 @@
 /**
- * Does padding the encoder input change the transcript?
+ * Does padding the encoder input to the ONE fixed shape change the transcript?
  *
- * WHY IT MATTERS. Measured on this machine (RTX 3090, DirectML): the encoder
- * costs ~72ms when the input shape has been seen before and ~451ms when it is
- * new, and returning to an earlier shape drops back to ~76ms. DirectML
- * compiles an execution plan per input shape and caches it. Every dictation
- * has a different length, so every dictation is a new shape and pays a full
- * recompile — roughly 375ms of waste on each one.
+ * WHY IT MATTERS. Established by direct experiment (RTX 3090, DirectML): the
+ * DirectML provider compiles its fused graph for the FIRST input shape a
+ * session runs and re-JITs on every run whose shape differs — two sessions
+ * interleaving shapes 600/1000 each kept ONLY their warmup shape fast (~62ms
+ * vs ~410ms), exactly inverted between the sessions. Every dictation used to
+ * be a unique shape, so every dictation paid the recompile.
  *
- * The fix is to round the input up to one of a few fixed sizes so the plan is
- * reused. That is only legitimate if padding does NOT change what the model
- * outputs. The encoder takes a separate `length` input for exactly this
- * reason, and our batch path already relies on it to pad segments to a common
- * width — but "already relied upon" is not the same as verified, so this test
- * checks the transcript itself.
+ * The fix pads all inputs to FIXED_ENCODER_FRAMES. That is only legitimate if
+ * padding does NOT change what the model outputs — and the fill value is the
+ * subtle part: zero-fill and edge-replication both shifted punctuation; the
+ * per-bin silence floor reproduces the unpadded transcript exactly. This test
+ * guards that on real audio through the real pipeline.
  *
  * Opt-in (RUN_E2E=1): loads real models and runs the full pipeline.
  */
@@ -48,10 +47,10 @@ function loadAudio(): Float32Array {
  * `padToFrames`. `validFrames` is left untouched — that is the input telling
  * the encoder how much of the tensor is real audio.
  */
-async function transcribe(audio: Float32Array, bucketed: boolean): Promise<string> {
+async function transcribe(audio: Float32Array, padToFixed: boolean): Promise<string> {
     const { features, nFrames, validFrames } = core.computeMelSpectrogram(audio, 16000);
-    const padded = bucketed
-        ? core.padMelToBucket(features, nFrames, 128)
+    const padded = padToFixed
+        ? core.padMelToWidth(features, nFrames, 128)
         : { features, frames: nFrames };
     const feats = padded.features;
     const frames = padded.frames;
@@ -81,61 +80,61 @@ describe.skipIf(!RUN_E2E || !ready)('encoder input padding', () => {
         expect(await transcribe(loadAudio(), false)).toBe(String(golden.text).trim());
     }, 180_000);
 
-    it('produces an IDENTICAL transcript when bucketed', async () => {
+    it('produces an IDENTICAL transcript when padded to the fixed shape', async () => {
         // The whole optimisation rests on this. If it ever fails, the fill
         // value is wrong — zeros and edge-replication both shifted punctuation
         // ("…lazy dog, testing" → "…lazy dog. Testing"); the per-bin silence
-        // floor is what reproduces the original exactly.
+        // floor is what reproduces the original exactly. This runs the exact
+        // production path: 7.3s of real audio padded to FIXED_ENCODER_FRAMES.
         const golden = String(JSON.parse(readFileSync(GOLDEN, 'utf-8')).text).trim();
         expect(await transcribe(loadAudio(), true)).toBe(golden);
     }, 180_000);
 });
 
-describe('encoder bucketing (pure)', () => {
-    it('rounds up to the smallest bucket that fits', () => {
-        expect(core.encoderBucketFrames(1)).toBe(300);
-        expect(core.encoderBucketFrames(300)).toBe(300);
-        expect(core.encoderBucketFrames(301)).toBe(600);
-        expect(core.encoderBucketFrames(733)).toBe(1000);
-        expect(core.encoderBucketFrames(2800)).toBe(2800);
-    });
-
-    it('collapses many recording lengths onto few shapes', () => {
-        // The point of the exercise: 1s–28s of audio must not produce 28
-        // different encoder shapes.
-        const shapes = new Set<number>();
-        for (let f = 50; f <= 2800; f += 7) shapes.add(core.encoderBucketFrames(f));
-        expect(shapes.size).toBeLessThanOrEqual(6);
-    });
-
-    it('rounds to a fixed step beyond the largest bucket', () => {
-        expect(core.encoderBucketFrames(3000)).toBe(3000);
-        expect(core.encoderBucketFrames(3001)).toBe(3500);
-    });
-
+describe('fixed-width padding (pure)', () => {
     it('pads with each bin\'s own floor, leaves real frames untouched', () => {
-        const nFrames = 4, bins = 2;
+        const nFrames = 4, bins = 2, target = 8;
         const feats = new Float32Array([
             -1, -5, -2, -3,   // bin 0: min -5
             -10, -8, -9, -7,  // bin 1: min -10
         ]);
-        const { features: out, frames } = core.padMelToBucket(feats, nFrames, bins);
-        expect(frames).toBe(300);
+        const { features: out, frames } = core.padMelToWidth(feats, nFrames, bins, target);
+        expect(frames).toBe(target);
         // Real frames preserved verbatim.
         expect(Array.from(out.subarray(0, 4))).toEqual([-1, -5, -2, -3]);
-        expect(Array.from(out.subarray(300, 304))).toEqual([-10, -8, -9, -7]);
+        expect(Array.from(out.subarray(target, target + 4))).toEqual([-10, -8, -9, -7]);
         // Padding is that bin's floor — never zero, which would be out of
         // distribution for log-mel and would change the transcript.
-        expect(out[4]).toBe(-5);
-        expect(out[299]).toBe(-5);
-        expect(out[304]).toBe(-10);
-        expect(out[599]).toBe(-10);
+        expect(Array.from(out.subarray(4, target))).toEqual([-5, -5, -5, -5]);
+        expect(Array.from(out.subarray(target + 4, 2 * target))).toEqual([-10, -10, -10, -10]);
     });
 
-    it('returns the input untouched when it already fills a bucket', () => {
-        const feats = new Float32Array(128 * 300).fill(-4);
-        const r = core.padMelToBucket(feats, 300, 128);
-        expect(r.frames).toBe(300);
-        expect(r.features).toBe(feats); // same reference — no copy
+    it('defaults to the one fixed production width', () => {
+        const nFrames = 100;
+        const feats = new Float32Array(128 * nFrames).fill(-4);
+        const r = core.padMelToWidth(feats, nFrames, 128);
+        expect(r.frames).toBe(core.FIXED_ENCODER_FRAMES);
+    });
+
+    it('leaves audio longer than the fixed width at its natural shape', () => {
+        // A >28s single-pass input pays the recompile — rare and amortized.
+        // Truncating it instead would DROP SPEECH, which is never acceptable.
+        const nFrames = core.FIXED_ENCODER_FRAMES + 100;
+        const feats = new Float32Array(128 * nFrames).fill(-4);
+        const r = core.padMelToWidth(feats, nFrames, 128);
+        expect(r.frames).toBe(nFrames);
+        expect(r.features).toBe(feats); // same reference — untouched
+    });
+
+    it('the fixed width covers every streaming segment', async () => {
+        // Streaming hard-caps segments at MAX_SEGMENT_MS; if that cap ever
+        // grows past the fixed width, segments would silently start paying
+        // the per-shape recompile again. Fail loudly here instead.
+        const src = await import('fs').then(f =>
+            f.readFileSync('electron/streamingTranscriber.ts', 'utf-8'));
+        const m = src.match(/MAX_SEGMENT_MS\s*=\s*([\d_]+)/);
+        expect(m, 'MAX_SEGMENT_MS not found').toBeTruthy();
+        const maxSegmentFrames = (parseInt(m![1].replace(/_/g, ''), 10) / 1000) * 100;
+        expect(core.FIXED_ENCODER_FRAMES).toBeGreaterThanOrEqual(maxSegmentFrames);
     });
 });

@@ -379,10 +379,31 @@ async function initParakeetOnnx(
 
         // Warm up the graphs so the FIRST dictation doesn't pay cold-start cost
         // (kernel init, CPU memory-arena allocation). Non-fatal on failure.
+        //
+        // On DML this warmup also CLAIMS THE STICKY SHAPE: the provider keeps
+        // its compiled plan for the first shape a session runs, so the warmup
+        // must run the exact fixed shape every dictation will use — the old
+        // 0.5s warmup pinned a shape no real dictation matched, which made the
+        // ~400ms recompile a certainty on every single dictation.
         try {
             onProgress?.(98, 'Warming up...');
             const warmupStart = Date.now();
-            await transcribeSinglePass(new Float32Array(8000)); // 0.5s @ 16kHz
+            padToFixedShape = gpuProvider === 'dml';
+            await transcribeSinglePass(new Float32Array(8000)); // 0.5s @ 16kHz — padded if flag set
+            if (padToFixedShape) {
+                // Verify the encoder actually landed on the GPU: a warm run at
+                // the fixed shape is ~115ms there and ~1.3s on a silent CPU
+                // fallback, where padding would be an 8x regression.
+                const t0 = Date.now();
+                await transcribeSinglePass(new Float32Array(8000));
+                const warmMs = Date.now() - t0;
+                if (warmMs > FIXED_SHAPE_WARM_LIMIT_MS) {
+                    padToFixedShape = false;
+                    console.warn(`[Parakeet] Fixed-shape encode took ${warmMs}ms warm — encoder is not on the GPU; padding disabled`);
+                } else {
+                    console.log(`[Parakeet] ✓ Fixed encoder shape active (warm ${warmMs}ms)`);
+                }
+            }
             console.log(`[Parakeet] ✓ Warmup complete (${Date.now() - warmupStart}ms)`);
         } catch (e) {
             console.warn('[Parakeet] Warmup failed (non-fatal):', e);
@@ -420,6 +441,22 @@ async function initParakeetOnnx(
  * did. This is that restart, scoped to the sessions and done in about a
  * second. Returns false if re-creation fails (we then keep what we have).
  */
+/**
+ * Pad every single-pass encode to the ONE fixed shape (FIXED_ENCODER_FRAMES)?
+ *
+ * True only where it wins: the DirectML provider compiles its plan for the
+ * first shape a session runs and re-JITs every differing run (~350-450ms per
+ * dictation, proven by inverted-warmup experiment). On CPU the same padding
+ * is an outright REGRESSION — 165ms → 1,315ms measured for a 3s clip — so
+ * this must never be on for a CPU encoder. Set during init: requested DML,
+ * then verified by timing a warm fixed-shape run (GPU ~115ms, CPU ~1.3s), so
+ * a machine where DML silently fell back to CPU turns it off. A wrong "off"
+ * costs nothing versus today; a wrong "on" would be the 8x regression.
+ */
+let padToFixedShape = false;
+/** Warm run slower than this means the encoder is NOT on the GPU. */
+const FIXED_SHAPE_WARM_LIMIT_MS = 700;
+
 /** When the current inference sessions were created (for preventive refresh). */
 let sessionsBuiltAt = 0;
 /** Transcriptions currently reading the sessions — never rebuild above zero. */
@@ -458,7 +495,13 @@ function maybeRefreshSessions(): void {
     const ageHours = ((Date.now() - sessionsBuiltAt) / 3_600_000).toFixed(1);
     console.log(`[Parakeet] Preventive refresh: sessions are ${ageHours}h old, rebuilding while idle`);
     diag.sessionRefreshed();
-    void rebuildSessions();
+    void rebuildSessions().then((ok) => {
+        // A fresh session has no compiled plan, and DirectML pins its fast
+        // path to the FIRST shape it runs — so claim the sticky slot with the
+        // one fixed production shape now, while idle, instead of letting the
+        // next dictation pay the ~400ms compile.
+        if (ok) return runSinglePass(new Float32Array(8000)).then(() => undefined);
+    }).catch(() => { /* next dictation warms it instead */ });
 }
 
 /**
@@ -511,8 +554,19 @@ async function runSinglePass(audioData: Float32Array): Promise<{
     const { features, nFrames, validFrames } = core.computeMelSpectrogram(audioData, 16000);
     const melTime = Date.now() - melStart;
 
-    // audio_signal: [1, 128, totalFrames] — full spectrogram including edge frames
-    const audioTensor = new ort.Tensor('float32', features, [1, 128, nFrames]);
+    // Pad the mel width to the ONE fixed encoder shape (DML only — see
+    // padToFixedShape). DirectML compiles its plan for the first shape a
+    // session runs and re-JITs every run whose shape differs (~350-450ms each)
+    // — one fixed shape removes that entirely (~115ms warm at 2800 frames,
+    // measured). Transcript-identical: the fill is each bin's own silence
+    // floor, and validFrames still tells the encoder how much is real.
+    // Longer inputs run at natural shape (rare; amortized).
+    const padded = padToFixedShape
+        ? core.padMelToWidth(features, nFrames, 128)
+        : { features, frames: nFrames };
+
+    // audio_signal: [1, 128, frames] — full spectrogram including edge frames
+    const audioTensor = new ort.Tensor('float32', padded.features, [1, 128, padded.frames]);
     // length: valid frame count only — encoder ignores padding-contaminated edge frames
     // Reference: onnx-asr numpy_preprocessor.py:174 (features_lens = waveforms_lens // hop_length)
     const lengthTensor = new ort.Tensor('int64', BigInt64Array.from([BigInt(validFrames)]), [1]);

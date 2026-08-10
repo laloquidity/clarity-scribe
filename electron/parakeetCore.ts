@@ -716,37 +716,31 @@ function getMelFilterbank(sampleRate: number, nFft: number, nMels: number): { fi
  * totalFrames, so that padding-contaminated edge frames are ignored.
  */
 /**
- * Encoder input widths we round up to, in mel frames (100 frames ≈ 1s).
+ * The ONE encoder input width, in mel frames (100 frames ≈ 1s of audio).
  *
- * NOT CURRENTLY USED IN THE PIPELINE — kept because the groundwork is sound
- * and the question is worth reopening with better measurement.
+ * THE MECHANISM, established by direct experiment on RTX 3090 / DirectML:
+ * ONNX Runtime's DirectML provider compiles its fused graph for the FIRST
+ * input shape a session runs, and re-JITs on EVERY run whose shape differs —
+ * there is no multi-shape plan cache. Proof: two fresh sessions interleaving
+ * shapes 600 and 1000 — the session warmed on 600 ran 600 at ~62ms and 1000
+ * at ~410ms on every alternation; the session warmed on 1000 showed the exact
+ * inverse (~70ms / ~420ms). The fast shape follows the warmup shape.
  *
- * The theory: ONNX Runtime compiles an execution plan per input shape and
- * caches it, so bucketing would let dictations reuse plans instead of
- * recompiling. An isolated probe supported this strongly (RTX 3090 / DirectML:
- * ~451ms on a new shape, ~65ms on a repeat, ~76ms when returning to an earlier
- * shape). But an end-to-end benchmark over realistic dictation lengths did NOT
- * reproduce the win: with only four distinct shapes, repeat uses still cost
- * ~420-540ms, and the measured saving collapsed to ~38ms, inside the noise.
- * The same shape measured fast in one harness and slow in another, which means
- * the mechanism is not understood well enough to ship.
+ * Every dictation has a unique length, so every dictation was a new shape
+ * paying a ~350-450ms recompile — and the init warmup (0.5s of audio) made it
+ * structurally certain by claiming the sticky slot with a shape no real
+ * dictation ever matches.
  *
- * What IS established: `padMelToBucket` is transcript-identical (see
- * test/encoder-padding.test.ts), and the fill value is the subtle part — zeros
- * and edge replication both shifted punctuation.
+ * The fix: ONE fixed width, always. Warm cost is nearly flat in width (300
+ * frames ≈ 59ms, 2800 ≈ 115ms measured warm), so padding everything to the
+ * 28s streaming-segment cap costs little and removes recompilation entirely.
+ * Inputs longer than this (single-pass audio up to 60s) run at natural shape
+ * and pay the recompile — rare, and amortized over a long recording.
  */
-const ENCODER_FRAME_BUCKETS = [300, 600, 1000, 1500, 2100, 2800];
-/** Past the largest bucket, round to this granularity to bound shape variety. */
-const ENCODER_BUCKET_STEP = 500;
-
-/** Smallest bucket that fits `frames`. */
-export function encoderBucketFrames(frames: number): number {
-    for (const b of ENCODER_FRAME_BUCKETS) if (frames <= b) return b;
-    return Math.ceil(frames / ENCODER_BUCKET_STEP) * ENCODER_BUCKET_STEP;
-}
+export const FIXED_ENCODER_FRAMES = 2800;
 
 /**
- * Widen mel features to a bucketed width so the encoder reuses a compiled plan.
+ * Widen mel features to `targetFrames` so the encoder always sees one shape.
  *
  * CRITICAL — the fill value. Padding with zeros changes the transcript: a
  * log-mel frame of true silence is a large negative number, so zeros are
@@ -759,24 +753,24 @@ export function encoderBucketFrames(frames: number): number {
  * `validFrames` is unchanged; that is the input telling the encoder how much
  * of the tensor is real audio.
  */
-export function padMelToBucket(
+export function padMelToWidth(
     features: Float32Array,
     nFrames: number,
     melBins = 128,
+    targetFrames = FIXED_ENCODER_FRAMES,
 ): { features: Float32Array; frames: number } {
-    const target = encoderBucketFrames(nFrames);
-    if (target <= nFrames) return { features, frames: nFrames };
+    if (targetFrames <= nFrames) return { features, frames: nFrames };
 
-    const out = new Float32Array(melBins * target);
+    const out = new Float32Array(melBins * targetFrames);
     for (let bin = 0; bin < melBins; bin++) {
         const row = features.subarray(bin * nFrames, (bin + 1) * nFrames);
-        out.set(row, bin * target);
+        out.set(row, bin * targetFrames);
         let floor = Infinity;
         for (let t = 0; t < row.length; t++) if (row[t] < floor) floor = row[t];
         if (!isFinite(floor)) floor = 0;
-        out.fill(floor, bin * target + nFrames, (bin + 1) * target);
+        out.fill(floor, bin * targetFrames + nFrames, (bin + 1) * targetFrames);
     }
-    return { features: out, frames: target };
+    return { features: out, frames: targetFrames };
 }
 
 export function computeMelSpectrogram(
