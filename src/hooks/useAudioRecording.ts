@@ -5,6 +5,7 @@
 import { useRef, useEffect, useCallback } from 'react';
 import type { Settings, AppState } from '../types';
 import { retainAudioContext, releaseAudioContext } from '../utils/audioContextManager';
+import { ensureRecorderWorklet, primeRecorderWorklet, PROCESSOR_NAME } from '../utils/recorderWorklet';
 
 interface UseAudioRecordingOptions {
     settings: Settings;
@@ -34,6 +35,12 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     const processorRef = useRef<AudioWorkletNode | null>(null);
     const audioBuffersRef = useRef<Float32Array[]>([]);
     const streamCleanupRef = useRef<MediaStream | null>(null);
+    // Startup latency instrumentation. Any time between the key press and the
+    // first captured sample is speech that was never recorded, so we measure it
+    // rather than assume it is small.
+    const recordPressedAtRef = useRef<number>(0);
+    const micOpenMsRef = useRef<number>(0);
+    const firstAudioLoggedRef = useRef<boolean>(false);
     const isRecordingRef = useRef(false);
     const isToggleBusyRef = useRef(false);
     const silenceIntervalRef = useRef<number | null>(null);
@@ -71,6 +78,9 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     // Sound context for silence detection
     useEffect(() => {
         soundContextRef.current = retainAudioContext();
+        // Register the capture processor now, while the app is idle, so the
+        // FIRST dictation of the session doesn't pay for it mid-speech.
+        primeRecorderWorklet(soundContextRef.current);
         return () => {
             releaseAudioContext();
             soundContextRef.current = null;
@@ -264,6 +274,8 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     const startRecording = useCallback(async () => {
         if (isToggleBusyRef.current) return;
         isToggleBusyRef.current = true;
+        recordPressedAtRef.current = performance.now();
+        firstAudioLoggedRef.current = false;
 
         try {
             const constraints = {
@@ -278,50 +290,24 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
                 },
             };
 
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            streamCleanupRef.current = stream;
-
+            // Open the mic and make sure the capture processor is registered
+            // CONCURRENTLY. These are independent, and every millisecond spent
+            // here is speech we never hear — the user is already talking.
+            // Registration is normally already done (primed at app start), in
+            // which case it resolves instantly and this is just getUserMedia.
             const audioCtx = retainAudioContext();
             audioContextRef.current = audioCtx;
 
-            // Register AudioWorklet processor via inline Blob URL
-            // (Vite doesn't bundle AudioWorklet modules for production builds)
-            const processorCode = `
-class AudioRecorderProcessor extends AudioWorkletProcessor {
-    constructor() {
-        super();
-        this._isRecording = true;
-        this.port.onmessage = (event) => {
-            if (event.data.command === 'stop') this._isRecording = false;
-            else if (event.data.command === 'start') this._isRecording = true;
-            else if (event.data.command === 'flush') this.port.postMessage({ type: 'flushed' });
-        };
-    }
-    process(inputs) {
-        if (!this._isRecording) return true;
-        const input = inputs[0];
-        if (input && input.length > 0) {
-            const channelData = input[0];
-            if (channelData && channelData.length > 0) {
-                const buffer = new Float32Array(channelData.length);
-                buffer.set(channelData);
-                this.port.postMessage({ type: 'audio', buffer }, [buffer.buffer]);
-            }
-        }
-        return true;
-    }
-}
-registerProcessor('audio-recorder-processor', AudioRecorderProcessor);
-`;
-            try {
-                const blob = new Blob([processorCode], { type: 'application/javascript' });
-                const url = URL.createObjectURL(blob);
-                await audioCtx.audioWorklet.addModule(url);
-                URL.revokeObjectURL(url);
-            } catch { /* may already be registered */ }
+            const t0 = performance.now();
+            const [stream] = await Promise.all([
+                navigator.mediaDevices.getUserMedia(constraints),
+                ensureRecorderWorklet(audioCtx),
+            ]);
+            micOpenMsRef.current = performance.now() - t0;
+            streamCleanupRef.current = stream;
 
             const source = audioCtx.createMediaStreamSource(stream);
-            const processor = new AudioWorkletNode(audioCtx, 'audio-recorder-processor');
+            const processor = new AudioWorkletNode(audioCtx, PROCESSOR_NAME);
             processorRef.current = processor;
             audioBuffersRef.current = [];
             isRecordingRef.current = true;
@@ -346,6 +332,14 @@ registerProcessor('audio-recorder-processor', AudioRecorderProcessor);
                 }
                 if (!isRecordingRef.current) return;
                 if (event.data.type === 'audio' && event.data.buffer) {
+                    if (!firstAudioLoggedRef.current) {
+                        firstAudioLoggedRef.current = true;
+                        const total = Math.round(performance.now() - recordPressedAtRef.current);
+                        console.log(
+                            `[Audio] Capture started ${total}ms after press ` +
+                            `(mic open ${Math.round(micOpenMsRef.current)}ms) — speech before this was not recorded`
+                        );
+                    }
                     audioBuffersRef.current.push(event.data.buffer);
                     if (streamingActiveRef.current) {
                         streamPendingRef.current.push(event.data.buffer);
