@@ -55,6 +55,8 @@ export interface HistoryEntry {
     audioMs?: number;
     /** Stop→pasted latency in ms (transcription + paste). Optional for the same reason. */
     latencyMs?: number;
+    /** Press → first captured sample: how much speech the mic missed at the start. */
+    captureLatencyMs?: number;
     /** 'command' = spoken command (app holds the tool name); absent = dictation. */
     kind?: 'command';
     /**
