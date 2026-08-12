@@ -1423,6 +1423,24 @@ function setupIpcHandlers(): void {
 // Set app name for dev mode (in production, electron-builder sets this)
 app.setName('Clarity Scribe');
 
+// Exactly one instance. Two copies of this app both register the hotkey, both
+// record the same microphone, and both paste — every dictation lands twice,
+// and nothing in either instance looks wrong. That is exactly what happened
+// when a dev restart started a second app while the first quietly kept
+// running: one utterance, two history entries, two pastes. The entries even
+// carry different mic-capture latencies, because there really were two
+// recordings. Make the second launch refuse to start instead.
+if (!app.requestSingleInstanceLock()) {
+    console.error('[Main] Clarity Scribe is already running — this second instance will quit. (One instance would double every paste.)');
+    app.quit();
+}
+app.on('second-instance', () => {
+    // Someone launched us again: surface the running widget so the attempt
+    // is visibly answered rather than appearing to do nothing.
+    mainWindow?.show();
+    mainWindow?.focus();
+});
+
 app.whenReady().then(async () => {
     createWindow();
     createTray();
