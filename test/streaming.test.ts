@@ -197,6 +197,32 @@ describe('streamingTranscriber', () => {
         expect(calls[1].length).toBeGreaterThan(2.5 * 16000);
     });
 
+    // A fast engine can afford to refresh the live box sooner than the 1200ms
+    // default, which is sized for a GPU encoder at ~300-500ms per decode. The
+    // interval is what sets how far behind the speaker the box runs, so it is
+    // a parameter of setLivePreview rather than a constant.
+    it('honours a shorter preview interval on a fast engine', async () => {
+        setLivePreview(true, 700);
+        const partials: string[] = [];
+        onPartial((text) => partials.push(text));
+        startSession(SR);
+        pushAll(voiced(800)); // below the 1200ms default, above a 700ms interval
+        await drain();
+        expect(calls.length).toBe(1);
+        expect(partials).toEqual(['seg1']);
+    });
+
+    // Below roughly one decode's worth of new audio the queue-idle check gates
+    // every attempt anyway, so the floor stops a caller asking for contention.
+    it('clamps an implausibly short preview interval', async () => {
+        setLivePreview(true, 10);
+        onPartial(() => {});
+        startSession(SR);
+        pushAll(voiced(200)); // under the 300ms floor — must not preview yet
+        await drain();
+        expect(calls.length).toBe(0);
+    });
+
     it('preview waits for enough new audio and skips mid-pause', async () => {
         setLivePreview(true);
         onPartial(() => {}); // previews only run when someone is listening

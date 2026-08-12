@@ -56,11 +56,16 @@ const WINDOW_MS = 32;               // RMS analysis window
 // Cost model: previews share the serialized decode queue (the ONNX decode
 // path holds shared state, so concurrent runs are not safe). One preview can
 // therefore delay a real segment decode — or the stop-finalize — by at most
-// one decode (~300-500ms with the fixed-shape GPU encoder). That is why this
-// is OFF unless the encoder is VERIFIED on-GPU: on a CPU fallback a preview
-// of a long open segment costs seconds and would starve the real decodes.
+// one decode (~300-500ms with the fixed-shape GPU encoder, ~50-170ms on the
+// CoreML ANE sidecar). That is why this is OFF unless a decode was MEASURED
+// fast at init: on a CPU fallback a preview of a long open segment costs
+// seconds and would starve the real decodes.
 // Throttled by AUDIO time, not wall clock (audio arrives in real time anyway,
 // and it keeps the segmenter deterministic for tests).
+// Default gap between previews, sized for a GPU encoder at ~300-500ms/decode.
+// setLivePreview may lower it for an engine measured to be much faster — the
+// gap is what sets how far behind the speaker the live box runs, so on a fast
+// engine a smaller one is both affordable and noticeably more live.
 const PREVIEW_EVERY_MS = 1200;       // min NEW audio in the open segment between previews
 const PREVIEW_MIN_VOICED_MS = 400;   // no preview until the segment holds real speech
 const PREVIEW_SKIP_SILENCE_MS = 320; // mid-pause: no new words, and a real close is imminent
@@ -128,6 +133,7 @@ function voiceGate(s: Session): number {
 let transcriberFn: SegmentTranscriber | null = null;
 let partialListener: PartialListener | null = null;
 let previewEnabled = false;
+let previewEveryMs = PREVIEW_EVERY_MS;
 let session: Session | null = null;
 
 /** Inject the segment transcriber (parakeet single-pass). Enables streaming. */
@@ -137,10 +143,14 @@ export function configureStreaming(transcribe: SegmentTranscriber): void {
 
 /**
  * Enable mid-segment preview decodes. Only pass true when the encoder is
- * verified fast (parakeetService.isEncoderGpuVerified) — see tunables above.
+ * measured fast at init (parakeetService.isLivePreviewAffordable) — see above.
  */
-export function setLivePreview(on: boolean): void {
+export function setLivePreview(on: boolean, everyMs: number = PREVIEW_EVERY_MS): void {
     previewEnabled = on;
+    // Guard the floor: below one decode's worth of new audio the queue-idle
+    // check would gate every attempt anyway, so a smaller number buys nothing
+    // and only invites contention with the real segment decodes.
+    previewEveryMs = Math.max(300, everyMs);
 }
 
 /** Subscribe to partial-transcript updates (joined text after each segment). */
@@ -271,7 +281,7 @@ function maybeEnqueuePreview(s: Session): void {
     if (s.voicedMsInSegment < PREVIEW_MIN_VOICED_MS) return;
     if (s.silenceRunMs >= PREVIEW_SKIP_SILENCE_MS) return;
     const newMs = ((s.openSamples - s.previewedSamples) / s.sampleRate) * 1000;
-    if (newMs < PREVIEW_EVERY_MS) return;
+    if (newMs < previewEveryMs) return;
 
     // Snapshot the open audio NOW — chunks keep mutating under us.
     const raw = new Float32Array(s.openSamples);
@@ -383,6 +393,7 @@ function joinedText(s: Session): string {
     return joinSegments(
         s.texts.map((text, i) => ({ text: text ?? '', forcedSplit: s.forced[i] === true })),
         diag.seamRepaired,
+        diag.restartTrimmed,
     );
 }
 

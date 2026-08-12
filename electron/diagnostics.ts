@@ -22,6 +22,7 @@ const state = {
     segments: 0,
     /** Seams where segmentJoin repaired a false sentence break. */
     seamRepairs: 0,
+    restartsTrimmed: 0,
     /** Segments closed by a length cap rather than a pause (cut mid-speech). */
     forcedSplits: 0,
     /** Streaming sessions that degraded and required a full batch re-run. */
@@ -55,6 +56,7 @@ export const diag = {
     sessionStarted: () => { state.sessions++; },
     segmentClosed: (forced: boolean) => { state.segments++; if (forced) state.forcedSplits++; },
     seamRepaired: () => { state.seamRepairs++; },
+    restartTrimmed: () => { state.restartsTrimmed++; },
     streamingFellBack: () => { state.streamingFallbacks++; },
     errored: () => { state.errors++; },
     decodeDegraded: () => { state.decodesDegraded++; },
@@ -69,6 +71,7 @@ export interface DiagnosticsSummary {
     segments: number;
     segmentsPerSession: number;
     seamRepairs: number;
+    restartsTrimmed: number;
     /** Share of seams that were false sentence breaks — the punctuation bug's real rate. */
     seamRepairRate: number;
     forcedSplits: number;
@@ -92,6 +95,7 @@ export function summary(): DiagnosticsSummary {
         segments: state.segments,
         segmentsPerSession: r(state.segments, state.sessions),
         seamRepairs: state.seamRepairs,
+        restartsTrimmed: state.restartsTrimmed,
         seamRepairRate: r(state.seamRepairs, seams),
         forcedSplits: state.forcedSplits,
         streamingFallbacks: state.streamingFallbacks,
@@ -112,6 +116,7 @@ export function logSummary(): void {
     console.log(
         `[Diag] ${s.sessions} sessions · ${s.segments} segments (${s.segmentsPerSession}/session)\n` +
         `[Diag] seam repairs: ${s.seamRepairs} (${(s.seamRepairRate * 100).toFixed(1)}% of seams were false sentence breaks)\n` +
+        `[Diag] restarts trimmed: ${s.restartsTrimmed} (repeated phrase dropped at a pause seam)\n` +
         `[Diag] forced splits: ${s.forcedSplits} · streaming fallbacks: ${s.streamingFallbacks} (${(s.streamingFallbackRate * 100).toFixed(1)}%) · errors: ${s.errors}\n` +
         `[Diag] degraded decodes: ${s.decodesDegraded} (rescued by rebuild: ${s.decodesRecovered}) · preventive refreshes: ${s.sessionRefreshes}\n` +
         `[Diag] stop→text ms: p50 ${s.stopToTextMs.p50} / p90 ${s.stopToTextMs.p90} / p99 ${s.stopToTextMs.p99} (n=${s.stopToTextMs.n})\n` +
@@ -121,7 +126,7 @@ export function logSummary(): void {
 
 /** Test seam. */
 export function __resetForTest(): void {
-    state.sessions = 0; state.segments = 0; state.seamRepairs = 0; state.forcedSplits = 0;
+    state.sessions = 0; state.segments = 0; state.seamRepairs = 0; state.restartsTrimmed = 0; state.forcedSplits = 0;
     state.streamingFallbacks = 0; state.errors = 0;
     state.stopToText = { count: 0, ms: [] };
     state.segmentDecode = { count: 0, ms: [] };
