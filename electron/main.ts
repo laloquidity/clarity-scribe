@@ -11,7 +11,7 @@ import * as path from 'path';
 import Store from 'electron-store';
 import * as nativeWhisper from './nativeWhisper';
 import * as streaming from './streamingTranscriber';
-import { transcribeParakeet, setVocabularyBoostTerms, isEncoderGpuVerified } from './parakeetService';
+import { transcribeParakeet, setVocabularyBoostTerms, getWarmDecodeMs, isLivePreviewAffordable, LIVE_PREVIEW_WARM_LIMIT_MS } from './parakeetService';
 import { startLocalApi, stopLocalApi, emitEvent, isRunning as isLocalApiRunning } from './localApi';
 import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow, getForegroundPid } from './winPaste';
 import { initHotkeyService, registerHotkeyService, registerCommandHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
@@ -1494,11 +1494,26 @@ app.whenReady().then(async () => {
 
                 // Mid-segment preview: decode the in-progress segment so words
                 // appear WHILE speaking, not only at each pause. Display-only,
-                // and gated on the init-verified GPU encoder (~300ms/decode) —
-                // on a CPU fallback each preview would cost seconds.
-                const preview = isEncoderGpuVerified();
-                streaming.setLivePreview(preview);
-                console.log(`[Main] Live preview (mid-segment): ${preview ? 'ENABLED' : 'disabled (encoder not GPU-verified)'}`);
+                // and gated on what a decode actually COSTS on the engine that
+                // won at init — not on which platform we are on. A CPU fallback
+                // spends seconds per preview and must stay off; the ANE and a
+                // GPU-backed encoder are both comfortably affordable.
+                const warmMs = getWarmDecodeMs();
+                const preview = isLivePreviewAffordable();
+                // How far behind the speaker the live box runs. An engine only
+                // just inside the limit keeps the default; one measured far
+                // below it can afford to refresh sooner. Measured on the ANE
+                // sidecar, a preview of the longest segment that can stay open
+                // (15s) costs ~167ms, so a 700ms gap holds the worst case near
+                // a quarter of the interval. DirectML (~115ms warm) is outside
+                // this branch and keeps the 1200ms it was tuned with.
+                const everyMs = warmMs !== null && warmMs <= 100 ? 700 : undefined;
+                streaming.setLivePreview(preview, everyMs);
+                console.log(
+                    `[Main] Live preview (mid-segment): ${preview ? 'ENABLED' : 'disabled'} ` +
+                    `(warm decode ${warmMs === null ? 'unmeasured' : warmMs + 'ms'}, limit ${LIVE_PREVIEW_WARM_LIMIT_MS}ms` +
+                    `${preview ? `, every ${everyMs ?? 1200}ms of new audio` : ''})`
+                );
 
                 // Decoder-level custom vocabulary from the Personal Dictionary
                 syncVocabularyBoost();

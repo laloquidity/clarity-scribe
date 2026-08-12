@@ -300,6 +300,12 @@ export async function initParakeet(
                 useSidecar = true;
                 isInitialized = true;
                 console.log('[Parakeet] ✓ Using CoreML ANE sidecar (default engine on Apple Silicon)');
+                // Time the shared reference here too. This branch returns before
+                // the ONNX warmup below, so without this the sidecar reports no
+                // measurement at all and anything gated on speed silently
+                // assumes the worst — which is how live preview came to be off
+                // on every Mac despite the ANE being the fastest path we have.
+                await measureWarmDecode();
                 return true;
             }
             console.warn('[Parakeet] CoreML sidecar unavailable — falling back to ONNX');
@@ -392,14 +398,16 @@ async function initParakeetOnnx(
             // State the decision outright. Diagnosing this from its absence
             // cost a round of guesswork; an explicit line costs nothing.
             console.log(`[Parakeet] Fixed encoder shape: ${padToFixedShape ? 'ENABLED' : 'disabled'} (provider "${gpuProvider}", width ${core.FIXED_ENCODER_FRAMES} frames)`);
-            await transcribeSinglePass(new Float32Array(8000)); // 0.5s @ 16kHz — padded if flag set
+            await transcribeSinglePass(new Float32Array(REFERENCE_CLIP_SAMPLES)); // padded if flag set
+            // Always time a warm run, not only when padding is on: the number
+            // gates live preview on every engine, and a path that skips the
+            // measurement is indistinguishable from a path that failed it.
+            await measureWarmDecode(true); // the pass above already warmed it
             if (padToFixedShape) {
                 // Verify the encoder actually landed on the GPU: a warm run at
                 // the fixed shape is ~115ms there and ~1.3s on a silent CPU
                 // fallback, where padding would be an 8x regression.
-                const t0 = Date.now();
-                await transcribeSinglePass(new Float32Array(8000));
-                const warmMs = Date.now() - t0;
+                const warmMs = warmDecodeMs ?? Number.POSITIVE_INFINITY;
                 if (warmMs > FIXED_SHAPE_WARM_LIMIT_MS) {
                     padToFixedShape = false;
                     console.warn(`[Parakeet] Fixed-shape encode took ${warmMs}ms warm — encoder is not on the GPU; padding disabled`);
@@ -457,6 +465,40 @@ async function initParakeetOnnx(
  * costs nothing versus today; a wrong "on" would be the 8x regression.
  */
 let padToFixedShape = false;
+
+/**
+ * Warm decode cost of REFERENCE_CLIP, measured once during init on whichever
+ * engine won. Null until measured; see getWarmDecodeMs / isLivePreviewAffordable.
+ */
+let warmDecodeMs: number | null = null;
+
+/** 0.5s @ 16kHz. The shared yardstick every engine is timed against. */
+const REFERENCE_CLIP_SAMPLES = 8000;
+
+/**
+ * Decode the reference clip once, warm, and record the cost. Called by both
+ * init paths so every engine is measured on identical input.
+ *
+ * Non-fatal by design: a failure here must not stop initialization, it just
+ * leaves the measurement null, which reads as "cannot vouch for the speed" and
+ * declines the optional work that depends on it.
+ */
+async function measureWarmDecode(alreadyWarm = false): Promise<void> {
+    try {
+        const clip = new Float32Array(REFERENCE_CLIP_SAMPLES);
+        // A cold run measures graph setup, not steady-state cost. Skip the extra
+        // pass where the caller has already made one — on a CPU fallback that
+        // redundant decode would add over a second to startup.
+        if (!alreadyWarm) await transcribeParakeet(clip);
+        const t0 = Date.now();
+        await transcribeParakeet(clip);
+        warmDecodeMs = Date.now() - t0;
+        console.log(`[Parakeet] Warm decode of the 0.5s reference: ${warmDecodeMs}ms`);
+    } catch (e) {
+        warmDecodeMs = null;
+        console.warn('[Parakeet] Warm decode measurement failed (non-fatal):', e);
+    }
+}
 /** Warm run slower than this means the encoder is NOT on the GPU. */
 const FIXED_SHAPE_WARM_LIMIT_MS = 700;
 
@@ -906,13 +948,33 @@ export function isParakeetAvailable(): boolean {
 }
 
 /**
- * Did init VERIFY the encoder is genuinely fast (on-GPU at the fixed shape)?
- * True only after the warm fixed-shape timing check passes. Callers use this
- * to gate work that is cheap on a ~300ms encoder but ruinous on a CPU
- * fallback — e.g. the live mid-segment preview decodes.
+ * Warm cost of one decode of the 0.5s reference clip, measured during init on
+ * whichever engine actually ended up active. Null until init has timed it.
+ *
+ * Every path times the SAME input, so the number is comparable across engines
+ * and can gate work by what it costs rather than by which platform it is on.
  */
-export function isEncoderGpuVerified(): boolean {
-    return isInitialized && padToFixedShape;
+export function getWarmDecodeMs(): number | null {
+    return isInitialized ? warmDecodeMs : null;
+}
+
+/**
+ * Is a mid-segment preview decode cheap enough to run while the user is still
+ * speaking? Previews re-decode the whole open segment and share the serialized
+ * decode queue, so on a slow engine they would starve the real segment decodes
+ * and delay the finalize at stop.
+ *
+ * Gated on the measured warm decode, never on process.platform. Measured on the
+ * 0.5s reference: CoreML ANE sidecar 33ms, DirectML at the fixed shape ~115ms,
+ * ONNX CPU fallback ~1300ms. The limit sits in the wide gap between the engines
+ * that can afford it and the one that cannot, so new hardware is classified by
+ * what it actually does rather than by a list someone has to remember to update.
+ */
+export const LIVE_PREVIEW_WARM_LIMIT_MS = 300;
+
+export function isLivePreviewAffordable(): boolean {
+    const warm = getWarmDecodeMs();
+    return warm !== null && warm <= LIVE_PREVIEW_WARM_LIMIT_MS;
 }
 
 export function isLanguageSupported(language: string): boolean {
