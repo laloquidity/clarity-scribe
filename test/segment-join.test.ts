@@ -93,3 +93,53 @@ describe('joinSegments — structural behaviour', () => {
         expect(joinSegments(['he said "no thanks."', 'And left'])).toBe('he said "no thanks." And left');
     });
 });
+
+describe('joinSegments — restarted phrases at a pause seam', () => {
+    // The speaker abandoned an attempt and said it again. Both attempts get
+    // transcribed because each segment is decoded in isolation.
+    it('drops a repeated phrase when a pause closed the seam', () => {
+        expect(joinSegments(['Would you.', 'Would you like a cappuccino?']))
+            .toBe('Would you like a cappuccino?');
+        expect(joinSegments(['I think we should.', 'We should ship it.']))
+            .toBe('I think we should ship it.');
+    });
+
+    it('removes the longest overlap, not a fragment of it', () => {
+        expect(joinSegments(['Can you send me the.', 'Send me the report please.']))
+            .toBe('Can you send me the report please.');
+    });
+
+    it('keeps the restart capitalized when it becomes the whole transcript', () => {
+        expect(joinSegments(['Would you.', 'Would you mind?'])).toBe('Would you mind?');
+    });
+
+    // A forced cut is our own knife landing mid-speech; a repeat across it is
+    // not evidence of anything, and trimming would delete real words.
+    it('never trims across a forced (length-cap) split', () => {
+        expect(joinSegments([{ text: 'we should', forcedSplit: true }, 'we should go']))
+            .toBe('we should we should go');
+    });
+
+    // Single-word overlap at a pause is usually real speech, not disfluency.
+    it('leaves a single repeated word alone', () => {
+        expect(joinSegments(['I said no.', 'No, I did not.'])).toBe('I said no. No, I did not.');
+        expect(joinSegments(['That is the store.', 'Store was closed.']))
+            .toBe('That is the store. Store was closed.');
+    });
+
+    it('does not trim unrelated segments', () => {
+        expect(joinSegments(['Would you like coffee?', 'Would you like tea?']))
+            .toBe('Would you like coffee? Would you like tea?');
+        expect(joinSegments(['I went to the store.', 'It was closed.']))
+            .toBe('I went to the store. It was closed.');
+    });
+
+    it('reports each trim for diagnostics', () => {
+        let trims = 0;
+        joinSegments(['Would you.', 'Would you like tea?'], undefined, () => { trims++; });
+        expect(trims).toBe(1);
+        trims = 0;
+        joinSegments(['I went to the store.', 'It was closed.'], undefined, () => { trims++; });
+        expect(trims).toBe(0);
+    });
+});
