@@ -4,7 +4,7 @@
  * Converts dictated spoken-form text to its written representation:
  *   - "comma"               → ","
  *   - "twenty three"        → "23"
- *   - "first"               → "1st"
+ *   - "twenty first"        → "21st"  ("first" stays a word — see below)
  *   - "five dollars"        → "$5"
  *   - "two thirty pm"       → "2:30 PM"
  *   - "january fifth"       → "January 5"
@@ -518,8 +518,64 @@ function applyDates(text: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * "first" → "1st", "twenty-second" → "22nd", "thirtieth" → "30th".
- * Compound ordinals are matched as a unit. Conservative: only known ordinals.
+ * Below this, a spoken ordinal stays a WORD: "first", not "1st".
+ *
+ * This mirrors the rule this file already applies to cardinals — a standalone
+ * "five" stays spelled out, only "fifteen" and up become digits — and it is
+ * the ordinary English convention (spell out below ten in running prose).
+ * Ordinals were the inconsistent one: every ordinal converted, so ordinary
+ * sentences came out wrong, most visibly the enumerating adverb that opens a
+ * sentence:
+ *   "First, let's make sure it's done"  →  "1st, let's make sure it's done"
+ *   "it should write out first"         →  "it should write out 1st"
+ * Both verbatim from real dictation, 2026-08-10. Idioms were hit just as
+ * hard — "first of all", "at first", "second to none", "third party",
+ * "first name" — and no list of idioms would have covered them, because the
+ * word is fine and it is the NUMERAL that is wrong in prose.
+ *
+ * Dates are unaffected: applyDates runs first and consumes "january fifth"
+ * → "January 5" before this transform sees it.
+ */
+const ORDINAL_NUMERAL_MIN = 10;
+
+/**
+ * Nouns that make even a small ordinal numeric — addresses and numbered
+ * series, where "3rd floor" and "5th Avenue" are the normal written forms.
+ * Deliberately short: per design principle #1 a missed conversion is cheaper
+ * than a wrong one, so genuinely ambiguous nouns ("place", "quarter",
+ * "period", "century") are left off and stay spelled out.
+ */
+const ORDINAL_NUMERIC_CONTEXT = new Set([
+    'avenue', 'street', 'boulevard', 'floor',
+    'anniversary', 'birthday', 'edition', 'grade', 'amendment',
+]);
+
+/**
+ * Before an ordinal these force the FRACTION reading, where a numeral is
+ * wrong: "a tenth of the budget" is not "a 10th of the budget". Only matters
+ * at or above ORDINAL_NUMERAL_MIN — smaller ordinals ("a fifth", "one third")
+ * already stay spelled out. "the tenth time" is unaffected.
+ */
+const ORDINAL_FRACTION_PRECEDERS = new Set(['a', 'an', 'one']);
+
+/**
+ * Fixed phrases where the ordinal is idiom, not position, and must stay a
+ * word at ANY value: "at the eleventh hour" means at the last moment, so
+ * "the 11th hour" is wrong. Keyed by the word that follows the ordinal.
+ *
+ * This is not an attempt at general idiom coverage — spelling out below ten
+ * already handles almost all of them ("first of all", "second to none",
+ * "third party"). This set exists only for the few that survive that rule by
+ * being ten or above, and today that is one.
+ */
+const ORDINAL_IDIOM_FOLLOWERS: Record<string, Set<string>> = {
+    hour: new Set(['eleventh']),
+};
+
+/**
+ * "twenty-second" → "22nd", "thirtieth" → "30th"; "first" stays "first".
+ * Compound ordinals are matched as a unit. Conservative: only known ordinals,
+ * and only where a numeral is the normal written form (ORDINAL_NUMERAL_MIN).
  */
 function applyOrdinals(text: string): string {
     const ordAlt = Object.keys(ORDINAL_WORDS).join('|');
@@ -556,11 +612,32 @@ function applyOrdinals(text: string): string {
     out = out.replace(reSimple, (match, ord: string, offset: number, whole: string) => {
         const n = ORDINAL_WORDS[ord.toLowerCase()];
         if (n === undefined) return match;
+
+        const before = whole.slice(0, offset).trimEnd();
+        const prevWord = before.slice(before.lastIndexOf(' ') + 1).toLowerCase()
+            .replace(/^[^\w]+|[^\w]+$/g, '');
+
         if (ord.toLowerCase() === 'second') {
-            const before = whole.slice(0, offset).trimEnd();
-            const prevWord = before.slice(before.lastIndexOf(' ') + 1).toLowerCase();
+            // Kept even though 2 is below ORDINAL_NUMERAL_MIN so this path can
+            // no longer fire: it records a real bug ("five second recording"
+            // → "five 2nd recording") and must survive any future lowering of
+            // the threshold.
             if (SECOND_DURATION_PRECEDERS.has(prevWord) || isCount(prevWord)) return match;
         }
+
+        const after = whole.slice(offset + match.length).trimStart();
+        const nextWord = after.split(/[^\w]+/, 1)[0].toLowerCase();
+
+        if (ORDINAL_IDIOM_FOLLOWERS[nextWord]?.has(ord.toLowerCase())) return match;
+
+        if (n < ORDINAL_NUMERAL_MIN) {
+            // Spelled out in prose — unless an address/series noun follows,
+            // where the numeral IS the written form ("3rd floor").
+            if (!ORDINAL_NUMERIC_CONTEXT.has(nextWord)) return match;
+        } else if (ORDINAL_FRACTION_PRECEDERS.has(prevWord)) {
+            return match; // "a tenth of the budget", not "a 10th"
+        }
+
         return `${n}${ordinalSuffix(n)}`;
     });
 

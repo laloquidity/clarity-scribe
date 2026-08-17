@@ -106,11 +106,15 @@ describe('applyITN — cardinal numbers', () => {
 });
 
 describe('applyITN — ordinals', () => {
-    it('converts simple ordinals', () => {
-        expect(applyITN('first')).toBe('1st');
-        expect(applyITN('second')).toBe('2nd');
-        expect(applyITN('third')).toBe('3rd');
-        expect(applyITN('fourth')).toBe('4th');
+    it('spells out ordinals below ten, converts ten and up', () => {
+        // Mirrors the cardinal rule this file already applies (a standalone
+        // "five" stays a word, "fifteen" becomes 15) and ordinary English
+        // prose convention. Ordinals used to convert unconditionally.
+        expect(applyITN('first')).toBe('first');
+        expect(applyITN('second')).toBe('second');
+        expect(applyITN('third')).toBe('third');
+        expect(applyITN('ninth')).toBe('ninth');
+        expect(applyITN('tenth')).toBe('10th');
         expect(applyITN('eleventh')).toBe('11th');
         expect(applyITN('twentieth')).toBe('20th');
     });
@@ -118,19 +122,63 @@ describe('applyITN — ordinals', () => {
         expect(applyITN('twenty-second')).toBe('22nd');
         expect(applyITN('twenty second')).toBe('22nd');
         expect(applyITN('thirty-first')).toBe('31st');
+        expect(applyITN('the twenty-first century')).toBe('the 21st century');
     });
-    it('uses correct suffix in context', () => {
-        expect(applyITN('the first item')).toBe('the 1st item');
+    it('leaves the sentence-opening enumerator alone', () => {
+        // Both verbatim from real dictation: "1st, let's make sure everything
+        // is done" and "it should actually write out 1st".
+        expect(applyITN("First, let's make sure everything is done"))
+            .toBe("First, let's make sure everything is done");
+        expect(applyITN('it should actually write out first'))
+            .toBe('it should actually write out first');
+        expect(applyITN('Second, we push everything together'))
+            .toBe('Second, we push everything together');
+    });
+    it('leaves ordinary prose and idioms alone', () => {
+        for (const s of [
+            'first of all', 'at first', 'first and foremost', 'the first time',
+            'I first met her there', 'you go first', 'second to none',
+            'on second thought', 'third party', 'first name', 'first aid',
+            'the first item', 'second place', 'the second option',
+        ]) {
+            expect(applyITN(s)).toBe(s);
+        }
+    });
+    it('uses numerals for addresses and numbered series', () => {
+        expect(applyITN('fifth avenue')).toBe('5th avenue');
+        expect(applyITN('the third floor')).toBe('the 3rd floor');
+        expect(applyITN('First Avenue')).toBe('1st Avenue');
+        expect(applyITN('her fourth birthday')).toBe('her 4th birthday');
+        expect(applyITN('the second edition')).toBe('the 2nd edition');
+        expect(applyITN('third grade')).toBe('3rd grade');
+    });
+    it('keeps fixed phrases where the ordinal is idiom, not position', () => {
+        // "at the eleventh hour" = at the last moment. Survives the spell-out
+        // rule only because 11 is above the threshold, hence the explicit set.
+        expect(applyITN('they fixed it at the eleventh hour'))
+            .toBe('they fixed it at the eleventh hour');
+        // …but the positional reading of the same word still converts.
+        expect(applyITN('finished eleventh')).toBe('finished 11th');
+        expect(applyITN('the eleventh item')).toBe('the 11th item');
+    });
+    it('keeps the fraction reading of ten-and-up ordinals', () => {
+        // "a tenth of the budget" is not "a 10th of the budget". Below ten
+        // this is already covered by the spell-out rule ("a fifth").
+        expect(applyITN('a tenth of the budget')).toBe('a tenth of the budget');
+        expect(applyITN('one twentieth of that')).toBe('one twentieth of that');
+        // …but the positional reading still converts.
+        expect(applyITN('the tenth time')).toBe('the 10th time');
     });
     it('keeps "second" as a time unit in duration contexts', () => {
         expect(applyITN('tokens per second')).toBe('tokens per second');
         expect(applyITN('sixty frames per second')).toBe('60 frames per second');
         expect(applyITN('one second please')).toBe('one second please');
         expect(applyITN('wait a second')).toBe('wait a second');
-        // …while ordinal readings still convert
-        expect(applyITN('the second option')).toBe('the 2nd option');
-        expect(applyITN('second place')).toBe('2nd place');
-        expect(applyITN('second')).toBe('2nd');
+        // "second" is below ORDINAL_NUMERAL_MIN, so the ordinal reading now
+        // stays spelled out too — which is also the correct prose form.
+        expect(applyITN('the second option')).toBe('the second option');
+        expect(applyITN('second place')).toBe('second place');
+        expect(applyITN('second')).toBe('second');
     });
 
     it('treats any count before "second" as a duration, not an ordinal', () => {
