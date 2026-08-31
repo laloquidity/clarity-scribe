@@ -163,6 +163,24 @@ describe('streamingTranscriber', () => {
         expect(partials.length).toBeGreaterThan(0); // live preview events fired
     });
 
+    it('marks preview decodes so the engine can skip expensive recovery', async () => {
+        const flags: Array<boolean | undefined> = [];
+        configureStreaming(async (audio, opts) => {
+            calls.push(audio);
+            flags.push(opts?.preview);
+            return `seg${calls.length}`;
+        });
+        setLivePreview(true);
+        onPartial(() => { /* previews need a listener to run */ });
+        startSession(SR);
+        pushAll(voiced(2000)); // no pause → preview decode of the open segment
+        await drain();
+        pushAll(silence(900)); // closes segment 1 → real decode
+        await finalizeSession();
+        expect(flags[0]).toBe(true);        // the preview
+        expect(flags[1]).toBeUndefined();   // the real segment decode
+    });
+
     it('reports whole-recording decode accounting at finalize', async () => {
         // A transcriber that takes real time, so the ms totals are nonzero.
         configureStreaming(async (audio) => {

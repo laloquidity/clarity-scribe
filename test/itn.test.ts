@@ -285,6 +285,24 @@ describe('applyITN — spaced/dotted meridiems (real ASR output)', () => {
     });
 });
 
+describe('applyITN — truncated meridiem (the lost "M")', () => {
+    it('finishes a clipped AM/PM when minutes are present', () => {
+        // "at eight thirty A." and "eight 30 A." verbatim from real
+        // dictation, 2026-08-31 — the model lost the trailing "M".
+        expect(applyITN('I went to get coffee at eight thirty A.'))
+            .toBe('I went to get coffee at 8:30 AM');
+        expect(applyITN('eight 30 A.')).toBe('8:30 AM');
+        expect(applyITN('eight thirty P.')).toBe('8:30 PM');
+        expect(applyITN("seven o'clock A.")).toBe('7 AM');
+    });
+    it('requires a capital letter — a lowercase article never converts', () => {
+        expect(applyITN('pills eight thirty a day')).not.toContain('AM');
+    });
+    it('requires minutes — names like "gate eight A" are untouched', () => {
+        expect(applyITN('meet at gate eight A')).toBe('meet at gate eight A');
+    });
+});
+
 describe('applyITN — compound minutes in any word/digit mix', () => {
     it('reads the minute however the model chose to write it', () => {
         // "eight 20 6 AM" verbatim from real dictation (spoken "8:26 AM"),
@@ -351,6 +369,7 @@ describe('applyITN — idempotency', () => {
         'our C F O and C I O met',
         'eight A. M.',
         'eight 20 6 AM',
+        'coffee at eight thirty A.',
         'the year twenty twenty six',
         'twenty-four',
     ];

@@ -20,7 +20,9 @@
  * long silences — actual speech detection quality still comes from Parakeet.
  */
 
-type SegmentTranscriber = (audio16k: Float32Array) => Promise<string>;
+// `preview` marks a display-only decode of the still-open segment: the engine
+// may skip expensive recovery for those (the text is redecoded moments later).
+type SegmentTranscriber = (audio16k: Float32Array, opts?: { preview?: boolean }) => Promise<string>;
 import { joinSegments } from './segmentJoin';
 import { diag } from './diagnostics';
 
@@ -319,7 +321,7 @@ function maybeEnqueuePreview(s: Session): void {
             if (s.segmentsQueued !== indexAtStart) return;
             const t0 = Date.now();
             const audio16k = resampleCubic(raw, sampleRate, 16000);
-            const text = (await transcriberFn(audio16k)).trim();
+            const text = (await transcriberFn(audio16k, { preview: true })).trim();
             s.previewMsTotal += Date.now() - t0;
             s.previewCount++;
             // Re-check: the world may have moved on during the decode.

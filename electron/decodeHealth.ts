@@ -81,9 +81,11 @@ const BLANK_TAIL = 0.25;
  * streamingTranscriber) would never count a single window as voiced. Speech
  * peaks far above it (~0.1 on a typical Windows mic, ~0.02 on the quietest
  * supported macOS setups). An all-blank decode of such audio is the decoder
- * being right about silence, not broken.
+ * being right about silence, not broken. Exported so callers can use the
+ * same line in the other direction: audio peaking well above it clearly
+ * holds speech, and an empty decode of it means the decode LOST that speech.
  */
-const QUIET_PEAK_RMS = 0.006;
+export const QUIET_PEAK_RMS = 0.006;
 
 /**
  * Did this decode lose speech? Conservative by construction: a healthy decode

@@ -497,14 +497,19 @@ function parseMinute(raw: string): number | null {
  * model frequently writes the spoken letters that way, and without it
  * "eight A. M." survived untouched (real dictation, 2026-08-31).
  */
-function applyTimes(text: string): string {
-    const hourAlt = Object.keys(HOUR_WORDS).join('|');
+/** Regex alternation for a spoken/mixed minute — longest alternatives first
+ *  so "twenty six" wins over bare "twenty". Shared with the truncated-meridiem
+ *  rule below. */
+function minuteAltPattern(): string {
     const tensAlt = `(?:${Object.keys(MINUTE_TENS).join('|')}|[2-5]0)`;
     const onesAlt = `(?:${Object.keys(ONES).filter(w => ONES[w] >= 1 && ONES[w] <= 9).join('|')}|[1-9])`;
     const teenAlt = Object.keys(ONES).filter(w => ONES[w] >= 10).join('|');
-    // Longest alternatives first so "twenty six" wins over bare "twenty".
-    const minuteAlt =
-        `o'?clock|oh[ -]${onesAlt}|${tensAlt}[ -]${onesAlt}|${tensAlt}|${teenAlt}|[0-5]?\\d`;
+    return `o'?clock|oh[ -]${onesAlt}|${tensAlt}[ -]${onesAlt}|${tensAlt}|${teenAlt}|[0-5]?\\d`;
+}
+
+function applyTimes(text: string): string {
+    const hourAlt = Object.keys(HOUR_WORDS).join('|');
+    const minuteAlt = minuteAltPattern();
     const re = new RegExp(
         `\\b(\\d{1,2}|${hourAlt})` +
         `(?:[ -]+(${minuteAlt}))?` +
@@ -529,6 +534,40 @@ function applyTimes(text: string): string {
         }
 
         if (minute === null || minute === 0) return `${hour} ${meridiem}`;
+        return `${hour}:${String(minute).padStart(2, '0')} ${meridiem}`;
+    });
+}
+
+/**
+ * Truncated meridiem — run right after applyTimes, which has already consumed
+ * every complete one. The model sometimes loses the trailing "M" of a spoken
+ * "AM"/"PM" at the end of an utterance: "...coffee at eight thirty A."
+ * (verbatim from real dictation, 2026-08-31). With MINUTES present, an hour
+ * followed by a lone capital A or P at a word boundary can only be a clipped
+ * meridiem, so finish the job: "eight thirty A." → "8:30 AM".
+ *
+ * Two guards keep this conservative: the letter must be a CAPITAL (a
+ * lowercase "a" is an article — "eight thirty a day" must survive), and
+ * minutes are required (so "gate eight A" is untouched).
+ */
+function applyTruncatedMeridiem(text: string): string {
+    const hourAlt = Object.keys(HOUR_WORDS).join('|');
+    const re = new RegExp(
+        `\\b(\\d{1,2}|${hourAlt})[ -]+(${minuteAltPattern()})[ ]+([AaPp])\\.?(?=$|[^A-Za-z0-9])`,
+        'gi'
+    );
+    return text.replace(re, (match, hourRaw: string, minRaw: string, letter: string) => {
+        if (letter !== 'A' && letter !== 'P') return match; // capitals only
+        const hourLower = hourRaw.toLowerCase();
+        let hour: number;
+        if (/^\d+$/.test(hourLower)) hour = parseInt(hourLower, 10);
+        else if (HOUR_WORDS[hourLower] !== undefined) hour = HOUR_WORDS[hourLower];
+        else return match;
+        if (hour < 1 || hour > 12) return match;
+        const minute = parseMinute(minRaw);
+        if (minute === null) return match;
+        const meridiem = letter === 'A' ? 'AM' : 'PM';
+        if (minute === 0) return `${hour} ${meridiem}`;
         return `${hour}:${String(minute).padStart(2, '0')} ${meridiem}`;
     });
 }
@@ -846,6 +885,7 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     out = applyAcronyms(out);
     out = applyCurrency(out);
     out = applyTimes(out);
+    out = applyTruncatedMeridiem(out);
     out = applyDates(out);
     out = applyYears(out);
     out = applyOrdinals(out);
@@ -897,6 +937,7 @@ export const __itnInternals = {
     applyAcronyms,
     applyCurrency,
     applyTimes,
+    applyTruncatedMeridiem,
     applyDates,
     applyYears,
     applyOrdinals,
