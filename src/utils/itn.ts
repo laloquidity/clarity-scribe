@@ -8,6 +8,8 @@
  *   - "five dollars"        → "$5"
  *   - "two thirty pm"       → "2:30 PM"
  *   - "january fifth"       → "January 5"
+ *   - "C F O"               → "CFO"
+ *   - "twenty twenty six"   → "2026"
  *
  * DESIGN PRINCIPLES (this is a pure-JS, fully-offline feature):
  *   1. CONSERVATIVE — when a phrase is ambiguous, leave it unchanged. We would
@@ -217,7 +219,14 @@ function detokenize(tokens: Token[]): string {
 /**
  * Starting at token index `start` (which must be a word), collect the lowercased
  * word values, stopping at the first non-word token that is not a single
- * connecting space. Returns the list and a map from list-index → token index.
+ * connecting space or a bare hyphen. Returns the list and a map from
+ * list-index → token index.
+ *
+ * The hyphen counts as a connector because compound numbers are dictated (and
+ * often transcribed) hyphenated: without it, "twenty-four" parsed as just
+ * "twenty" and the cardinal pass produced the hybrid "20-four" (real
+ * dictation, 2026-08-31). Spans that don't parse as numbers are untouched, so
+ * ordinary hyphenated words ("check-in") are unaffected.
  */
 function collectWords(tokens: Token[], start: number): { list: string[]; map: number[] } {
     const list: string[] = [];
@@ -236,7 +245,7 @@ function collectWords(tokens: Token[], start: number): { list: string[]; map: nu
                 break;
             }
         } else {
-            if (t.type === 'space') {
+            if (t.type === 'space' || (t.type === 'other' && t.value === '-')) {
                 expectWord = true;
                 i++;
             } else {
@@ -332,6 +341,30 @@ function applyPunctuation(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Transform: Spelled-out acronyms  (run before times, so "9 A M" → "9 AM"
+// still reads as a time afterwards)
+// ---------------------------------------------------------------------------
+
+/**
+ * Collapse a run of spoken single letters into one acronym:
+ *   "V C" → "VC", "C F O" → "CFO", "U S A" → "USA", "A I" → "AI".
+ *
+ * The model writes a spelled letter as an isolated capital, so mid-sentence
+ * runs of two or more single capitals are letters the user dictated one by
+ * one — "the V C fund", "our C F O said" (real dictation, 2026-08-31). Only
+ * bare capitals separated by single spaces collapse; letters written with
+ * periods ("B. D.") are left alone because a period after a single capital
+ * can end a sentence ("...went with plan B. Development starts Monday").
+ * Trailing possessives survive: "the C E O's call" → "the CEO's call".
+ */
+function applyAcronyms(text: string): string {
+    return text.replace(
+        /(?<![A-Za-z0-9])[A-Z](?: [A-Z])+(?![A-Za-z0-9])/g,
+        (m) => m.replace(/ /g, ''),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Transform 2: Currency  (run before plain cardinals)
 // ---------------------------------------------------------------------------
 
@@ -421,13 +454,17 @@ const MINUTE_PHRASES: Record<string, number> = {
  * "two thirty pm" → "2:30 PM", "nine am" → "9 AM", "twelve fifteen pm" → "12:15 PM".
  * Only fires when a recognizable am/pm marker follows, which disambiguates a
  * time from a plain number. The hour may be a word or a digit.
+ *
+ * The meridiem allows a space between its letters ("A. M.", "a m") — the
+ * model frequently writes the spoken letters that way, and without it
+ * "eight A. M." survived untouched (real dictation, 2026-08-31).
  */
 function applyTimes(text: string): string {
     const hourAlt = Object.keys(HOUR_WORDS).join('|');
     const re = new RegExp(
         `\\b(\\d{1,2}|${hourAlt})` +
         `(?:[ -]+(o'?clock|thirty|fifteen|forty[ -]?five|[0-5]?\\d))?` +
-        `[ ]+(a\\.?m\\.?|p\\.?m\\.?)(?=$|[^a-zA-Z])`,
+        `[ ]+(a\\.? ?m\\.?|p\\.? ?m\\.?)(?=$|[^a-zA-Z])`,
         'gi'
     );
 
@@ -439,7 +476,7 @@ function applyTimes(text: string): string {
         else return match;
         if (hour < 1 || hour > 12) return match;
 
-        const meridiem = mer.replace(/\./g, '').toUpperCase(); // AM / PM
+        const meridiem = mer.replace(/[. ]/g, '').toUpperCase(); // AM / PM
 
         let minute: number | null = null;
         if (minRaw) {
@@ -511,6 +548,40 @@ function applyDates(text: string): string {
     });
 
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Transform: Years  (run before ordinals/cardinals)
+// ---------------------------------------------------------------------------
+
+/**
+ * Spoken year pairs → four-digit years:
+ *   "twenty twenty six"    → "2026"
+ *   "nineteen eighty four" → "1984"
+ *   "twenty nineteen"      → "2019"
+ *
+ * Without this, applyCardinals converts each half separately and produces the
+ * hybrid "20 26" (real dictation, 2026-08-31). Conservative by shape: only
+ * the two century words that yield a plausible year (nineteen, twenty) can
+ * lead the pair, the second half must itself be a spoken 10–99, and a scale
+ * word after the pair vetoes it ("twenty twenty thousand" is not a year).
+ * Plain "twenty six" (26) never matches — it has no century word.
+ */
+function applyYears(text: string): string {
+    const teensAlt = Object.keys(ONES).filter(w => ONES[w] >= 10).join('|');
+    const tensAlt = Object.keys(TENS).join('|');
+    const onesAlt = Object.keys(ONES).filter(w => ONES[w] >= 1 && ONES[w] <= 9).join('|');
+    const secondHalf = `(?:${tensAlt})(?:[ -](?:${onesAlt}))?|(?:${teensAlt})`;
+    const scaleAlt = Object.keys(SCALES).join('|');
+    const re = new RegExp(
+        `\\b(nineteen|twenty) (${secondHalf})\\b(?![ -](?:${scaleAlt}))`,
+        'gi'
+    );
+    return text.replace(re, (match, century: string, rest: string) => {
+        const parsed = parseCardinal(rest.toLowerCase().split(/[ -]+/), 0);
+        if (!parsed || parsed.value < 10 || parsed.value > 99) return match;
+        return `${(century.toLowerCase() === 'nineteen' ? 1900 : 2000) + parsed.value}`;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -720,11 +791,13 @@ export interface ITNOptions {
  *
  * Order matters:
  *   1. Punctuation commands — ONLY with opts.punctuation (see ITNOptions).
- *   2. Currency  (consumes "<n> dollars" before cardinals touch "<n>").
- *   3. Times     (consumes "<n> <n> am" before cardinals).
- *   4. Dates     (consumes "<month> <ordinal>" before ordinals/cardinals).
- *   5. Ordinals  ("first" → "1st").
- *   6. Cardinals ("twenty three" → "23").
+ *   2. Acronyms  (collapses "C F O" before anything else reads the letters).
+ *   3. Currency  (consumes "<n> dollars" before cardinals touch "<n>").
+ *   4. Times     (consumes "<n> <n> am" before cardinals).
+ *   5. Dates     (consumes "<month> <ordinal>" before ordinals/cardinals).
+ *   6. Years     (consumes "twenty twenty six" before cardinals split it).
+ *   7. Ordinals  ("first" → "1st").
+ *   8. Cardinals ("twenty three" → "23").
  *
  * Idempotent and conservative: already-written text returns unchanged, and
  * applying twice equals applying once.
@@ -736,9 +809,11 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     // Punctuation commands belong to the SPOKEN PUNCTUATION feature, not to
     // smart formatting — see ITNOptions. Off unless the caller opts in.
     if (opts.punctuation) out = applyPunctuation(out);
+    out = applyAcronyms(out);
     out = applyCurrency(out);
     out = applyTimes(out);
     out = applyDates(out);
+    out = applyYears(out);
     out = applyOrdinals(out);
     out = applyCardinals(out);
     out = applyDigitGrouping(out);
@@ -785,9 +860,11 @@ function applyDigitGrouping(text: string): string {
 // Exported for unit testing of individual transforms.
 export const __itnInternals = {
     applyPunctuation,
+    applyAcronyms,
     applyCurrency,
     applyTimes,
     applyDates,
+    applyYears,
     applyOrdinals,
     applyCardinals,
     applyDigitGrouping,
