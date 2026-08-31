@@ -716,6 +716,74 @@ function applyYears(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Transform: Decimals  (run after years, before cardinals)
+// ---------------------------------------------------------------------------
+
+/**
+ * "<number> point <digits>" → a decimal, whatever mix of words and digits the
+ * model chose: "10 point six" (verbatim from real dictation, 2026-08-31),
+ * "ten point six", "ten point 6" all → "10.6"; "three point one four" →
+ * "3.14"; "nine point oh five" → "9.05"; "ten point sixty five" → "10.65".
+ *
+ * Conservative: a NUMBER must sit immediately before "point" ("at that point
+ * six people left" has "that" there and never matches) and a digit value
+ * immediately after ("the ten point plan" has "plan" there and never
+ * matches). Runs after applyYears so "nineteen ninety point five" reads the
+ * year first.
+ */
+function applyDecimals(text: string): string {
+    const onesW = Object.keys(ONES).filter(w => ONES[w] <= 9);        // zero..nine
+    const teensW = Object.keys(ONES).filter(w => ONES[w] >= 10);      // ten..nineteen
+    const tensW = Object.keys(TENS);
+    const digitAlt = `(?:${onesW.join('|')}|oh|\\d)`;
+    const intAlt = `\\d+|(?:${tensW.join('|')})(?:[ -](?:${onesW.join('|')}))?|${teensW.join('|')}|${onesW.join('|')}`;
+    const fracAlt = `(?:${tensW.join('|')})[ -](?:${onesW.join('|')})|(?:${tensW.join('|')})|${teensW.join('|')}|${digitAlt}(?:[ ]${digitAlt})*`;
+    const re = new RegExp(`\\b(${intAlt}) point (${fracAlt})\\b`, 'gi');
+
+    const partValue = (w: string): number | null => {
+        if (w === 'oh') return 0;
+        if (/^\d+$/.test(w)) return parseInt(w, 10);
+        if (has(ONES, w)) return ONES[w];
+        if (has(TENS, w)) return TENS[w];
+        return null;
+    };
+
+    return text.replace(re, (match, intRaw: string, fracRaw: string) => {
+        // Integer part: digits verbatim, or spelled 0..99.
+        let intPart: string;
+        if (/^\d+$/.test(intRaw)) {
+            intPart = intRaw;
+        } else {
+            const words = intRaw.toLowerCase().split(/[ -]+/);
+            const v0 = partValue(words[0]);
+            if (v0 === null) return match;
+            if (words.length === 1) intPart = String(v0);
+            else {
+                const v1 = partValue(words[1]);
+                if (v1 === null || !has(TENS, words[0])) return match;
+                intPart = String(v0 + v1);
+            }
+        }
+
+        // Fraction part: a compound value ("sixty five" → 65, "twelve" → 12)
+        // or a run of single digits read out ("one four" → 14, "oh five" → 05).
+        const fw = fracRaw.toLowerCase().split(/[ -]+/);
+        let fracPart: string;
+        if (fw.length === 2 && has(TENS, fw[0]) && partValue(fw[1]) !== null && partValue(fw[1])! <= 9) {
+            fracPart = String(TENS[fw[0]] + partValue(fw[1])!);
+        } else if (fw.length === 1 && partValue(fw[0]) !== null && partValue(fw[0])! >= 10) {
+            fracPart = String(partValue(fw[0]));
+        } else {
+            const digits = fw.map(w => (w === 'oh' ? 0 : /^\d$/.test(w) ? parseInt(w, 10) : has(ONES, w) && ONES[w] <= 9 ? ONES[w] : null));
+            if (digits.some(d => d === null)) return match;
+            fracPart = digits.join('');
+        }
+
+        return `${intPart}.${fracPart}`;
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Transform 5: Ordinals  (standalone)
 // ---------------------------------------------------------------------------
 
@@ -947,6 +1015,7 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     out = applyTruncatedMeridiem(out);
     out = applyDates(out);
     out = applyYears(out);
+    out = applyDecimals(out);
     out = applyOrdinals(out);
     out = applyCardinals(out);
     out = applyDigitGrouping(out);
@@ -1000,6 +1069,7 @@ export const __itnInternals = {
     applyTruncatedMeridiem,
     applyDates,
     applyYears,
+    applyDecimals,
     applyOrdinals,
     applyCardinals,
     applyDigitGrouping,
