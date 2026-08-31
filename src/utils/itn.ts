@@ -497,6 +497,33 @@ function parseMinute(raw: string): number | null {
  * model frequently writes the spoken letters that way, and without it
  * "eight A. M." survived untouched (real dictation, 2026-08-31).
  */
+// Words that legitimately follow a time CAPITALIZED without starting a new
+// sentence — "9 AM Monday", "8 PM Eastern" — so a meridiem dot before them
+// is abbreviation style, not a sentence ending.
+const TIME_CONTINUATIONS = new Set([
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+    ...Object.keys(MONTHS),
+    'est', 'edt', 'cst', 'cdt', 'mst', 'mdt', 'pst', 'pdt', 'utc', 'gmt',
+    'eastern', 'central', 'mountain', 'pacific',
+]);
+
+/**
+ * The period a converted meridiem should carry, if any. The model writes
+ * "a.m." / "A. M." with a trailing dot that does DOUBLE DUTY as the sentence
+ * period — consuming it blindly produced the run-on "…around 9:17 AM I found
+ * that…" (verbatim from real dictation, 2026-08-31). Keep a period when the
+ * matched meridiem ended with a dot AND a capitalized new sentence follows;
+ * a lowercase continuation, end-of-text, other punctuation, or a day/month/
+ * timezone word means the dot was just abbreviation style.
+ */
+function meridiemPeriod(merRaw: string, after: string): string {
+    if (!/\.$/.test(merRaw)) return '';
+    const next = after.match(/^[ \t]+([A-Za-z']+)/);
+    if (!next || !/^[A-Z]/.test(next[1])) return '';
+    if (TIME_CONTINUATIONS.has(next[1].toLowerCase())) return '';
+    return '.';
+}
+
 /** Regex alternation for a spoken/mixed minute — longest alternatives first
  *  so "twenty six" wins over bare "twenty". Shared with the truncated-meridiem
  *  rule below. */
@@ -517,7 +544,7 @@ function applyTimes(text: string): string {
         'gi'
     );
 
-    return text.replace(re, (match, hourRaw: string, minRaw: string | undefined, mer: string) => {
+    return text.replace(re, (match, hourRaw: string, minRaw: string | undefined, mer: string, offset: number, whole: string) => {
         const hourLower = hourRaw.toLowerCase();
         let hour: number;
         if (/^\d+$/.test(hourLower)) hour = parseInt(hourLower, 10);
@@ -526,6 +553,7 @@ function applyTimes(text: string): string {
         if (hour < 1 || hour > 12) return match;
 
         const meridiem = mer.replace(/[. ]/g, '').toUpperCase(); // AM / PM
+        const period = meridiemPeriod(mer, whole.slice(offset + match.length));
 
         let minute: number | null = null;
         if (minRaw) {
@@ -533,8 +561,8 @@ function applyTimes(text: string): string {
             if (minute === null) return match;
         }
 
-        if (minute === null || minute === 0) return `${hour} ${meridiem}`;
-        return `${hour}:${String(minute).padStart(2, '0')} ${meridiem}`;
+        if (minute === null || minute === 0) return `${hour} ${meridiem}${period}`;
+        return `${hour}:${String(minute).padStart(2, '0')} ${meridiem}${period}`;
     });
 }
 
@@ -556,7 +584,7 @@ function applyTruncatedMeridiem(text: string): string {
         `\\b(\\d{1,2}|${hourAlt})[ -]+(${minuteAltPattern()})[ ]+([AaPp])\\.?(?=$|[^A-Za-z0-9])`,
         'gi'
     );
-    return text.replace(re, (match, hourRaw: string, minRaw: string, letter: string) => {
+    return text.replace(re, (match, hourRaw: string, minRaw: string, letter: string, offset: number, whole: string) => {
         if (letter !== 'A' && letter !== 'P') return match; // capitals only
         const hourLower = hourRaw.toLowerCase();
         let hour: number;
@@ -567,8 +595,9 @@ function applyTruncatedMeridiem(text: string): string {
         const minute = parseMinute(minRaw);
         if (minute === null) return match;
         const meridiem = letter === 'A' ? 'AM' : 'PM';
-        if (minute === 0) return `${hour} ${meridiem}`;
-        return `${hour}:${String(minute).padStart(2, '0')} ${meridiem}`;
+        const period = meridiemPeriod(match, whole.slice(offset + match.length));
+        if (minute === 0) return `${hour} ${meridiem}${period}`;
+        return `${hour}:${String(minute).padStart(2, '0')} ${meridiem}${period}`;
     });
 }
 
