@@ -285,6 +285,25 @@ describe('applyITN — spaced/dotted meridiems (real ASR output)', () => {
     });
 });
 
+describe('applyITN — letter-number designators', () => {
+    it('joins a spoken letter and number into a designator', () => {
+        // "C five and C six" should read "C5 and C6" — verbatim from real
+        // dictation, 2026-08-31.
+        expect(applyITN('compare C five and C six')).toBe('compare C5 and C6');
+        expect(applyITN('the T six variant')).toBe('the T6 variant');
+        expect(applyITN('vitamin B twelve')).toBe('vitamin B12');
+        expect(applyITN('gate B 52')).toBe('gate B52');
+    });
+    it('never joins the article A or the pronoun I', () => {
+        expect(applyITN('A five minute break')).toBe('A five minute break');
+        expect(applyITN('should I five them')).toBe('should I five them');
+    });
+    it('a scale word after the number keeps the quantity reading', () => {
+        expect(applyITN('vitamin C five hundred milligrams'))
+            .toBe('vitamin C 500 milligrams');
+    });
+});
+
 describe('applyITN — the meridiem dot that was also the sentence period', () => {
     it('keeps the period when a new sentence follows the time', () => {
         // Run-on verbatim from real dictation, 2026-08-31: "…around 9:17 AM I
@@ -390,6 +409,7 @@ describe('applyITN — idempotency', () => {
         'eight 20 6 AM',
         'coffee at eight thirty A.',
         'around nine 17 A. M. I found that the milk',
+        'compare C five and C six',
         'the year twenty twenty six',
         'twenty-four',
     ];

@@ -157,6 +157,27 @@ export function peakWindowRms(audio: Float32Array, windowSamples = RMS_WINDOW_SA
 }
 
 /**
+ * Sample index of the QUIETEST window in the middle half of the buffer — the
+ * least-destructive place to cut audio that must be split (between words,
+ * not through one). Searching only [25%, 75%] keeps the halves balanced.
+ * Falls back to the midpoint for degenerate input.
+ */
+export function quietestSplitPoint(audio: Float32Array, windowSamples = RMS_WINDOW_SAMPLES): number {
+    const lo = Math.floor(audio.length * 0.25);
+    const hi = Math.floor(audio.length * 0.75);
+    let best = Math.floor(audio.length / 2);
+    let bestRms = Infinity;
+    for (let off = lo; off + windowSamples <= hi; off += windowSamples) {
+        let sum = 0;
+        for (let i = off; i < off + windowSamples; i++) sum += audio[i] * audio[i];
+        const rms = Math.sqrt(sum / windowSamples);
+        // <= prefers the LATEST minimum, mirroring the streamer's soft-cap.
+        if (rms <= bestRms) { bestRms = rms; best = off; }
+    }
+    return best;
+}
+
+/**
  * PREVENTIVE REFRESH.
  *
  * Recovering from a degraded session is second best: by then the user has

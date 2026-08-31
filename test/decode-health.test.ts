@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
     assessDecode, preferBetterDecode, shouldRefreshSessions, SESSION_MAX_AGE_MS, DecodeStats,
     peakWindowRms, nextRebuildAllowedAt, REBUILD_MIN_SPACING_MS, REBUILD_UNHELPFUL_BACKOFF_MS,
+    quietestSplitPoint,
 } from '../electron/decodeHealth';
 
 const stats = (o: Partial<DecodeStats>): DecodeStats =>
@@ -95,6 +96,33 @@ describe('peakWindowRms', () => {
 
     it('handles an empty buffer', () => {
         expect(peakWindowRms(new Float32Array(0))).toBe(0);
+    });
+});
+
+describe('quietestSplitPoint', () => {
+    it('finds the silent gap between two bursts of speech', () => {
+        // Loud [0..40%], silent [40..60%], loud [60..100%] — the cut must
+        // land inside the silent gap.
+        const n = 16000 * 4;
+        const audio = new Float32Array(n).fill(0.2);
+        audio.fill(0, Math.floor(n * 0.4), Math.floor(n * 0.6));
+        const cut = quietestSplitPoint(audio);
+        expect(cut).toBeGreaterThanOrEqual(Math.floor(n * 0.4));
+        expect(cut).toBeLessThan(Math.floor(n * 0.6));
+    });
+    it('stays inside the middle half so the halves are balanced', () => {
+        // Uniformly loud audio with silence only at the very edges — the cut
+        // must NOT chase that silence outside [25%, 75%].
+        const n = 16000 * 4;
+        const audio = new Float32Array(n).fill(0.2);
+        audio.fill(0, 0, 1024);
+        audio.fill(0, n - 1024, n);
+        const cut = quietestSplitPoint(audio);
+        expect(cut).toBeGreaterThanOrEqual(Math.floor(n * 0.25));
+        expect(cut).toBeLessThan(Math.floor(n * 0.75));
+    });
+    it('falls back to the midpoint for tiny buffers', () => {
+        expect(quietestSplitPoint(new Float32Array(100))).toBe(50);
     });
 });
 
