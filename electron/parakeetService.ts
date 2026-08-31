@@ -32,7 +32,8 @@ import { detectSpeechSegments, isVADReady } from './vadService';
 import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
 import { joinSegments } from './segmentJoin';
-import { assessDecode, preferBetterDecode, shouldRefreshSessions } from './decodeHealth';
+import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt } from './decodeHealth';
+import { isSessionInProgress as isStreamingSessionInProgress } from './streamingTranscriber';
 import { diag } from './diagnostics';
 
 // Self-hosted on GitHub releases (reliable CDN, full control)
@@ -506,24 +507,65 @@ const FIXED_SHAPE_WARM_LIMIT_MS = 700;
 let sessionsBuiltAt = 0;
 /** Transcriptions currently reading the sessions — never rebuild above zero. */
 let inFlightTranscriptions = 0;
+/** Reactive-rebuild throttle: no rebuild before this time (see decodeHealth). */
+let nextReactiveRebuildAt = 0;
+/** A decode looked degraded mid-recording — rebuild once the session is idle. */
+let deferredRebuildWanted = false;
+
+/**
+ * Free ONNX sessions and swallow errors. Before this existed, every rebuild
+ * LEAKED the replaced sessions — the DirectML encoder alone holds ~650MB of
+ * GPU memory, so a run with several rebuilds degraded the whole machine's
+ * inference speed until app restart.
+ */
+async function releaseSessions(sessions: Array<ort.InferenceSession | null>): Promise<void> {
+    for (const s of sessions) {
+        try {
+            await s?.release();
+        } catch (e) {
+            console.warn('[Parakeet] Releasing an old session failed (continuing):', e);
+        }
+    }
+}
 
 async function rebuildSessions(): Promise<boolean> {
+    const created: ort.InferenceSession[] = [];
     try {
         const modelDir = getModelDir();
         const providers = getExecutionProviders();
         console.warn('[Parakeet] Rebuilding inference sessions (suspected degraded session)…');
         const t0 = Date.now();
-        encoderSession = await ort.InferenceSession.create(
+        // Build all three BEFORE swapping any, so a failure partway through
+        // can't leave a mismatched encoder/decoder/joiner trio in place.
+        const newEncoder = await ort.InferenceSession.create(
             join(modelDir, 'encoder.int8.onnx'), core.encoderSessionOptions(providers));
-        decoderSession = await ort.InferenceSession.create(
+        created.push(newEncoder);
+        const newDecoder = await ort.InferenceSession.create(
             join(modelDir, 'decoder.int8.onnx'), core.smallModelSessionOptions());
-        joinerSession = await ort.InferenceSession.create(
+        created.push(newDecoder);
+        const newJoiner = await ort.InferenceSession.create(
             join(modelDir, 'joiner.int8.onnx'), core.smallModelSessionOptions());
+        created.push(newJoiner);
+
+        const retired = [encoderSession, decoderSession, joinerSession];
+        encoderSession = newEncoder;
+        decoderSession = newDecoder;
+        joinerSession = newJoiner;
         sessionsBuiltAt = Date.now();
         console.log(`[Parakeet] ✓ Sessions rebuilt in ${Date.now() - t0}ms`);
+
+        // Release the replaced sessions only when nothing can be mid-run on
+        // them: 0 in-flight (idle rebuild) or 1 (the inline retry's own
+        // caller, whose first pass has already completed).
+        if (inFlightTranscriptions <= 1) {
+            await releaseSessions(retired);
+        } else {
+            console.warn('[Parakeet] Old sessions NOT released — another transcription may still be reading them.');
+        }
         return true;
     } catch (e) {
         console.error('[Parakeet] Session rebuild failed — keeping existing sessions:', e);
+        await releaseSessions(created); // don't leak a half-built trio
         return false;
     }
 }
@@ -534,8 +576,43 @@ async function rebuildSessions(): Promise<boolean> {
  * their text, so the ~1s rebuild is invisible. Fire-and-forget by design; a
  * failure here is harmless because the old sessions stay in place.
  */
+let refreshRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+
 function maybeRefreshSessions(): void {
     if (useSidecar || !isInitialized) return;
+    // Between streamed segments the in-flight count drops to zero, but the
+    // recording (or its stop-time drain) is still live — swapping (and now
+    // releasing) sessions there would stall the very next decode in the
+    // queue. Idle means idle. A deferred rebuild can't fire from a decode's
+    // own `finally` either (the session object still exists at that point),
+    // so check back shortly after everything drains — the delay also keeps
+    // the rebuild's CPU/GPU burst clear of the paste.
+    if (isStreamingSessionInProgress() || inFlightTranscriptions > 0) {
+        if (deferredRebuildWanted && !refreshRecheckTimer) {
+            refreshRecheckTimer = setTimeout(() => {
+                refreshRecheckTimer = null;
+                maybeRefreshSessions();
+            }, 5000);
+            refreshRecheckTimer.unref?.();
+        }
+        return;
+    }
+
+    // A decode during the last recording looked degraded and the rebuild was
+    // deferred to now (see transcribeSinglePass). Fire-and-forget: the user
+    // already has their text.
+    if (deferredRebuildWanted) {
+        deferredRebuildWanted = false;
+        if (Date.now() < nextReactiveRebuildAt) return; // throttled — the 4h preventive refresh still covers us
+        nextReactiveRebuildAt = nextRebuildAllowedAt(Date.now(), true);
+        console.log('[Parakeet] Deferred rebuild: a decode looked degraded during the last recording — rebuilding while idle');
+        diag.sessionRefreshed();
+        void rebuildSessions().then((ok) => {
+            if (ok) return runSinglePass(new Float32Array(8000)).then(() => undefined);
+        }).catch(() => { /* next dictation warms it instead */ });
+        return;
+    }
+
     if (!shouldRefreshSessions({ builtAt: sessionsBuiltAt, now: Date.now(), inFlight: inFlightTranscriptions })) return;
     const ageHours = ((Date.now() - sessionsBuiltAt) / 3_600_000).toFixed(1);
     console.log(`[Parakeet] Preventive refresh: sessions are ${ageHours}h old, rebuilding while idle`);
@@ -567,20 +644,41 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     totalFrames: number;
 }> {
     const first = await runSinglePass(audioData);
-    const verdict = assessDecode(first);
+    // audioPeakRms lets the verdict pass quiet audio: an all-blank decode of
+    // a breath or a lead-in pause is the decoder being right, not degraded.
+    const verdict = assessDecode({ ...first, audioPeakRms: peakWindowRms(audioData) });
     if (!verdict.degraded) return first;
+    diag.decodeDegraded();
+
+    // Mid-recording (or during the stop-time drain), a rebuild would stall
+    // the serialized decode queue for seconds — previews, real segments, and
+    // the paste all wait behind it. Flag the suspicion instead;
+    // maybeRefreshSessions rebuilds once everything is idle.
+    if (isStreamingSessionInProgress()) {
+        console.warn(`[Parakeet] ⚠ Degraded decode mid-recording (${verdict.reason}) — deferring session rebuild to idle.`);
+        deferredRebuildWanted = true;
+        return first;
+    }
+
+    // A recent rebuild whose retry changed nothing proved the decode is a
+    // deterministic function of the audio — more rebuilds cannot help and
+    // each costs seconds (see decodeHealth's throttle).
+    if (Date.now() < nextReactiveRebuildAt) {
+        console.warn(`[Parakeet] ⚠ Degraded decode (${verdict.reason}) — rebuild throttled, keeping the result.`);
+        return first;
+    }
 
     console.warn(`[Parakeet] ⚠ Degraded transcription: ${verdict.reason}. Rebuilding sessions and retrying once.`);
-    diag.decodeDegraded();
     if (!(await rebuildSessions())) return first;
 
     const second = await runSinglePass(audioData);
     const better = preferBetterDecode(first, second);
+    nextReactiveRebuildAt = nextRebuildAllowedAt(Date.now(), better === second);
     if (better === second) {
         diag.decodeRecovered();
         console.log(`[Parakeet] ✓ Retry recovered speech (reached frame ${second.lastTokenFrame} vs ${first.lastTokenFrame})`);
     } else {
-        console.warn('[Parakeet] Retry did not improve the result — keeping the original.');
+        console.warn('[Parakeet] Retry did not improve the result — keeping the original and backing off further rebuilds.');
     }
     return better;
 }

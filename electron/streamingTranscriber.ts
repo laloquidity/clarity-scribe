@@ -163,6 +163,16 @@ export function isSessionActive(): boolean {
 }
 
 /**
+ * True from startSession until finalizeSession (or abort) completes. Unlike
+ * isSessionActive this includes the stop-time drain — the window where the
+ * tail decode is exactly what the paste is waiting on, so nothing expensive
+ * (like an inference-session rebuild) may piggyback on it either.
+ */
+export function isSessionInProgress(): boolean {
+    return session !== null;
+}
+
+/**
  * Begin a streaming session. Returns false (and stays inactive) when no
  * transcriber is configured — callers then use the classic batch path.
  */
