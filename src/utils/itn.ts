@@ -365,6 +365,35 @@ function applyAcronyms(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Transform: Letter-number designators  (run after acronyms)
+// ---------------------------------------------------------------------------
+
+/**
+ * "C five" → "C5", "T six" → "T6", "B twelve" → "B12": a spoken single letter
+ * followed by a spoken small number is a designator — versions, models,
+ * vitamins, gates — dictated letter-then-number and transcribed as an
+ * isolated capital plus a number word ("C five and C six" should read
+ * "C5 and C6"; real dictation, 2026-08-31).
+ *
+ * Guards: A and I are excluded (article and pronoun — "A five minute break"
+ * must survive), the letter must be a bare capital, and a scale word after
+ * the number vetoes the join, so "vitamin C five hundred milligrams" keeps
+ * its quantity (and still becomes "vitamin C 500 milligrams" downstream).
+ */
+function applyLetterNumbers(text: string): string {
+    const numAlt = Object.keys(ONES).join('|');
+    const scaleAlt = Object.keys(SCALES).join('|');
+    const re = new RegExp(
+        `(?<![A-Za-z0-9])([B-HJ-Z]) ((?:${numAlt})|\\d{1,4})(?![A-Za-z0-9])(?![ -](?:${scaleAlt})\\b)`,
+        'g'
+    );
+    return text.replace(re, (_m, letter: string, num: string) => {
+        const v = /^\d+$/.test(num) ? num : String(ONES[num]);
+        return `${letter}${v}`;
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Transform 2: Currency  (run before plain cardinals)
 // ---------------------------------------------------------------------------
 
@@ -912,6 +941,7 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     // smart formatting — see ITNOptions. Off unless the caller opts in.
     if (opts.punctuation) out = applyPunctuation(out);
     out = applyAcronyms(out);
+    out = applyLetterNumbers(out);
     out = applyCurrency(out);
     out = applyTimes(out);
     out = applyTruncatedMeridiem(out);
@@ -964,6 +994,7 @@ function applyDigitGrouping(text: string): string {
 export const __itnInternals = {
     applyPunctuation,
     applyAcronyms,
+    applyLetterNumbers,
     applyCurrency,
     applyTimes,
     applyTruncatedMeridiem,

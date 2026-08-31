@@ -32,7 +32,7 @@ import { detectSpeechSegments, isVADReady } from './vadService';
 import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
 import { joinSegments } from './segmentJoin';
-import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt, QUIET_PEAK_RMS } from './decodeHealth';
+import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt, QUIET_PEAK_RMS, quietestSplitPoint } from './decodeHealth';
 import { isSessionInProgress as isStreamingSessionInProgress } from './streamingTranscriber';
 import { diag } from './diagnostics';
 
@@ -846,6 +846,31 @@ async function tryHybridDecode(audioData: Float32Array): Promise<string | null> 
     return out.text;
 }
 
+/**
+ * Last-resort decode for audio the collapse refuses to release: cut at the
+ * quietest moment and decode the halves, recursing on a half that still
+ * comes back empty. The deterministic DirectML collapse is a property of the
+ * WINDOW, not the speech — in the logged failure (2026-08-31) a 3.8s segment
+ * decoded to "" through both the single pass and an identical VAD window,
+ * while a 1.3s preview of the same audio read "In table form." perfectly.
+ * Smaller windows are the recovery that provably works.
+ */
+async function transcribeForcedSplit(audio: Float32Array, depth: number): Promise<string> {
+    if (depth <= 0 || audio.length < 2 * 16000) return ''; // halves below ~1s decode poorly
+    const cut = quietestSplitPoint(audio);
+    const texts: string[] = [];
+    for (const half of [audio.subarray(0, cut), audio.subarray(cut)]) {
+        let text = (await transcribeSinglePass(half)).text.trim();
+        if (!text && peakWindowRms(half) >= QUIET_PEAK_RMS) {
+            text = await transcribeForcedSplit(half, depth - 1);
+        }
+        if (text) texts.push(text);
+    }
+    // The cut lands mid-utterance by construction — let the seam repair
+    // lowercase a spuriously capitalized continuation.
+    return joinSegments(texts.map(text => ({ text, forcedSplit: true })));
+}
+
 async function runTranscription(
     audioData: Float32Array,
     options: { language?: string; onProgress?: (progress: number) => void; preview?: boolean } = {}
@@ -894,6 +919,10 @@ async function runTranscription(
         // Windows: try single-pass up to 120s, fallback if truncated
         const singlePassLimit = process.platform === 'darwin' ? 60 : 120;
         const COVERAGE_THRESHOLD = 0.85; // 85% — below this, consider truncated
+        // Set when we fell through because a decode of voiced audio came back
+        // empty — if the VAD retry ALSO comes back empty, escalate to the
+        // forced-split decode instead of returning nothing.
+        let emptyVoicedFallthrough = false;
 
         if (durationSeconds <= singlePassLimit) {
             const { text, melTime, encTime, decTime, lastTokenFrame, totalFrames } = await transcribeSinglePass(audioData);
@@ -921,6 +950,7 @@ async function runTranscription(
                 // Fall through to batched encoding below
             } else if (ateSpeech) {
                 console.log(`[Parakeet] ⚠ Empty decode of voiced audio (${durationSeconds.toFixed(1)}s, peak RMS ${peakWindowRms(audioData).toFixed(4)}). Retrying with VAD segmentation...`);
+                emptyVoicedFallthrough = true;
                 // Fall through to batched encoding below
             } else {
                 console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
@@ -1049,6 +1079,20 @@ async function runTranscription(
         const rtf = durationSeconds / (totalTime / 1000);
         console.log(`[Parakeet] ⏱ Mel: ${totalMel}ms | Encoder: ${totalEnc}ms | Decoder: ${totalDec}ms | Total: ${totalTime}ms (${rtf.toFixed(1)}x real-time)`);
         console.log(`[Parakeet] Result (${audioSegments.length} segments): "${fullText.substring(0, 80)}"`);
+
+        // VAD can hand back essentially the same window it was asked to save
+        // (one all-speech segment) — the deterministic collapse then repeats
+        // and the retry changes nothing. Decode through FORCED smaller
+        // windows before giving speech up as lost.
+        if (!fullText.trim() && emptyVoicedFallthrough) {
+            console.log('[Parakeet] ⚠ VAD retry still empty — forcing sub-window decode');
+            const forced = await transcribeForcedSplit(audioData, 3);
+            if (forced) {
+                console.log(`[Parakeet] ✓ Forced split recovered: "${forced.substring(0, 80)}"`);
+                return forced;
+            }
+            console.log('[Parakeet] Forced split found no speech either.');
+        }
         return fullText;
     } catch (error) {
         console.error('[Parakeet] Transcription failed:', error);
