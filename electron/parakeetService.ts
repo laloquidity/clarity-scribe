@@ -32,7 +32,7 @@ import { detectSpeechSegments, isVADReady } from './vadService';
 import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
 import { joinSegments } from './segmentJoin';
-import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt } from './decodeHealth';
+import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt, QUIET_PEAK_RMS } from './decodeHealth';
 import { isSessionInProgress as isStreamingSessionInProgress } from './streamingTranscriber';
 import { diag } from './diagnostics';
 
@@ -762,7 +762,7 @@ async function runSinglePass(audioData: Float32Array): Promise<{
  */
 export async function transcribeParakeet(
     audioData: Float32Array,
-    options: { language?: string; onProgress?: (progress: number) => void } = {}
+    options: { language?: string; onProgress?: (progress: number) => void; preview?: boolean } = {}
 ): Promise<string> {
     if (!isInitialized) {
         throw new Error('Parakeet not initialized');
@@ -848,7 +848,7 @@ async function tryHybridDecode(audioData: Float32Array): Promise<string | null> 
 
 async function runTranscription(
     audioData: Float32Array,
-    options: { language?: string; onProgress?: (progress: number) => void } = {}
+    options: { language?: string; onProgress?: (progress: number) => void; preview?: boolean } = {}
 ): Promise<string> {
 
     const durationSeconds = audioData.length / 16000;
@@ -904,8 +904,23 @@ async function runTranscription(
 
             // Check for DirectML encoder tail truncation
             const coverage = totalFrames > 0 ? lastTokenFrame / totalFrames : 1;
-            if (process.platform !== 'darwin' && coverage < COVERAGE_THRESHOLD && durationSeconds > 10) {
+            const truncated = process.platform !== 'darwin' && coverage < COVERAGE_THRESHOLD && durationSeconds > 10;
+            // An EMPTY decode of audio that clearly holds speech is the same
+            // collapse wearing a shorter length — and it is deterministic:
+            // a session rebuild reproduces it bit-for-bit, but decoding the
+            // audio through different windows does not (both proven in logs,
+            // 2026-08-31, where "at eight thirty AM" decoded to "" single-pass
+            // while a shorter preview of the same audio heard "At eight").
+            // So retry through the VAD-segmented path below. Previews are
+            // exempt: they redecode moments later anyway, and the retry's
+            // ~0.5s would stall the live queue for display-only text.
+            const ateSpeech = !options.preview && text.trim() === '' && durationSeconds >= 1
+                && peakWindowRms(audioData) >= QUIET_PEAK_RMS;
+            if (truncated) {
                 console.log(`[Parakeet] ⚠ Truncation detected: last token at ${(coverage * 100).toFixed(0)}% coverage (frame ${lastTokenFrame}/${totalFrames}). Retrying with batched encoding...`);
+                // Fall through to batched encoding below
+            } else if (ateSpeech) {
+                console.log(`[Parakeet] ⚠ Empty decode of voiced audio (${durationSeconds.toFixed(1)}s, peak RMS ${peakWindowRms(audioData).toFixed(4)}). Retrying with VAD segmentation...`);
                 // Fall through to batched encoding below
             } else {
                 console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
