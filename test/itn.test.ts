@@ -285,6 +285,22 @@ describe('applyITN — spaced/dotted meridiems (real ASR output)', () => {
     });
 });
 
+describe('applyITN — compound minutes in any word/digit mix', () => {
+    it('reads the minute however the model chose to write it', () => {
+        // "eight 20 6 AM" verbatim from real dictation (spoken "8:26 AM"),
+        // 2026-08-31: the model split the minute into digits-tens + digit-one.
+        expect(applyITN('eight 20 6 AM')).toBe('8:26 AM');
+        expect(applyITN('eight twenty six AM')).toBe('8:26 AM');
+        expect(applyITN('eight twenty 6 AM')).toBe('8:26 AM');
+        expect(applyITN('8 20 6 PM')).toBe('8:26 PM');
+    });
+    it('reads bare tens and spoken leading-zero minutes', () => {
+        expect(applyITN('eight 20 AM')).toBe('8:20 AM');
+        expect(applyITN('eight twenty AM')).toBe('8:20 AM');
+        expect(applyITN('seven oh five PM')).toBe('7:05 PM');
+    });
+});
+
 describe('applyITN — spoken years', () => {
     it('joins century-word pairs into a four-digit year', () => {
         // "20 26" verbatim from real dictation, 2026-08-31.
@@ -334,6 +350,7 @@ describe('applyITN — idempotency', () => {
         'open paren note close paren',
         'our C F O and C I O met',
         'eight A. M.',
+        'eight 20 6 AM',
         'the year twenty twenty six',
         'twenty-four',
     ];
