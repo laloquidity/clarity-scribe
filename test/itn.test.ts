@@ -285,6 +285,25 @@ describe('applyITN — spaced/dotted meridiems (real ASR output)', () => {
     });
 });
 
+describe('applyITN — the meridiem dot that was also the sentence period', () => {
+    it('keeps the period when a new sentence follows the time', () => {
+        // Run-on verbatim from real dictation, 2026-08-31: "…around 9:17 AM I
+        // found that…" — the model's "A. M." dot was the sentence ending too.
+        expect(applyITN('around nine 17 A. M. I found that the milk'))
+            .toBe('around 9:17 AM. I found that the milk');
+        expect(applyITN('at eight thirty A. Then we left'))
+            .toBe('at 8:30 AM. Then we left');
+    });
+    it('drops the dot for lowercase continuations and end of text', () => {
+        expect(applyITN('nine a.m. yesterday was fine')).toBe('9 AM yesterday was fine');
+        expect(applyITN('nine a.m.')).toBe('9 AM');
+    });
+    it('treats day/month/timezone continuations as the same sentence', () => {
+        expect(applyITN('nine a.m. Monday works')).toBe('9 AM Monday works');
+        expect(applyITN('eight p.m. Eastern is late')).toBe('8 PM Eastern is late');
+    });
+});
+
 describe('applyITN — truncated meridiem (the lost "M")', () => {
     it('finishes a clipped AM/PM when minutes are present', () => {
         // "at eight thirty A." and "eight 30 A." verbatim from real
@@ -370,6 +389,7 @@ describe('applyITN — idempotency', () => {
         'eight A. M.',
         'eight 20 6 AM',
         'coffee at eight thirty A.',
+        'around nine 17 A. M. I found that the milk',
         'the year twenty twenty six',
         'twenty-four',
     ];
