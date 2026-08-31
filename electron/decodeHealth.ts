@@ -40,6 +40,13 @@ export interface DecodeStats {
     collapseRecoveries: number;
     /** Share of decode iterations that emitted blank, 0–1. */
     blankRatio: number;
+    /**
+     * Loudest ~32ms-window RMS of the segment's audio (see peakWindowRms),
+     * when the caller has the samples at hand. Lets the verdict tell
+     * "silence, correctly decoded as nothing" from "speech, wrongly decoded
+     * as nothing" — without it, both look like an all-blank decode.
+     */
+    audioPeakRms?: number;
 }
 
 export interface DecodeVerdict {
@@ -64,6 +71,19 @@ const MIN_FRAMES = 25;
 const TAIL_AFTER_RECOVERY = 0.2;
 /** Near-total blanks on a segment that should contain speech. */
 const BLANK_RATIO_ALONE = 0.8;
+/** ...but only when the tokens also died out early (see below). */
+const BLANK_TAIL = 0.25;
+
+/**
+ * Audio whose LOUDEST analysis window sits below this RMS cannot contain
+ * speech this pipeline could decode: it is the level at which even the
+ * streaming segmenter's permissive energy gate (SILENCE_RMS_CEIL in
+ * streamingTranscriber) would never count a single window as voiced. Speech
+ * peaks far above it (~0.1 on a typical Windows mic, ~0.02 on the quietest
+ * supported macOS setups). An all-blank decode of such audio is the decoder
+ * being right about silence, not broken.
+ */
+const QUIET_PEAK_RMS = 0.006;
 
 /**
  * Did this decode lose speech? Conservative by construction: a healthy decode
@@ -71,6 +91,16 @@ const BLANK_RATIO_ALONE = 0.8;
  */
 export function assessDecode(s: DecodeStats): DecodeVerdict {
     if (s.totalFrames < MIN_FRAMES) return { degraded: false, reason: '' };
+
+    // Quiet audio decodes to blanks BECAUSE it is quiet. The live preview
+    // hands us open segments whose energy gate passed on a breath or the
+    // lead-in pause before a sentence; the decoder correctly emits nothing.
+    // Treating that as degradation caused multi-second session rebuilds in
+    // the middle of recordings (logged 2026-08-31: ~10 rebuilds in one app
+    // run, not one of which changed the result).
+    if (s.audioPeakRms !== undefined && s.audioPeakRms < QUIET_PEAK_RMS) {
+        return { degraded: false, reason: '' };
+    }
 
     const tail = unusedTailRatio(s);
     const pct = (n: number) => `${(n * 100).toFixed(0)}%`;
@@ -93,12 +123,35 @@ export function assessDecode(s: DecodeStats): DecodeVerdict {
     // does not trim it as tightly as that rule assumed. Only a tail that
     // accompanies a collapse (above) tells us speech was actually lost.
 
-    // Almost everything came back blank.
-    if (s.blankRatio >= BLANK_RATIO_ALONE) {
-        return { degraded: true, reason: `${pct(s.blankRatio)} of decode steps emitted blank` };
+    // Almost everything came back blank AND the tokens died out early. A high
+    // blank share by itself is just sparse speech in a long window: a real
+    // dictation ("But the priority here." — 7 tokens in 4.3s, 82% blank,
+    // tokens reaching the final frame) tripped the old ratio-only rule and
+    // paid two pointless rebuilds for a correct transcript.
+    if (s.blankRatio >= BLANK_RATIO_ALONE && tail >= BLANK_TAIL) {
+        return { degraded: true, reason: `${pct(s.blankRatio)} of decode steps emitted blank and tokens stopped at ${pct(1 - tail)} of the audio` };
     }
 
     return { degraded: false, reason: '' };
+}
+
+/** ~32ms at 16kHz — matches the streaming segmenter's analysis window. */
+const RMS_WINDOW_SAMPLES = 512;
+
+/**
+ * Loudest windowed RMS of an audio buffer, for DecodeStats.audioPeakRms.
+ * O(n) over the samples — negligible next to a single encoder run.
+ */
+export function peakWindowRms(audio: Float32Array, windowSamples = RMS_WINDOW_SAMPLES): number {
+    let peak = 0;
+    for (let off = 0; off < audio.length; off += windowSamples) {
+        const end = Math.min(off + windowSamples, audio.length);
+        let sum = 0;
+        for (let i = off; i < end; i++) sum += audio[i] * audio[i];
+        const rms = Math.sqrt(sum / (end - off));
+        if (rms > peak) peak = rms;
+    }
+    return peak;
 }
 
 /**
@@ -142,4 +195,23 @@ export function preferBetterDecode<T extends DecodeStats & { text: string }>(ori
     if (retry.lastTokenFrame > original.lastTokenFrame) return retry;
     if (retry.lastTokenFrame === original.lastTokenFrame && retry.text.length > original.text.length) return retry;
     return original;
+}
+
+/**
+ * REACTIVE REBUILD THROTTLE.
+ *
+ * The rebuild-and-retry exists for exactly one failure: a session that has
+ * actually degraded, where a fresh session decodes the same audio
+ * DIFFERENTLY. When the retry comes back identical, the decode was a
+ * deterministic function of the audio — no number of rebuilds will change
+ * it, and each one stalls the pipeline for seconds. So: space rebuilds out,
+ * and back off hard after one that didn't help. (Logged 2026-08-31: ~10
+ * rebuilds in one app run, every retry identical — pure waste.)
+ */
+export const REBUILD_MIN_SPACING_MS = 5 * 60_000;
+export const REBUILD_UNHELPFUL_BACKOFF_MS = 15 * 60_000;
+
+/** When the next reactive rebuild may run, given how this one turned out. */
+export function nextRebuildAllowedAt(now: number, retryImproved: boolean): number {
+    return now + (retryImproved ? REBUILD_MIN_SPACING_MS : REBUILD_UNHELPFUL_BACKOFF_MS);
 }

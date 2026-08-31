@@ -6,7 +6,10 @@
  * handed "So that way we can get".
  */
 import { describe, it, expect } from 'vitest';
-import { assessDecode, preferBetterDecode, shouldRefreshSessions, SESSION_MAX_AGE_MS, DecodeStats } from '../electron/decodeHealth';
+import {
+    assessDecode, preferBetterDecode, shouldRefreshSessions, SESSION_MAX_AGE_MS, DecodeStats,
+    peakWindowRms, nextRebuildAllowedAt, REBUILD_MIN_SPACING_MS, REBUILD_UNHELPFUL_BACKOFF_MS,
+} from '../electron/decodeHealth';
 
 const stats = (o: Partial<DecodeStats>): DecodeStats =>
     ({ lastTokenFrame: 80, totalFrames: 85, collapseRecoveries: 0, blankRatio: 0.3, ...o });
@@ -36,8 +39,62 @@ describe('assessDecode — the reported failure', () => {
         expect(assessDecode(stats({ lastTokenFrame: 30, totalFrames: 85 })).degraded).toBe(false);
     });
 
-    it('flags near-total blanks', () => {
-        expect(assessDecode(stats({ blankRatio: 0.95 })).degraded).toBe(true);
+    it('flags near-total blanks when the tokens also died out early', () => {
+        expect(assessDecode(stats({ blankRatio: 0.95, lastTokenFrame: 40 })).degraded).toBe(true);
+    });
+
+    it('does NOT flag near-total blanks when tokens reach the end — that is sparse speech', () => {
+        // Regression (2026-08-31 logs): "But the priority here." — 7 tokens in
+        // 4.3s, 82% blank, last token at frame 52/54 — a CORRECT transcript
+        // that paid two ~5s session rebuilds under the old ratio-only rule.
+        expect(assessDecode({
+            lastTokenFrame: 52, totalFrames: 54, collapseRecoveries: 1, blankRatio: 0.82,
+        }).degraded).toBe(false);
+        // The old shape of this test: 95% blank but full coverage.
+        expect(assessDecode(stats({ blankRatio: 0.95 })).degraded).toBe(false);
+    });
+});
+
+describe('assessDecode — quiet audio is not degradation', () => {
+    // 2026-08-31 logs: live previews of open segments that held only a breath
+    // or a lead-in pause decoded to zero tokens, tripped the collapse/blank
+    // rules, and triggered ~10 mid-recording rebuilds — none of which changed
+    // the result. Zero tokens from quiet audio is the decoder being RIGHT.
+    const silentCollapse: DecodeStats = {
+        lastTokenFrame: 0, totalFrames: 37, collapseRecoveries: 1, blankRatio: 1,
+    };
+
+    it('passes an all-blank decode when the audio never got loud enough for speech', () => {
+        expect(assessDecode({ ...silentCollapse, audioPeakRms: 0.002 }).degraded).toBe(false);
+    });
+
+    it('still flags the same decode when the audio was clearly voiced', () => {
+        expect(assessDecode({ ...silentCollapse, audioPeakRms: 0.1 }).degraded).toBe(true);
+    });
+
+    it('behaves as before when the caller has no audio energy to offer', () => {
+        expect(assessDecode(silentCollapse).degraded).toBe(true);
+    });
+});
+
+describe('peakWindowRms', () => {
+    it('is zero for silence', () => {
+        expect(peakWindowRms(new Float32Array(4096))).toBe(0);
+    });
+
+    it('finds a loud window even when the rest of the buffer is silent', () => {
+        const audio = new Float32Array(4096);
+        audio.fill(0.5, 1024, 1024 + 512); // one fully loud 512-sample window
+        expect(peakWindowRms(audio)).toBeCloseTo(0.5, 5);
+    });
+
+    it('handles a buffer shorter than one window', () => {
+        const audio = new Float32Array(100).fill(0.25);
+        expect(peakWindowRms(audio)).toBeCloseTo(0.25, 5);
+    });
+
+    it('handles an empty buffer', () => {
+        expect(peakWindowRms(new Float32Array(0))).toBe(0);
     });
 });
 
@@ -117,5 +174,20 @@ describe('preferBetterDecode', () => {
     it('never churns when the two are identical', () => {
         const a = d(80, 'same');
         expect(preferBetterDecode(a, d(80, 'same'))).toBe(a);
+    });
+});
+
+describe('nextRebuildAllowedAt — rebuilds must earn their keep', () => {
+    const now = 1_000_000_000;
+
+    it('spaces out rebuilds even when the retry helped', () => {
+        expect(nextRebuildAllowedAt(now, true)).toBe(now + REBUILD_MIN_SPACING_MS);
+    });
+
+    it('backs off much harder after a rebuild whose retry changed nothing', () => {
+        // An identical retry proves the decode deterministic — session state
+        // was not the problem, so rebuilding again soon is pure cost.
+        expect(nextRebuildAllowedAt(now, false)).toBe(now + REBUILD_UNHELPFUL_BACKOFF_MS);
+        expect(REBUILD_UNHELPFUL_BACKOFF_MS).toBeGreaterThan(REBUILD_MIN_SPACING_MS);
     });
 });
