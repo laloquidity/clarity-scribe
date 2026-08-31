@@ -62,7 +62,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | stop→text ~0.5s at any length — up to **1212× real-time** streaming (Windows RTX 3090) / **1055×** (Apple Silicon); ~74× batch (Windows GPU) |
+| Speed | stop→text ~0.5s at any length — up to **1571× real-time** streaming (Windows RTX 3090) / **1055×** (Apple Silicon); ~74× batch (Windows GPU) |
 | Model Size | ~470 MB (CoreML, macOS) / ~890 MB (INT8 ONNX, Windows & fallback) |
 
 ### Whisper Large V3 Turbo
@@ -108,8 +108,8 @@ Measured from **160 real dictations** — 63 minutes of actual speech, 1.3 s to
 
 \* **× real-time** = how much audio you recorded, divided by how long you waited
 — measured from **the moment you stop speaking to the text appearing in your
-app**, paste included. A 2 m 53 s recording that landed 143 ms after the stop
-key is 1212× real-time.
+app**, paste included. Current record: an **11 m 39 s** recording that landed
+**445 ms** after the stop key — **1571× real-time**.
 
 **The longer you speak, the higher the multiple climbs** — that's the streaming
 architecture working. Your speech is transcribed *as you talk*, at natural
@@ -276,7 +276,7 @@ With **live streaming transcription** (default on), segments are processed *duri
 | 30–60s | 30 | ~500ms | **432×** |
 | Over a minute | 12 | ~580ms | **1212×** |
 
-*Across all 160: **p50 490 ms · p90 677 ms · p99 888 ms** — a three-minute dictation lands as fast as a three-second one. Longest wait ever recorded: 0.9 s.*
+*Across all 160: **p50 490 ms · p90 677 ms · p99 888 ms** — a three-minute dictation lands as fast as a three-second one. Longest wait ever recorded: 0.9 s. Current single-dictation record, set after this dataset: **11 m 39 s of audio pasted 445 ms after the stop key — 1571× real-time**.*
 
 Batch-mode numbers (streaming off, or when the fallback engages) on the same hardware:
 
