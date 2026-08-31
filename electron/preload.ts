@@ -3,6 +3,9 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('electronAPI', {
     // Transcription
     transcribe: (audio: Float32Array, sampleRate: number) => ipcRenderer.invoke('transcribe', audio, sampleRate),
+    // Lazy stop path: finalize a streamed dictation without shipping audio.
+    // handled:false → caller must resample and send the full buffer above.
+    transcribeStreamed: (durationMs: number) => ipcRenderer.invoke('transcribe-streamed', durationMs),
     isWhisperReady: () => ipcRenderer.invoke('is-whisper-ready'),
     copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text),
 

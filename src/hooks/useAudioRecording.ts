@@ -182,7 +182,7 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
     }, []);
 
     const processRecordedAudio = useCallback(
-        (chunks: Float32Array[], recordedSampleRate: number) => {
+        async (chunks: Float32Array[], recordedSampleRate: number) => {
             const totalLength = chunks.reduce((acc, buf) => acc + buf.length, 0);
             if (totalLength === 0) { abortStreaming(); onStateChange('IDLE'); return; }
 
@@ -194,6 +194,41 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
                 return;
             }
 
+            // Report the dictation's stats ONCE, paired with the stop instant,
+            // so the consumer can show audio length / latency / speed.
+            let statsReported = false;
+            const reportStats = (audioMs: number) => {
+                if (statsReported) return;
+                statsReported = true;
+                onRecordingCompleteRef.current?.({
+                    audioMs,
+                    stoppedAt: stoppedAtRef.current,
+                    // How much speech the mic missed at the start. Logged in the
+                    // main process so it lands in the terminal with everything
+                    // else — renderer console output does not.
+                    captureLatencyMs: Math.round(captureLatencyMsRef.current),
+                });
+            };
+
+            // Lazy stop path: a streaming session already transcribed the
+            // recording as it happened, so finalize needs NO audio from us.
+            // Concatenating, resampling, and shipping the full recording over
+            // IPC here — hundreds of ms for a long dictation — only to have
+            // the main process discard it was the single biggest share of
+            // stop→pasted latency. The buffer is now built and sent only when
+            // finalize reports it could not produce text (batch fallback).
+            const api = window.electronAPI;
+            if (streamingActiveRef.current && api?.transcribeStreamed) {
+                streamingActiveRef.current = false;
+                reportStats(Math.round(durationSeconds * 1000));
+                try {
+                    const res = await api.transcribeStreamed(Math.round(durationSeconds * 1000));
+                    if (res?.handled) return; // text delivered via transcription-result
+                } catch {
+                    // IPC hiccup — the batch path below still has the audio.
+                }
+            }
+
             const fullBuffer = new Float32Array(totalLength);
             let offset = 0;
             for (const buf of chunks) { fullBuffer.set(buf, offset); offset += buf.length; }
@@ -203,22 +238,8 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
                     const { success, processedAudio, error } = event.data;
                     if (!success) { abortStreaming(); onStateChange('IDLE'); return; }
 
-                    const api = window.electronAPI;
                     if (api?.transcribe) {
-                        // Report what the engine actually receives (post-resample),
-                        // paired with the stop instant, so the consumer can show
-                        // audio length / latency / speed for this dictation.
-                        onRecordingCompleteRef.current?.({
-                            audioMs: Math.round((processedAudio.length / 16000) * 1000),
-                            stoppedAt: stoppedAtRef.current,
-                            // How much speech the mic missed at the start. Logged
-                            // in the main process so it lands in the terminal with
-                            // everything else — renderer console output does not.
-                            captureLatencyMs: Math.round(captureLatencyMsRef.current),
-                        });
-                        // If a streaming session ran during recording, the main
-                        // process finalizes it inside 'transcribe' (tail only);
-                        // the full buffer is the batch-path fallback.
+                        reportStats(Math.round((processedAudio.length / 16000) * 1000));
                         streamingActiveRef.current = false;
                         api.transcribe(processedAudio, 16000);
                     } else {
@@ -265,7 +286,10 @@ export function useAudioRecording(options: UseAudioRecordingOptions) {
                     isRecordingRef.current = false;
                     flushStreamPending(); // last partial stream chunk (tail)
                     const bufferChunks = [...audioBuffersRef.current];
-                    processRecordedAudio(bufferChunks, ctx.sampleRate);
+                    processRecordedAudio(bufferChunks, ctx.sampleRate).catch((e) => {
+                        console.error('[Recording] stop processing failed:', e);
+                        onStateChange('IDLE');
+                    });
                     stopStream();
                 });
             });
