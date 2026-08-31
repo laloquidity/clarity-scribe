@@ -446,14 +446,52 @@ const HOUR_WORDS: Record<string, number> = {
     seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
 };
 
-const MINUTE_PHRASES: Record<string, number> = {
-    "o'clock": 0, oclock: 0, thirty: 30, fifteen: 15, 'forty five': 45,
-};
+// Minute components. The model writes a spoken minute in ANY mix of words
+// and digits — "twenty six", "20 6", "twenty 6", "26" were all seen for the
+// same utterance — so tens and ones are matched as separate components and
+// summed, instead of listing fixed phrases.
+const MINUTE_TENS: Record<string, number> = { twenty: 20, thirty: 30, forty: 40, fifty: 50 };
+
+/** "twenty six" / "20 6" / "twenty 6" / "oh five" / "26" → 0..59, else null. */
+function parseMinute(raw: string): number | null {
+    const m = raw.toLowerCase().replace(/[ -]+/g, ' ').trim();
+    if (m === "o'clock" || m === 'oclock') return 0;
+
+    const part = (w: string): number | null => {
+        if (/^\d{1,2}$/.test(w)) return parseInt(w, 10);
+        if (has(MINUTE_TENS, w)) return MINUTE_TENS[w];
+        if (has(ONES, w)) return ONES[w];
+        return null;
+    };
+
+    const words = m.split(' ');
+    if (words.length === 1) {
+        const v = part(words[0]);
+        return v !== null && v >= 0 && v <= 59 ? v : null;
+    }
+    if (words.length === 2) {
+        // "oh five" → 05 (the spoken leading zero).
+        if (words[0] === 'oh' || words[0] === 'o') {
+            const v = part(words[1]);
+            return v !== null && v >= 0 && v <= 9 ? v : null;
+        }
+        // tens + ones, each independently a word or a digit.
+        const t = part(words[0]);
+        const o = part(words[1]);
+        if (t !== null && o !== null && t >= 20 && t <= 50 && t % 10 === 0 && o >= 1 && o <= 9) {
+            return t + o;
+        }
+    }
+    return null;
+}
 
 /**
- * "two thirty pm" → "2:30 PM", "nine am" → "9 AM", "twelve fifteen pm" → "12:15 PM".
+ * "two thirty pm" → "2:30 PM", "nine am" → "9 AM", "eight 20 6 AM" → "8:26 AM".
  * Only fires when a recognizable am/pm marker follows, which disambiguates a
- * time from a plain number. The hour may be a word or a digit.
+ * time from a plain number. The hour may be a word or a digit, and the minute
+ * may arrive as one chunk or as tens+ones in any word/digit mix — "eight
+ * twenty six AM", "eight 20 6 AM", and "8:26 AM" all mean the same dictation
+ * (the middle one verbatim from real use, 2026-08-31).
  *
  * The meridiem allows a space between its letters ("A. M.", "a m") — the
  * model frequently writes the spoken letters that way, and without it
@@ -461,9 +499,15 @@ const MINUTE_PHRASES: Record<string, number> = {
  */
 function applyTimes(text: string): string {
     const hourAlt = Object.keys(HOUR_WORDS).join('|');
+    const tensAlt = `(?:${Object.keys(MINUTE_TENS).join('|')}|[2-5]0)`;
+    const onesAlt = `(?:${Object.keys(ONES).filter(w => ONES[w] >= 1 && ONES[w] <= 9).join('|')}|[1-9])`;
+    const teenAlt = Object.keys(ONES).filter(w => ONES[w] >= 10).join('|');
+    // Longest alternatives first so "twenty six" wins over bare "twenty".
+    const minuteAlt =
+        `o'?clock|oh[ -]${onesAlt}|${tensAlt}[ -]${onesAlt}|${tensAlt}|${teenAlt}|[0-5]?\\d`;
     const re = new RegExp(
         `\\b(\\d{1,2}|${hourAlt})` +
-        `(?:[ -]+(o'?clock|thirty|fifteen|forty[ -]?five|[0-5]?\\d))?` +
+        `(?:[ -]+(${minuteAlt}))?` +
         `[ ]+(a\\.? ?m\\.?|p\\.? ?m\\.?)(?=$|[^a-zA-Z])`,
         'gi'
     );
@@ -480,18 +524,8 @@ function applyTimes(text: string): string {
 
         let minute: number | null = null;
         if (minRaw) {
-            const m = minRaw.toLowerCase().replace(/[ -]+/g, ' ').trim();
-            if (/^\d{1,2}$/.test(m)) {
-                const v = parseInt(m, 10);
-                if (v >= 0 && v <= 59) minute = v;
-                else return match;
-            } else if (m === "o'clock" || m === 'oclock') {
-                minute = 0;
-            } else if (MINUTE_PHRASES[m] !== undefined) {
-                minute = MINUTE_PHRASES[m];
-            } else {
-                return match;
-            }
+            minute = parseMinute(minRaw);
+            if (minute === null) return match;
         }
 
         if (minute === null || minute === 0) return `${hour} ${meridiem}`;
