@@ -1,6 +1,6 @@
 # Clarity Scribe
 
-A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using. With **live streaming transcription** (v3), speech is processed *while you talk*, so text lands **about half a second after you stop, no matter how long you spoke** — up to **1212× real-time** on Windows (RTX 3090, measured across 160 real dictations) and **1055× on Apple Silicon** ([the numbers](#speed)).
+A lightweight, standalone desktop dictation app powered by dual transcription engines: **NVIDIA Parakeet TDT 0.6B-v3** and **OpenAI Whisper Large V3 Turbo**. Press a global hotkey — or hold a key to talk — and your transcription is instantly pasted into whatever app you're using. With **live streaming transcription** (v3), speech is processed *while you talk*, so text lands **a fraction of a second after you stop, no matter how long you spoke** — up to **5368× real-time** on Windows (RTX 3090: 6 m 48 s of speech pasted in 76 ms) and **1055× on Apple Silicon** ([the numbers](#speed)).
 
 Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ONNX Runtime (DirectML GPU) on Windows, for fully offline, hardware-accelerated speech-to-text.
 
@@ -62,7 +62,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 | Parameters | 600M |
 | WER (English) | 6.05% (#1 on HuggingFace ASR Leaderboard) |
 | Languages | 25 European |
-| Speed | stop→text ~0.5s at any length — up to **1571× real-time** streaming (Windows RTX 3090) / **1055×** (Apple Silicon); ~74× batch (Windows GPU) |
+| Speed | stop→text ~0.1–0.5s at any length — up to **5368× real-time** streaming (Windows RTX 3090) / **1055×** (Apple Silicon); ~74× batch (Windows GPU) |
 | Model Size | ~470 MB (CoreML, macOS) / ~890 MB (INT8 ONNX, Windows & fallback) |
 
 ### Whisper Large V3 Turbo
@@ -108,8 +108,8 @@ Measured from **160 real dictations** — 63 minutes of actual speech, 1.3 s to
 
 \* **× real-time** = how much audio you recorded, divided by how long you waited
 — measured from **the moment you stop speaking to the text appearing in your
-app**, paste included. Current record: an **11 m 39 s** recording that landed
-**445 ms** after the stop key — **1571× real-time**.
+app**, paste included. Current record: a **6 m 48 s** recording that landed
+**76 ms** after the stop key — **5368× real-time**.
 
 **The longer you speak, the higher the multiple climbs** — that's the streaming
 architecture working. Your speech is transcribed *as you talk*, at natural
@@ -117,6 +117,12 @@ pauses, so when you stop there's only the last phrase left to process. The wait
 stays roughly constant no matter how long you spoke — about half a second, and
 the longest wait across all 160 dictations was 0.9 s — so a longer recording
 simply divides that same short wait into a bigger number.
+
+Those 160 dictations predate the **lazy stop path**: the stop key used to
+resample the entire recording and ship it across processes only for it to be
+discarded whenever streaming was healthy (which is nearly always). With that
+cost removed, the wait drops well below the dataset above — the first long
+dictation measured after the change, 6 m 48 s of speech, **pasted in 76 ms**.
 
 The same architecture runs on **Apple Silicon** (CoreML / Apple Neural Engine):
 an 8 m 38 s dictation there landed **491 ms after the stop key — 1055×
@@ -276,7 +282,7 @@ With **live streaming transcription** (default on), segments are processed *duri
 | 30–60s | 30 | ~500ms | **432×** |
 | Over a minute | 12 | ~580ms | **1212×** |
 
-*Across all 160: **p50 490 ms · p90 677 ms · p99 888 ms** — a three-minute dictation lands as fast as a three-second one. Longest wait ever recorded: 0.9 s. Current single-dictation record, set after this dataset: **11 m 39 s of audio pasted 445 ms after the stop key — 1571× real-time**.*
+*Across all 160: **p50 490 ms · p90 677 ms · p99 888 ms** — a three-minute dictation lands as fast as a three-second one. Longest wait ever recorded: 0.9 s. This dataset predates the lazy stop path (audio no longer ships over IPC at stop); the current single-dictation record with it: **6 m 48 s of audio pasted 76 ms after the stop key — 5368× real-time**.*
 
 Batch-mode numbers (streaming off, or when the fallback engages) on the same hardware:
 
