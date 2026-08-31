@@ -137,6 +137,10 @@ export type AppState = 'IDLE' | 'RECORDING' | 'PROCESSING' | 'ERROR';
 // Electron API exposed via preload
 export interface ElectronAPI {
     transcribe: (audio: Float32Array, sampleRate: number) => Promise<any>;
+    /** Finalize a streamed dictation without shipping audio (lazy stop path).
+     *  Optional: older preloads may not expose it. handled:false → send the
+     *  full buffer through `transcribe` as the batch fallback. */
+    transcribeStreamed?: (durationMs: number) => Promise<{ handled: boolean }>;
     isWhisperReady: () => Promise<boolean>;
     copyToClipboard: (text: string) => Promise<boolean>;
 

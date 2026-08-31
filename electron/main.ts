@@ -1149,7 +1149,51 @@ function dumpAudioIfRequested(audio: Float32Array, sampleRate: number): void {
 }
 
 // --- IPC Handlers ---
+/**
+ * Finalize a live streaming session and deliver its text (result events,
+ * command dispatch) — the shared tail of both stop paths. Returns null when
+ * there is no session or it produced nothing usable, in which case the caller
+ * must run the classic batch path over the full recording.
+ */
+async function finalizeStreamedDictation(audioSec: number, dictationStart: number): Promise<{ success: true; text: string } | { success: boolean; command: true } | null> {
+    if (!streaming.isSessionActive()) return null;
+    const t0 = Date.now();
+    const result = await streaming.finalizeSession();
+    if (!(result.healthy && result.text)) {
+        console.log(`[Main] Streaming session ${result.healthy ? 'empty' : 'unhealthy'} — falling back to batch transcription`);
+        return null;
+    }
+    console.log(`[Main] Streamed transcription finalized in ${Date.now() - t0}ms (${result.segments} segments): "${result.text.substring(0, 80)}"`);
+    logEngineTime(audioSec, dictationStart, 'streaming');
+    logDecodeWork(audioSec, result);
+    if (isCommandSession) return dispatchCommand(result.text);
+    mainWindow?.webContents.send('transcription-result', result.text);
+    emitEvent({ type: 'result', text: result.text });
+    emitEvent({ type: 'state', state: 'IDLE' });
+    return { success: true, text: result.text };
+}
+
 function setupIpcHandlers(): void {
+    // Lazy stop path. When a streaming session ran during recording, the
+    // renderer calls this FIRST with just the duration — no audio. Before
+    // this existed, every stop resampled and shipped the entire recording
+    // over IPC (a ~45MB copy for a 10-minute dictation, hundreds of ms of
+    // stop→pasted latency) only for the buffer to be DISCARDED whenever
+    // streaming was healthy. Audio now travels only when this returns
+    // handled:false and the renderer falls back to the batch 'transcribe'.
+    ipcMain.handle('transcribe-streamed', async (_, durationMs: number) => {
+        if (!isWhisperReady) return { handled: false };
+        const dictationStart = Date.now(); // stop key pressed → text ready
+        try {
+            const audioSec = Math.max(0, durationMs || 0) / 1000;
+            const streamed = await finalizeStreamedDictation(audioSec, dictationStart);
+            return streamed ? { handled: true, ...streamed } : { handled: false };
+        } catch (error: any) {
+            console.error('[Main] Streamed finalize error — renderer will fall back to batch:', error);
+            return { handled: false };
+        }
+    });
+
     ipcMain.handle('transcribe', async (_, audioData: Float32Array | number[], sampleRate: number) => {
         if (!isWhisperReady) return { success: false, error: 'Whisper not ready' };
         const dictationStart = Date.now(); // stop key pressed → text ready
@@ -1158,25 +1202,12 @@ function setupIpcHandlers(): void {
             const audioSec = audioBuffer.length / (sampleRate || 16000);
             dumpAudioIfRequested(audioBuffer, sampleRate || 16000);
 
-            // Streaming-first: if a live session transcribed segments during
-            // recording, its finalize only has the tail left — near-instant.
-            // Unhealthy or empty results fall through to the classic batch path
-            // (full buffer, includes Whisper fallback + hallucination guards).
-            if (streaming.isSessionActive()) {
-                const t0 = Date.now();
-                const result = await streaming.finalizeSession();
-                if (result.healthy && result.text) {
-                    console.log(`[Main] Streamed transcription finalized in ${Date.now() - t0}ms (${result.segments} segments): "${result.text.substring(0, 80)}"`);
-                    logEngineTime(audioSec, dictationStart, 'streaming');
-                    logDecodeWork(audioSec, result);
-                    if (isCommandSession) return dispatchCommand(result.text);
-                    mainWindow?.webContents.send('transcription-result', result.text);
-                    emitEvent({ type: 'result', text: result.text });
-                    emitEvent({ type: 'state', state: 'IDLE' });
-                    return { success: true, text: result.text };
-                }
-                console.log(`[Main] Streaming session ${result.healthy ? 'empty' : 'unhealthy'} — falling back to batch transcription`);
-            }
+            // Streaming-first: kept for callers that still send the full
+            // buffer directly (local API, older renderer). The app's own stop
+            // path finalizes via 'transcribe-streamed' above and only lands
+            // here as the batch fallback, with the session already closed.
+            const streamed = await finalizeStreamedDictation(audioSec, dictationStart);
+            if (streamed) return streamed;
 
             const settings = store.get('settings') as any;
             const language = settings?.whisperLanguage || 'en';
