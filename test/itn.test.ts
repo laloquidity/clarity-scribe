@@ -243,6 +243,78 @@ describe('applyITN — dates', () => {
     });
 });
 
+describe('applyITN — spelled-out acronyms', () => {
+    // All from real dictation, 2026-08-31: spoken letters come out of the
+    // model as isolated capitals ("V C", "C F O") and stayed that way.
+    it('collapses runs of spoken single capitals', () => {
+        expect(applyITN('the V C fund')).toBe('the VC fund');
+        expect(applyITN('our C F O and C I O met')).toBe('our CFO and CIO met');
+        expect(applyITN('the U S A')).toBe('the USA');
+        expect(applyITN('using A I tools')).toBe('using AI tools');
+    });
+    it("keeps a trailing possessive attached", () => {
+        expect(applyITN("the C E O's decision")).toBe("the CEO's decision");
+    });
+    it('leaves a lone capital alone', () => {
+        expect(applyITN('the draft D that I reviewed')).toBe('the draft D that I reviewed');
+    });
+    it('leaves lowercase letters alone', () => {
+        expect(applyITN('a b testing plan')).toBe('a b testing plan');
+    });
+    it('never collapses across a sentence boundary written with a period', () => {
+        expect(applyITN('went with plan B. Development starts Monday'))
+            .toBe('went with plan B. Development starts Monday');
+    });
+});
+
+describe('applyITN — spaced/dotted meridiems (real ASR output)', () => {
+    // The model writes spoken "AM"/"PM" as spelled letters: "eight A. M."
+    // (verbatim from dictation, 2026-08-31) — the times rule now reads them.
+    it('converts "A. M." with a space between the letters', () => {
+        expect(applyITN('eight A. M.')).toBe('8 AM');
+        expect(applyITN('nine 30 A. M.')).toBe('9:30 AM');
+    });
+    it('converts bare spaced letters after the acronym pass', () => {
+        expect(applyITN('meet at nine A M')).toBe('meet at 9 AM');
+        expect(applyITN('nine thirty a m')).toBe('9:30 AM');
+    });
+    it('does not mistake an article + m-word for a meridiem', () => {
+        // ("eight" itself stays a word — the under-ten rule — the point here
+        // is that "a month" must never be read as "AM".)
+        expect(applyITN('paid eight a month ago')).toBe('paid eight a month ago');
+    });
+});
+
+describe('applyITN — spoken years', () => {
+    it('joins century-word pairs into a four-digit year', () => {
+        // "20 26" verbatim from real dictation, 2026-08-31.
+        expect(applyITN('the year twenty twenty six')).toBe('the year 2026');
+        expect(applyITN('nineteen eighty four')).toBe('1984');
+        expect(applyITN('twenty nineteen')).toBe('2019');
+        expect(applyITN('back in twenty twenty')).toBe('back in 2020');
+    });
+    it('leaves plain cardinals without a century word to the cardinal rule', () => {
+        expect(applyITN('twenty six')).toBe('26');
+        expect(applyITN('twenty one')).toBe('21');
+    });
+    it('a scale word after the pair vetoes the year reading', () => {
+        expect(applyITN('twenty twenty thousand')).not.toContain('2020');
+    });
+});
+
+describe('applyITN — hyphenated compound numbers', () => {
+    it('converts the whole compound, never half of it', () => {
+        // "20-four" verbatim from real dictation, 2026-08-31.
+        expect(applyITN('twenty-four')).toBe('24');
+        expect(applyITN('I said twenty-four hours')).toBe('I said 24 hours');
+        expect(applyITN('forty-five dollars')).toBe('$45');
+    });
+    it('leaves non-number hyphenations alone', () => {
+        expect(applyITN('the check-in desk')).toBe('the check-in desk');
+        expect(applyITN('twenty-twenty vision')).toBe('20-20 vision');
+    });
+});
+
 describe('applyITN — idempotency', () => {
     const cases = [
         'hello comma world',
@@ -260,6 +332,10 @@ describe('applyITN — idempotency', () => {
         'january fifth',
         'the third of may',
         'open paren note close paren',
+        'our C F O and C I O met',
+        'eight A. M.',
+        'the year twenty twenty six',
+        'twenty-four',
     ];
     for (const c of cases) {
         it(`is idempotent for: ${c}`, () => expectIdempotent(c));
