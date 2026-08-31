@@ -287,6 +287,24 @@ function logEngineTime(audioSec: number, startedAt: number, path: 'streaming' | 
     );
 }
 
+/**
+ * Whole-recording decode throughput: audio length vs the decode time ACTUALLY
+ * spent across every segment of the session. This is the engine's true speed —
+ * logEngineTime above only measures the residual wait at stop, which for a
+ * streamed session is near zero because the work overlapped the speaking (its
+ * "× real-time" figures in the tens of thousands are wait numbers, not speed).
+ * Previews are listed separately: display-only redundant work by design.
+ */
+function logDecodeWork(audioSec: number, r: { segments: number; decodeMs: number; previewMs: number; previews: number }): void {
+    if (r.decodeMs <= 0 || r.segments <= 0) return;
+    const rtf = audioSec / (r.decodeMs / 1000);
+    const previews = r.previews > 0 ? ` · previews +${r.previewMs}ms (${r.previews})` : '';
+    console.log(
+        `[Main] ⏱ Decode work: ${formatAudioLength(audioSec)} audio · ${r.decodeMs}ms across ` +
+        `${r.segments} segment${r.segments === 1 ? '' : 's'} (${rtf.toFixed(1)}× real-time)${previews}`
+    );
+}
+
 /** "2:53" for long clips, "7.3s" for short ones — matches the history UI. */
 function formatAudioLength(sec: number): string {
     if (sec < 60) return `${sec.toFixed(1)}s`;
@@ -320,6 +338,14 @@ function logDictationSummary(entry: HistoryEntry): void {
         const verdict = capture <= 100 ? 'good' : capture <= 250 ? 'noticeable' : 'HIGH — first words likely lost';
         console.log(`[Main] ⏱ Capture start: ${capture}ms after press (${verdict})`);
     }
+    // The net effect of the whole gesture: hotkey press → text pasted.
+    // Speaking time is the irreducible floor (the audio plays out in real
+    // time); capture start + stop→pasted latency is OUR overhead on top.
+    const overheadMs = (capture && capture > 0 ? capture : 0) + latencyMs;
+    console.log(
+        `[Main] ⏱ Net effect: ${formatAudioLength((audioMs + overheadMs) / 1000)} press → pasted ` +
+        `for ${formatAudioLength(audioMs / 1000)} of speech · overhead ${overheadMs}ms (${(overheadMs / audioMs * 100).toFixed(1)}%)`
+    );
 }
 
 // --- Command mode (voice → action) ---
@@ -1142,6 +1168,7 @@ function setupIpcHandlers(): void {
                 if (result.healthy && result.text) {
                     console.log(`[Main] Streamed transcription finalized in ${Date.now() - t0}ms (${result.segments} segments): "${result.text.substring(0, 80)}"`);
                     logEngineTime(audioSec, dictationStart, 'streaming');
+                    logDecodeWork(audioSec, result);
                     if (isCommandSession) return dispatchCommand(result.text);
                     mainWindow?.webContents.send('transcription-result', result.text);
                     emitEvent({ type: 'result', text: result.text });
