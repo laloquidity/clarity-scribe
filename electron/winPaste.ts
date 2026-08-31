@@ -134,8 +134,6 @@ export function focusAndPaste(pid: number): boolean {
         return false;
     }
 
-    const start = Date.now();
-
     // Step 1: Focus the captured window
     try {
         AllowSetForegroundWindow(pid);
@@ -177,7 +175,6 @@ export function focusAndPaste(pid: number): boolean {
     writeKeyInput(buf, INPUT_SIZE * 3, VK_CONTROL, true);  // Ctrl up
 
     const sent = SendInput(numInputs, buf, INPUT_SIZE);
-    const elapsed = Date.now() - start;
 
     // Clear captured handle after use
     capturedHwnd = null;
@@ -187,7 +184,6 @@ export function focusAndPaste(pid: number): boolean {
         return false;
     }
 
-    console.log(`[WinPaste] Focus + Paste completed in ${elapsed}ms`);
     return true;
 }
 
