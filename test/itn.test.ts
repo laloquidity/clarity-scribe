@@ -285,6 +285,26 @@ describe('applyITN — spaced/dotted meridiems (real ASR output)', () => {
     });
 });
 
+describe('applyITN — decimals in any word/digit mix', () => {
+    it('reads the decimal however the model chose to write it', () => {
+        // "10 point six" verbatim from real dictation, 2026-08-31.
+        expect(applyITN('it came out to 10 point six')).toBe('it came out to 10.6');
+        expect(applyITN('ten point six')).toBe('10.6');
+        expect(applyITN('ten point 6')).toBe('10.6');
+    });
+    it('reads digit runs, leading zeros, and compound fractions', () => {
+        expect(applyITN('three point one four')).toBe('3.14');
+        expect(applyITN('nine point oh five')).toBe('9.05');
+        expect(applyITN('ten point sixty five')).toBe('10.65');
+        expect(applyITN('zero point five')).toBe('0.5');
+    });
+    it('requires a number on BOTH sides of "point"', () => {
+        expect(applyITN('at that point six people left'))
+            .toBe('at that point six people left');
+        expect(applyITN('the ten point plan')).toBe('the 10 point plan');
+    });
+});
+
 describe('applyITN — letter-number designators', () => {
     it('joins a spoken letter and number into a designator', () => {
         // "C five and C six" should read "C5 and C6" — verbatim from real
@@ -410,6 +430,7 @@ describe('applyITN — idempotency', () => {
         'coffee at eight thirty A.',
         'around nine 17 A. M. I found that the milk',
         'compare C five and C six',
+        'it came out to 10 point six',
         'the year twenty twenty six',
         'twenty-four',
     ];
