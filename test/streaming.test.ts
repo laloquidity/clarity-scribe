@@ -163,6 +163,38 @@ describe('streamingTranscriber', () => {
         expect(partials.length).toBeGreaterThan(0); // live preview events fired
     });
 
+    it('reports whole-recording decode accounting at finalize', async () => {
+        // A transcriber that takes real time, so the ms totals are nonzero.
+        configureStreaming(async (audio) => {
+            calls.push(audio);
+            await new Promise((r) => setTimeout(r, 5));
+            return `seg${calls.length}`;
+        });
+        setLivePreview(true);
+        onPartial(() => { /* previews need a listener to run */ });
+        startSession(SR);
+        pushAll(voiced(2000)); // no pause → a preview decode of the open segment
+        await drain();
+        pushAll(silence(900)); // closes segment 1 → real decode
+        const result = await finalizeSession();
+        expect(result.healthy).toBe(true);
+        expect(result.segments).toBe(1);
+        // Real decode time and preview time are tracked separately.
+        expect(result.decodeMs).toBeGreaterThan(0);
+        expect(result.previews).toBe(1);
+        expect(result.previewMs).toBeGreaterThan(0);
+    });
+
+    it('a session with no previews reports zero preview work', async () => {
+        startSession(SR);
+        pushAll(concat(voiced(1500), silence(900)));
+        const result = await finalizeSession();
+        expect(result.segments).toBe(1);
+        expect(result.previews).toBe(0);
+        expect(result.previewMs).toBe(0);
+        expect(result.decodeMs).toBeGreaterThanOrEqual(0);
+    });
+
     it('previews the open segment during continuous speech (display only)', async () => {
         setLivePreview(true);
         const partials: string[] = [];

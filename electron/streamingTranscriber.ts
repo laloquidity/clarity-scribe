@@ -123,6 +123,12 @@ interface Session {
     pendingDecodes: number;         // real segment decodes queued or running
     previewInFlight: boolean;       // at most one preview outstanding
     previewedSamples: number;       // openSamples when the last preview started
+    // Whole-recording accounting, reported by finalizeSession: how much decode
+    // time the recording actually cost, as opposed to how long the user waited
+    // at stop (most decoding overlaps speech, so those differ wildly).
+    decodeMsTotal: number;          // real segment decodes (resample + decode)
+    previewMsTotal: number;         // preview decodes — redundant by design
+    previewCount: number;
 }
 
 /** Adaptive voice gate: scales with the session's loudest window, clamped. */
@@ -197,6 +203,9 @@ export function startSession(sampleRate: number): boolean {
         pendingDecodes: 0,
         previewInFlight: false,
         previewedSamples: 0,
+        decodeMsTotal: 0,
+        previewMsTotal: 0,
+        previewCount: 0,
     };
     return true;
 }
@@ -311,6 +320,8 @@ function maybeEnqueuePreview(s: Session): void {
             const t0 = Date.now();
             const audio16k = resampleCubic(raw, sampleRate, 16000);
             const text = (await transcriberFn(audio16k)).trim();
+            s.previewMsTotal += Date.now() - t0;
+            s.previewCount++;
             // Re-check: the world may have moved on during the decode.
             if (!text || s.finalized || s.segmentsQueued !== indexAtStart || !partialListener) return;
             console.log(`[Stream] Preview (${(audio16k.length / 16000).toFixed(1)}s open) in ${Date.now() - t0}ms`);
@@ -381,6 +392,7 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
             s.texts[index] = text;
             const secs = (audio16k.length / 16000).toFixed(1);
             const decodeMs = Date.now() - t0;
+            s.decodeMsTotal += decodeMs;
             diag.segmentDecode(decodeMs);
             console.log(`[Stream] Segment ${index + 1} (${secs}s) done in ${decodeMs}ms: "${text.substring(0, 60)}"`);
             if (text && partialListener) {
@@ -412,9 +424,16 @@ function joinedText(s: Session): string {
  * joined transcript. `healthy: false` means the caller MUST re-transcribe the
  * full recording via the batch path.
  */
-export async function finalizeSession(): Promise<{ healthy: boolean; text: string; segments: number }> {
+export async function finalizeSession(): Promise<{
+    healthy: boolean; text: string; segments: number;
+    /** Decode time actually spent on real segments (most overlapped speech). */
+    decodeMs: number;
+    /** Time spent on live-preview decodes (display-only, redundant work). */
+    previewMs: number;
+    previews: number;
+}> {
     const s = session;
-    if (!s || s.finalized) return { healthy: false, text: '', segments: 0 };
+    if (!s || s.finalized) return { healthy: false, text: '', segments: 0, decodeMs: 0, previewMs: 0, previews: 0 };
     s.finalized = true;
 
     // Tail: transcribe whatever remains if it plausibly contains speech.
@@ -426,7 +445,10 @@ export async function finalizeSession(): Promise<{ healthy: boolean; text: strin
     }
 
     await s.queue;
-    const result = { healthy: s.healthy, text: joinedText(s), segments: s.segmentsQueued };
+    const result = {
+        healthy: s.healthy, text: joinedText(s), segments: s.segmentsQueued,
+        decodeMs: s.decodeMsTotal, previewMs: s.previewMsTotal, previews: s.previewCount,
+    };
     // Diagnostic: peak/gate reveal mic-level issues (a session whose peak never
     // cleared the gate produced zero segments — the classic quiet-mic symptom).
     console.log(`[Stream] Finalized: ${result.segments} segments | peakRms ${s.peakRms.toFixed(4)} | gate ${voiceGate(s).toFixed(4)} | healthy ${s.healthy}`);
