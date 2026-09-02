@@ -324,6 +324,19 @@ describe('applyITN — decimals in any word/digit mix', () => {
     });
 });
 
+describe('applyITN — multiplier X', () => {
+    it('attaches a lone X to the number before it', () => {
+        // "the flat 20 X is really interesting" verbatim, 2026-09-01.
+        expect(applyITN('the flat 20 X is really interesting')).toBe('the flat 20X is really interesting');
+        expect(applyITN('add a flat thirty three X tier')).toBe('add a flat 33X tier');
+        expect(applyITN('more than ten X leverage')).toBe('more than 10X leverage');
+    });
+    it('leaves an X that is not a multiplier alone', () => {
+        expect(applyITN('the X axis')).toBe('the X axis');
+        expect(applyITN('20 Xbox games')).toBe('20 Xbox games');
+    });
+});
+
 describe('applyITN — letter-number designators', () => {
     it('joins a spoken letter and number into a designator', () => {
         // "C five and C six" should read "C5 and C6" — verbatim from real

@@ -90,9 +90,10 @@ const FORCED_SEAM_WORDS = new Set([
     // prepositions not on the narrow list
     'in', 'on', 'for', 'as', 'about', 'over', 'under', 'after', 'before',
     'through', 'across', 'around', 'against', 'along', 'near', 'off', 'out', 'up', 'down', 'per', 'like',
-    // subordinators / connectives
+    // subordinators / connectives / question words
     'if', 'when', 'while', 'since', 'because', 'so', 'then', 'until', 'unless',
     'though', 'although', 'whether', 'where', 'whereas', 'once',
+    'what', 'how', 'why', 'who',
     // auxiliaries
     'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
     'do', 'does', 'did', 'have', 'has', 'had',
@@ -239,7 +240,13 @@ export function joinSegments(
             if (fw && !isAcronym(fw.word)) {
                 const lower = fw.word.toLowerCase();
                 const isCapitalized = fw.word[0] !== lower[0];
-                const repairable = CONTINUATION_WORDS.has(lower) || (forced && FORCED_SEAM_WORDS.has(lower));
+                // The wide list applies wherever the sentence is CERTAINLY in
+                // flight: a forced cut, or a left segment with no terminal
+                // punctuation at all ("…adapt those as well. Like | What
+                // should the cap be…", real dictation 2026-09-01). Only the
+                // period-closed pause seam (rule 3) keeps the narrow list.
+                const repairable = CONTINUATION_WORDS.has(lower)
+                    || ((forced || !leftEnds) && FORCED_SEAM_WORDS.has(lower));
                 // A comma right after the word marks a discourse opener
                 // ("So, what do you think?"), which does begin a sentence.
                 const opensAside = right.slice(fw.end).startsWith(',');
