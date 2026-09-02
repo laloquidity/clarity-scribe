@@ -71,6 +71,34 @@ const CONTINUATION_WORDS = new Set([
     'which', 'whom', 'whose', 'than',
 ]);
 
+/**
+ * Words safe to lowercase at a FORCED seam only. Our own knife cut the
+ * sentence mid-flight there, so the capital is certainly an artifact — the
+ * only remaining risk is a proper noun, and none of these function words is
+ * one. At a pause seam they stay on the narrow list above ("In 1974, …" can
+ * open a sentence; after a length-cap cut it cannot have). Real dictation
+ * 2026-09-01: "…Did you know that | In 1974, there was an act…".
+ */
+const FORCED_SEAM_WORDS = new Set([
+    // articles / determiners / possessives
+    'the', 'a', 'an', 'this', 'that', 'these', 'those', 'some', 'any', 'each', 'every',
+    'my', 'your', 'his', 'her', 'its', 'our', 'their',
+    // pronouns (never "I")
+    'he', 'she', 'it', 'we', 'they', 'you', 'me', 'him', 'them', 'us',
+    // prepositions not on the narrow list
+    'in', 'on', 'for', 'as', 'about', 'over', 'under', 'after', 'before',
+    'through', 'across', 'around', 'against', 'along', 'near', 'off', 'out', 'up', 'down', 'per', 'like',
+    // subordinators / connectives
+    'if', 'when', 'while', 'since', 'because', 'so', 'then', 'until', 'unless',
+    'though', 'although', 'whether', 'where', 'whereas', 'once',
+    // auxiliaries
+    'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
+    'do', 'does', 'did', 'have', 'has', 'had',
+    'can', 'could', 'will', 'would', 'should', 'may', 'might', 'must', 'shall', 'not',
+    // common adverbs
+    'also', 'just', 'really', 'very', 'only', 'still', 'already', 'now', 'here', 'there',
+]);
+
 /** Terminal punctuation, allowing a trailing quote or bracket. */
 const ENDS_SENTENCE = /[.!?…]["'”’)\]]*$/;
 
@@ -209,7 +237,8 @@ export function joinSegments(
             if (fw && !isAcronym(fw.word)) {
                 const lower = fw.word.toLowerCase();
                 const isCapitalized = fw.word[0] !== lower[0];
-                if (isCapitalized && CONTINUATION_WORDS.has(lower)) {
+                const repairable = CONTINUATION_WORDS.has(lower) || (forced && FORCED_SEAM_WORDS.has(lower));
+                if (isCapitalized && repairable) {
                     right = lower + right.slice(fw.end);
                     if (forced && leftEnds) {
                         // A period we inserted by cutting mid-speech is bogus too.

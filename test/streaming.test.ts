@@ -74,7 +74,7 @@ describe('streamingTranscriber', () => {
         const partials: string[] = [];
         onPartial((text) => partials.push(text));
         startSession(SR);
-        pushAll(concat(voiced(1500), silence(1300)));
+        pushAll(concat(voiced(1500), silence(2300)));
         // Segment should have closed during the silence — finalize to drain.
         const result = await finalizeSession();
         expect(result.healthy).toBe(true);
@@ -88,7 +88,7 @@ describe('streamingTranscriber', () => {
 
     it('multiple utterances produce ordered joined text', async () => {
         startSession(SR);
-        pushAll(concat(voiced(1200), silence(1300), voiced(1200), silence(1300), voiced(700)));
+        pushAll(concat(voiced(1200), silence(2300), voiced(1200), silence(2300), voiced(700)));
         const result = await finalizeSession();
         expect(result.healthy).toBe(true);
         expect(result.segments).toBe(3); // two pause-closed + tail
@@ -129,7 +129,7 @@ describe('streamingTranscriber', () => {
 
     it('short unvoiced tail is dropped', async () => {
         startSession(SR);
-        pushAll(concat(voiced(1500), silence(1300), silence(150)));
+        pushAll(concat(voiced(1500), silence(2300), silence(150)));
         const result = await finalizeSession();
         expect(result.segments).toBe(1);
         expect(result.text).toBe('seg1');
@@ -138,7 +138,7 @@ describe('streamingTranscriber', () => {
     it('a failing transcriber marks the session unhealthy (batch fallback)', async () => {
         configureStreaming(async () => { throw new Error('boom'); });
         startSession(SR);
-        pushAll(concat(voiced(1500), silence(1300)));
+        pushAll(concat(voiced(1500), silence(2300)));
         const result = await finalizeSession();
         expect(result.healthy).toBe(false);
     });
@@ -155,7 +155,7 @@ describe('streamingTranscriber', () => {
         const partials: string[] = [];
         onPartial((text) => partials.push(text));
         startSession(SR);
-        pushAll(concat(quietVoiced(1500), silence(1300), quietVoiced(1200)));
+        pushAll(concat(quietVoiced(1500), silence(2300), quietVoiced(1200)));
         const result = await finalizeSession();
         expect(result.healthy).toBe(true);
         expect(result.segments).toBe(2); // pause-closed + tail
@@ -175,7 +175,7 @@ describe('streamingTranscriber', () => {
         startSession(SR);
         pushAll(voiced(2000)); // no pause → preview decode of the open segment
         await drain();
-        pushAll(silence(1300)); // closes segment 1 → real decode
+        pushAll(silence(2300)); // closes segment 1 → real decode
         await finalizeSession();
         expect(flags[0]).toBe(true);        // the preview
         expect(flags[1]).toBeUndefined();   // the real segment decode
@@ -193,7 +193,7 @@ describe('streamingTranscriber', () => {
         startSession(SR);
         pushAll(voiced(2000)); // no pause → a preview decode of the open segment
         await drain();
-        pushAll(silence(1300)); // closes segment 1 → real decode
+        pushAll(silence(2300)); // closes segment 1 → real decode
         const result = await finalizeSession();
         expect(result.healthy).toBe(true);
         expect(result.segments).toBe(1);
@@ -205,7 +205,7 @@ describe('streamingTranscriber', () => {
 
     it('a session with no previews reports zero preview work', async () => {
         startSession(SR);
-        pushAll(concat(voiced(1500), silence(1300)));
+        pushAll(concat(voiced(1500), silence(2300)));
         const result = await finalizeSession();
         expect(result.segments).toBe(1);
         expect(result.previews).toBe(0);
@@ -225,7 +225,7 @@ describe('streamingTranscriber', () => {
         expect(partials).toEqual(['seg1']);
         // …but it must NEVER reach the final transcript: close the segment
         // for real and check only the real decode's text survives.
-        pushAll(silence(1300));
+        pushAll(silence(2300));
         const result = await finalizeSession();
         expect(result.healthy).toBe(true);
         expect(result.segments).toBe(1);
@@ -284,7 +284,7 @@ describe('streamingTranscriber', () => {
         // skip threshold: no new words, and the real close is imminent.
         // (A crossing in the first ~300ms of silence still previews: that
         // is an ordinary inter-word gap, not a recognizable pause.)
-        pushAll(silence(600)); // stays below the 1000ms real-close threshold
+        pushAll(silence(600)); // stays below the 2000ms real-close threshold
         await drain();
         expect(calls.length).toBe(0);
     });
@@ -317,7 +317,7 @@ describe('streamingTranscriber', () => {
         startSession(SR);
         pushAll(voiced(2000)); // triggers the (failing) preview
         await drain();
-        pushAll(silence(1300)); // closes the segment → real decode succeeds
+        pushAll(silence(2300)); // closes the segment → real decode succeeds
         const result = await finalizeSession();
         expect(result.healthy).toBe(true);
         expect(result.text).toBe('seg1');

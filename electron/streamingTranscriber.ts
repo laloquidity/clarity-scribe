@@ -40,17 +40,22 @@ type PartialListener = (fullTextSoFar: string, segmentIndex: number) => void;
 const SILENCE_RMS_FLOOR = 0.0025;   // never gate below this (true silence)
 const SILENCE_RMS_CEIL = 0.006;     // never require more than the old constant
 const PEAK_RATIO = 0.15;            // threshold = peakRms × this, clamped
-// Continuous silence that closes a segment. Was 650ms, which a speaker's
-// mid-sentence thinking pause routinely exceeds — each such close hands the
+// Continuous silence that closes a segment. Every pause close hands the
 // model an isolated clip it capitalizes and ends with a period ("…preserved.
-// Tell me…", real dictation 2026-09-01). With the fixed-shape encoder the
-// cost of a longer open segment at stop is flat, so the threshold only
-// trades seam artifacts for nothing. The "[Stream] Pause between speech"
-// log line reports every real pause length, for tuning against evidence.
-const SILENCE_CLOSE_MS = 1000;
+// Tell me…"), so a seam only ever costs; sentence boundaries INSIDE a
+// segment the model punctuates correctly on its own. Measured on real
+// dictation (2026-09-01, "[Stream] Pause between speech" lines): the
+// speaker's mid-sentence thinking pauses ran 1000–1512ms with a deliberate
+// 3208ms, while sentence endings ran 1640ms and up — the two ranges overlap,
+// so no threshold separates them and the right move is to stop trying:
+// close only on a pause long enough that nothing is lost by treating it as
+// a real break, and let the 15s soft cap bound segment length. With the
+// fixed-shape encoder the cost of a longer open segment at stop is flat.
+const SILENCE_CLOSE_MS = 2000;
 const MIN_VOICED_MS = 550;          // don't close segments with less voiced audio than this
 const SOFT_CAP_MS = 15_000;         // no-pause talkers: split at the quietest recent window
 const SOFT_CAP_LOOKBACK_MS = 6_000; // window in which the quietest split point is searched
+const SOFT_CAP_MIN_SILENT_WINDOWS = 3; // ~96ms of sub-gate audio counts as a gap between words
 const MAX_SEGMENT_MS = 28_000;      // hard cap (matches vadService segment cap)
 const MIN_TAIL_MS = 250;            // tail shorter than this (and unvoiced) is dropped
 const WINDOW_MS = 32;               // RMS analysis window
@@ -297,14 +302,32 @@ export function pushChunk(chunk: Float32Array): void {
     // stays in the open segment). Bounds the tail size → bounds stop latency.
     if (openMs >= SOFT_CAP_MS && s.voicedMsInSegment >= MIN_VOICED_MS) {
         const lookbackStart = s.openSamples - Math.round((SOFT_CAP_LOOKBACK_MS / 1000) * s.sampleRate);
+        const gate = voiceGate(s);
+        // Prefer the middle of the LONGEST run of silent windows (below the
+        // voice gate) in the lookback: a cut inside a word hands the model a
+        // fragment it will invent a word for. Only when no silent run of
+        // ~100ms exists fall back to the single quietest window.
         let quietest: RmsWindow | null = null;
+        let runStart = -1, runLen = 0, bestStart = -1, bestLen = 0;
         for (const w of s.rmsHistory) {
             if (w.startSample < lookbackStart) continue;
             // <= prefers the LATEST minimum, keeping the carried-over tail small
             if (!quietest || w.rms <= quietest.rms) quietest = w;
+            if (w.rms < gate) {
+                if (runStart < 0) { runStart = w.startSample; runLen = 0; }
+                runLen++;
+                if (runLen >= bestLen) { bestLen = runLen; bestStart = runStart; }
+            } else {
+                runStart = -1;
+                runLen = 0;
+            }
         }
-        if (quietest && quietest.startSample > 0) {
-            closeOpenSegment(s, quietest.startSample);
+        let cutAt = quietest && quietest.startSample > 0 ? quietest.startSample : -1;
+        if (bestLen >= SOFT_CAP_MIN_SILENT_WINDOWS && bestStart > 0) {
+            cutAt = bestStart + Math.floor(bestLen / 2) * windowSamples;
+        }
+        if (cutAt > 0) {
+            closeOpenSegment(s, cutAt);
             return;
         }
     }

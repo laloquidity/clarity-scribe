@@ -496,6 +496,14 @@ async function measureWarmDecode(alreadyWarm = false): Promise<void> {
 /** Warm run slower than this means the encoder is NOT on the GPU. */
 const FIXED_SHAPE_WARM_LIMIT_MS = 700;
 
+/**
+ * Peak window RMS that reads as unmistakable SPEECH (not a breath or a
+ * throat-clear) — used to decide that audio ahead of a decode's first token
+ * held words the decoder lost. Well above QUIET_PEAK_RMS (0.006, the floor
+ * below which nothing is voiced); typical speech here peaks ~0.06–0.2.
+ */
+const LEADING_SPEECH_PEAK_RMS = 0.02;
+
 /** When the current inference sessions were created (for preventive refresh). */
 let sessionsBuiltAt = 0;
 /** Transcriptions currently reading the sessions — never rebuild above zero. */
@@ -633,6 +641,7 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     melTime: number;
     encTime: number;
     decTime: number;
+    firstTokenFrame: number;
     lastTokenFrame: number;
     totalFrames: number;
 }> {
@@ -681,6 +690,7 @@ async function runSinglePass(audioData: Float32Array): Promise<{
     melTime: number;
     encTime: number;
     decTime: number;
+    firstTokenFrame: number;
     lastTokenFrame: number;
     totalFrames: number;
     collapseRecoveries: number;
@@ -736,11 +746,11 @@ async function runSinglePass(audioData: Float32Array): Promise<{
 
     // Transducer greedy decode
     const decStart = Date.now();
-    const { text, lastTokenFrame, totalFrames, collapseRecoveries, blankRatio } =
+    const { text, firstTokenFrame, lastTokenFrame, totalFrames, collapseRecoveries, blankRatio } =
         await core.transducerGreedyDecode(encoderOut, encoderLen, decodeCtx());
     const decTime = Date.now() - decStart;
 
-    return { text, melTime, encTime, decTime, lastTokenFrame, totalFrames, collapseRecoveries, blankRatio };
+    return { text, melTime, encTime, decTime, firstTokenFrame, lastTokenFrame, totalFrames, collapseRecoveries, blankRatio };
 }
 
 /**
@@ -849,8 +859,11 @@ async function tryHybridDecode(audioData: Float32Array): Promise<string | null> 
  * Smaller windows are the recovery that provably works.
  */
 async function transcribeForcedSplit(audio: Float32Array, depth: number): Promise<string> {
-    if (depth <= 0 || audio.length < 2 * 16000) return ''; // halves below ~1s decode poorly
-    const cut = quietestSplitPoint(audio);
+    if (depth <= 0) return '';
+    // Both halves must be at least a second: a 0.7s fragment of a word had
+    // the model invent "Lombazi" for it (real dictation, 2026-09-01).
+    const cut = quietestSplitPoint(audio, undefined, 16000);
+    if (cut < 0) return '';
     const texts: string[] = [];
     for (const half of [audio.subarray(0, cut), audio.subarray(cut)]) {
         let text = (await transcribeSinglePass(half)).text.trim();
@@ -918,7 +931,7 @@ async function runTranscription(
         let emptyVoicedFallthrough = false;
 
         if (durationSeconds <= singlePassLimit) {
-            const { text, melTime, encTime, decTime, lastTokenFrame, totalFrames } = await transcribeSinglePass(audioData);
+            const { text, melTime, encTime, decTime, firstTokenFrame, lastTokenFrame, totalFrames } = await transcribeSinglePass(audioData);
 
             const totalTime = Date.now() - startTime;
             const rtf = durationSeconds / (totalTime / 1000);
@@ -938,6 +951,17 @@ async function runTranscription(
             // ~0.5s would stall the live queue for display-only text.
             const ateSpeech = !options.preview && text.trim() === '' && durationSeconds >= 1
                 && peakWindowRms(audioData) >= QUIET_PEAK_RMS;
+            // LEADING loss: the decoder blanked through clear speech before
+            // its first token — "I said time." came back as "Time." with the
+            // first token at 1.9s of a 2.3s clip (real dictation, 2026-09-01).
+            // Tail-coverage checks cannot see this, so it gets its own test:
+            // speech-level energy for over a second ahead of the first token.
+            const leadSec = firstTokenFrame > 0 ? firstTokenFrame * 0.08 : 0;
+            const leadPeak = leadSec >= 1.2
+                ? peakWindowRms(audioData.subarray(0, Math.floor((leadSec - 0.3) * 16000)))
+                : 0;
+            const leadingLoss = !options.preview && text.trim() !== '' && leadSec >= 1.2
+                && leadPeak >= LEADING_SPEECH_PEAK_RMS;
             if (truncated) {
                 console.log(`[Parakeet] ⚠ Truncation detected: last token at ${(coverage * 100).toFixed(0)}% coverage (frame ${lastTokenFrame}/${totalFrames}). Retrying with batched encoding...`);
                 // Fall through to batched encoding below
@@ -945,6 +969,19 @@ async function runTranscription(
                 console.log(`[Parakeet] ⚠ Empty decode of voiced audio (${durationSeconds.toFixed(1)}s, peak RMS ${peakWindowRms(audioData).toFixed(4)}). Retrying with VAD segmentation...`);
                 emptyVoicedFallthrough = true;
                 // Fall through to batched encoding below
+            } else if (leadingLoss) {
+                console.log(`[Parakeet] ⚠ First token only at ${leadSec.toFixed(1)}s with speech-level audio before it (peak RMS ${leadPeak.toFixed(4)}). Retrying with forced sub-windows...`);
+                const forced = await transcribeForcedSplit(audioData, 3);
+                // Keep the retry only if it says MORE and still contains what
+                // the first pass heard — a hallucinated fragment must not win.
+                const anchor = text.trim().toLowerCase().replace(/[.!?,;:]+$/, '').split(/\s+/).slice(0, 3).join(' ');
+                const wordsOf = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
+                if (forced && wordsOf(forced) > wordsOf(text) && forced.toLowerCase().includes(anchor)) {
+                    console.log(`[Parakeet] ✓ Leading speech recovered: "${forced.substring(0, 80)}"`);
+                    return forced;
+                }
+                console.log(`[Parakeet] Retry did not add to the first pass — keeping: "${text.substring(0, 80)}"`);
+                return text;
             } else {
                 console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
                 return text;
