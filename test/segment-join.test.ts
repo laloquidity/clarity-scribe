@@ -36,6 +36,31 @@ describe('joinSegments — repairs the reported bug', () => {
             { text: 'And then it crashed' },
         ])).toBe('I was explaining the whole thing and then it crashed');
     });
+
+    it('lowercases any function word at a FORCED seam, not only the narrow list', () => {
+        // Real dictation 2026-09-01: the 15s soft cap cut "…Did you know
+        // that | In 1974, there was an act…" and "In" stayed capitalized.
+        expect(joinSegments([
+            { text: 'Did you know that', forcedSplit: true },
+            { text: 'In nineteen seventy four there was an act' },
+        ])).toBe('Did you know that in nineteen seventy four there was an act');
+        expect(joinSegments([
+            { text: 'we need to make sure', forcedSplit: true },
+            { text: 'The file is preserved' },
+        ])).toBe('we need to make sure the file is preserved');
+    });
+
+    it('keeps the wide list for forced seams only — "In" can open a real sentence', () => {
+        expect(joinSegments(['Did you know that.', 'In 1974 there was an act']))
+            .toBe('Did you know that. In 1974 there was an act');
+    });
+
+    it('never lowercases a name even at a forced seam', () => {
+        expect(joinSegments([
+            { text: 'I need to message', forcedSplit: true },
+            { text: 'Ryan about the update' },
+        ])).toBe('I need to message Ryan about the update');
+    });
 });
 
 describe('joinSegments — a pause seam the model closed with its default period', () => {

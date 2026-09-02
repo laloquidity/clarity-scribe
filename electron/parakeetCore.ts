@@ -372,6 +372,10 @@ export async function transducerGreedyDecode(
     ctx: DecodeContext,
 ): Promise<{
     text: string;
+    /** Encoder frame of the FIRST emitted token, -1 when none — a late first
+     *  token on audio that is voiced from the start means leading speech was
+     *  lost, which no tail-coverage check can see. */
+    firstTokenFrame: number;
     lastTokenFrame: number;
     totalFrames: number;
     /** LSTM-state resets triggered by the collapse detector (0 = healthy). */
@@ -467,6 +471,7 @@ export async function transducerGreedyDecode(
     // Diagnostic counters for truncation investigation
     let totalBlanks = 0;
     let totalIterations = 0;
+    let firstTokenFrame = -1;
     let lastTokenFrame = 0;
     let maxSkipSeen = 0;
     let consecutiveBlanks = 0;
@@ -552,6 +557,7 @@ export async function transducerGreedyDecode(
             prevToken = y;
             decoderStates = nextStates;
             tokensThisFrame += 1;
+            if (firstTokenFrame < 0) firstTokenFrame = t;
             lastTokenFrame = t;
             consecutiveBlanks = 0;
             advanceBias(y);
@@ -610,9 +616,10 @@ export async function transducerGreedyDecode(
     const lastTokenTimeSec = (lastTokenFrame * 0.08).toFixed(1); // ~80ms per encoder frame
     const totalTimeSec = (encoderOutLen * 0.08).toFixed(1);
     const unusedFrames = encoderOutLen - lastTokenFrame;
-    console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames | blanks: ${totalBlanks}/${totalIterations} (${blankRatio}%) | decoderCalls: ${decoderCalls}/${totalIterations} | maxSkip: ${maxSkipSeen} | maxConsecBlanks: ${maxConsecutiveBlanks} | lastToken: frame ${lastTokenFrame} (${lastTokenTimeSec}s/${totalTimeSec}s) | unusedTail: ${unusedFrames} frames${collapseRecoveries > 0 ? ` | ⚠ recoveries: ${collapseRecoveries}` : ''}`);
+    console.log(`[Parakeet] Decode: ${tokens.length} tokens from ${encoderOutLen} frames | blanks: ${totalBlanks}/${totalIterations} (${blankRatio}%) | decoderCalls: ${decoderCalls}/${totalIterations} | maxSkip: ${maxSkipSeen} | maxConsecBlanks: ${maxConsecutiveBlanks} | firstToken: frame ${firstTokenFrame} | lastToken: frame ${lastTokenFrame} (${lastTokenTimeSec}s/${totalTimeSec}s) | unusedTail: ${unusedFrames} frames${collapseRecoveries > 0 ? ` | ⚠ recoveries: ${collapseRecoveries}` : ''}`);
     return {
         text: tokensToText(tokens, vocabulary),
+        firstTokenFrame,
         lastTokenFrame,
         totalFrames: encoderOutLen,
         collapseRecoveries,

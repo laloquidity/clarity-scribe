@@ -121,8 +121,20 @@ describe('quietestSplitPoint', () => {
         expect(cut).toBeGreaterThanOrEqual(Math.floor(n * 0.25));
         expect(cut).toBeLessThan(Math.floor(n * 0.75));
     });
-    it('falls back to the midpoint for tiny buffers', () => {
-        expect(quietestSplitPoint(new Float32Array(100))).toBe(50);
+    it('reports no cut for a buffer too small to hold a window', () => {
+        expect(quietestSplitPoint(new Float32Array(100))).toBe(-1);
+    });
+
+    it('guarantees each half a minimum length, or refuses to cut', () => {
+        // "Lombazi": a 2.5s clip was cut at 0.7s and the model invented a
+        // word for the fragment. With a 1s minimum the cut must land in
+        // [1.0s, 1.5s] — and a 1.5s clip cannot be cut at all.
+        const clip = new Float32Array(16000 * 2.5).fill(0.2);
+        clip.fill(0, 16000 * 0.6, 16000 * 0.8); // tempting silence at 0.6–0.8s
+        const cut = quietestSplitPoint(clip, undefined, 16000);
+        expect(cut).toBeGreaterThanOrEqual(16000);
+        expect(cut).toBeLessThanOrEqual(16000 * 1.5);
+        expect(quietestSplitPoint(new Float32Array(16000 * 1.5).fill(0.2), undefined, 16000)).toBe(-1);
     });
 });
 
