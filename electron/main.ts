@@ -1619,7 +1619,7 @@ app.whenReady().then(async () => {
 
                 // Enable transcribe-while-recording: segments (≤28s, cut at
                 // pauses) go straight through the Parakeet single-pass path.
-                streaming.configureStreaming((audio16k, opts) => transcribeParakeet(audio16k, { preview: opts?.preview }));
+                streaming.configureStreaming((audio16k, opts) => transcribeParakeet(audio16k, { preview: opts?.preview || opts?.seam }));
                 streaming.onPartial((text) => {
                     mainWindow?.webContents.send('transcription-partial', text);
                     emitEvent({ type: 'partial', text });

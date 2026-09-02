@@ -79,6 +79,51 @@ describe('joinSegments — repairs the reported bug', () => {
     });
 });
 
+describe('joinSegments — a straddle decode decides the casing at a forced seam', () => {
+    it('lowercases a common noun the model reads lowercase in context', () => {
+        // Real dictation 2026-09-01: "…an incredible | Product."
+        expect(joinSegments([
+            { text: "let's really make this an incredible.", forcedSplit: true },
+            { text: 'Product.', seamText: 'make this an incredible product' },
+        ])).toBe("let's really make this an incredible product.");
+    });
+
+    it('keeps a name the model capitalizes mid-sentence in context', () => {
+        expect(joinSegments([
+            { text: 'I need to message.', forcedSplit: true },
+            { text: 'Ryan about it', seamText: 'need to message Ryan about' },
+        ])).toBe('I need to message Ryan about it');
+    });
+
+    it('keeps a sentence break the model writes even with context', () => {
+        expect(joinSegments([
+            { text: 'That is done.', forcedSplit: true },
+            { text: 'Product launches Monday', seamText: 'that is done. Product launches' },
+        ])).toBe('That is done. Product launches Monday');
+    });
+
+    it('falls back to the word lists when the straddle does not contain the word', () => {
+        expect(joinSegments([
+            { text: 'we need', forcedSplit: true },
+            { text: 'The file', seamText: 'something unrelated entirely' },
+        ])).toBe('we need the file');
+    });
+
+    it('ignores the straddle when the word is its very first word — no context there', () => {
+        expect(joinSegments([
+            { text: 'we need', forcedSplit: true },
+            { text: 'Product now', seamText: 'Product now' },
+        ])).toBe('we need Product now');
+    });
+
+    it('picks the occurrence nearest the seam when the word appears on both sides', () => {
+        expect(joinSegments([
+            { text: 'the product team said the.', forcedSplit: true },
+            { text: 'Product is ready', seamText: 'the product team said the product is ready' },
+        ])).toBe('the product team said the product is ready');
+    });
+});
+
 describe('joinSegments — a pause seam the model closed with its default period', () => {
     // The model ends EVERY isolated clip with a period, so at a pause seam
     // that period says nothing; a capitalized "And/Which" says the sentence

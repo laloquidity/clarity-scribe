@@ -49,6 +49,16 @@ export interface JoinPart {
      * pause. Certain evidence the sentence continues across the seam.
      */
     forcedSplit?: boolean;
+    /**
+     * A STRADDLE decode across the seam BEFORE this part: the last couple of
+     * seconds of the previous segment plus the first couple of this one,
+     * decoded together. The model's casing of this part's first word, seen
+     * with context, is the one signal that separates a common noun from a
+     * name — "…an incredible | Product." (real dictation, 2026-09-01) reads
+     * "incredible product" in the straddle. Best-effort: absent or unhelpful,
+     * the word lists below apply.
+     */
+    seamText?: string;
 }
 
 /**
@@ -191,6 +201,33 @@ function isAcronym(word: string): boolean {
 }
 
 /**
+ * How the straddle decode wrote `word` in context — the occurrence nearest
+ * the middle of the straddle, which is where the seam sits:
+ *   'lower'    — lowercase: a common word, our cut invented the capital
+ *   'proper'   — capitalized mid-sentence: a name, keep the capital
+ *   'sentence' — capitalized after terminal punctuation: a real sentence break
+ *   null       — not found, or only as the straddle's own first word (which is
+ *                capitalized for the same reason as the seam: no information)
+ */
+function seamCasing(seamText: string, word: string): 'lower' | 'proper' | 'sentence' | null {
+    const esc = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(^|[^A-Za-z0-9'’])(${esc})(?=$|[^A-Za-z0-9'’])`, 'gi');
+    const mid = seamText.length / 2;
+    let best: { found: string; at: number } | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(seamText)) !== null) {
+        const at = m.index + m[1].length;
+        if (!best || Math.abs(at - mid) < Math.abs(best.at - mid)) best = { found: m[2], at };
+    }
+    if (!best) return null;
+    const before = seamText.slice(0, best.at).trimEnd();
+    if (before === '') return null;
+    const cap = best.found[0] !== best.found[0].toLowerCase();
+    if (!cap) return 'lower';
+    return ENDS_SENTENCE.test(before) ? 'sentence' : 'proper';
+}
+
+/**
  * Stitch segment texts into one transcript, repairing seams that our own
  * segmentation broke. Pure and order-preserving; empty segments are dropped.
  */
@@ -237,6 +274,28 @@ export function joinSegments(
         }
 
         const leftEnds = ENDS_SENTENCE.test(out);
+
+        // A straddle decode across a FORCED seam beats any word list: it is
+        // the model's own reading of the cut with context on both sides.
+        const seamText = norm[i].seamText;
+        if (forced && seamText) {
+            const fw = firstWord(right);
+            const verdict = fw && !isAcronym(fw.word) ? seamCasing(seamText, fw.word) : null;
+            if (verdict) {
+                if (verdict === 'lower') {
+                    right = fw!.word.toLowerCase() + right.slice(fw!.end);
+                    if (leftEnds) out = out.replace(/[.]["'”’)\]]*$/, '');
+                    onRepair?.();
+                } else if (verdict === 'proper') {
+                    // A name: keep the capital, drop the period our cut invented.
+                    if (leftEnds) out = out.replace(/[.]["'”’)\]]*$/, '');
+                }
+                // 'sentence': the model breaks here even with context — leave it.
+                out += ' ' + right;
+                continue;
+            }
+        }
+
         // Evidence the sentence is still in flight across this seam.
         const midSentence = forced || !leftEnds;
         // Rule 3: a pause seam the model closed with its default period.

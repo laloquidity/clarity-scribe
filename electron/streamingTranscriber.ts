@@ -22,7 +22,9 @@
 
 // `preview` marks a display-only decode of the still-open segment: the engine
 // may skip expensive recovery for those (the text is redecoded moments later).
-type SegmentTranscriber = (audio16k: Float32Array, opts?: { preview?: boolean }) => Promise<string>;
+// `seam` marks a straddle decode across a forced cut (see SEAM_CONTEXT_MS) —
+// context for the joiner, never transcript text; treat like a preview.
+type SegmentTranscriber = (audio16k: Float32Array, opts?: { preview?: boolean; seam?: boolean }) => Promise<string>;
 import { joinSegments } from './segmentJoin';
 import { diag } from './diagnostics';
 
@@ -59,6 +61,17 @@ const SOFT_CAP_MIN_SILENT_WINDOWS = 3; // ~96ms of sub-gate audio counts as a ga
 const MAX_SEGMENT_MS = 28_000;      // hard cap (matches vadService segment cap)
 const MIN_TAIL_MS = 250;            // tail shorter than this (and unvoiced) is dropped
 const WINDOW_MS = 32;               // RMS analysis window
+
+// ── Seam context ────────────────────────────────────────────────────────────
+// A forced cut (length cap / quietest-window split) lands mid-phrase, and the
+// segment after it is decoded in isolation — so its first word comes back
+// capitalized whether it is a noun or a name ("…an incredible | Product.",
+// real dictation 2026-09-01). Word lists cannot tell those apart; the model
+// can, given context. So across every forced seam a STRADDLE window — this
+// much audio from each side — is decoded too, and the joiner reads the
+// model's casing of the seam word from it. One extra decode per forced seam
+// (~300ms, mid-recording); at stop only when the tail follows a forced cut.
+const SEAM_CONTEXT_MS = 2500;
 
 // ── Live mid-segment preview ────────────────────────────────────────────────
 // The partial events above fire only when a segment CLOSES — a ≥650ms pause,
@@ -148,6 +161,11 @@ interface Session {
     // length (the close itself always fires at exactly SILENCE_CLOSE_MS).
     measuringPause: boolean;
     resumeSilenceMs: number;
+    // Seam context (see SEAM_CONTEXT_MS): the tail of the last FORCED-closed
+    // segment, waiting for the next segment's head; and the straddle decodes
+    // by index of the segment they precede.
+    seamLeftTail: Float32Array | null;
+    seamTexts: Array<string | undefined>;
 }
 
 /** Adaptive voice gate: scales with the session's loudest window, clamped. */
@@ -227,8 +245,34 @@ export function startSession(sampleRate: number): boolean {
         previewCount: 0,
         measuringPause: false,
         resumeSilenceMs: 0,
+        seamLeftTail: null,
+        seamTexts: [],
     };
     return true;
+}
+
+/**
+ * Decode the straddle across a forced seam — the previous segment's tail plus
+ * this segment's head — and file the text under this segment's index for the
+ * joiner. Queued BEFORE the segment's own decode so the partial emitted after
+ * that decode already carries the repaired seam. Best-effort throughout.
+ */
+function queueSeamDecode(s: Session, index: number, leftTail: Float32Array, right: Float32Array): void {
+    const n = Math.round((SEAM_CONTEXT_MS / 1000) * s.sampleRate);
+    const head = right.subarray(0, Math.min(right.length, n));
+    const straddle = new Float32Array(leftTail.length + head.length);
+    straddle.set(leftTail, 0);
+    straddle.set(head, leftTail.length);
+    const sampleRate = s.sampleRate;
+    s.queue = s.queue.then(async () => {
+        if (!transcriberFn || !s.healthy) return;
+        try {
+            const text = (await transcriberFn(resampleCubic(straddle, sampleRate, 16000), { preview: true, seam: true })).trim();
+            if (text) s.seamTexts[index] = text;
+        } catch {
+            // Context only — the joiner falls back to its word lists.
+        }
+    });
 }
 
 /** Abort and discard the current session (recording error / cancel). */
@@ -424,12 +468,27 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
     // The open segment is new — restart the preview clock for it.
     s.previewedSamples = 0;
 
-    if (!hadVoice) return; // pure silence — nothing to transcribe
+    if (!hadVoice) {
+        s.seamLeftTail = null; // a silent stretch breaks any pending seam
+        return; // pure silence — nothing to transcribe
+    }
 
     const index = s.segmentsQueued++;
     s.forced[index] = forced;
     diag.segmentClosed(forced);
     const sampleRate = s.sampleRate;
+
+    // Seam context: if the previous segment was force-cut, decode the straddle
+    // across that cut now (ahead of this segment's own decode); and if THIS
+    // close is forced, keep our tail for the next segment.
+    const leftTail = s.seamLeftTail;
+    s.seamLeftTail = null;
+    if (leftTail) queueSeamDecode(s, index, leftTail, raw);
+    if (forced) {
+        const n = Math.round((SEAM_CONTEXT_MS / 1000) * sampleRate);
+        s.seamLeftTail = raw.subarray(Math.max(0, raw.length - n)).slice();
+    }
+
     s.pendingDecodes++;
     s.queue = s.queue.then(async () => {
         try {
@@ -461,7 +520,7 @@ function joinedText(s: Session): string {
     // Repair seams our own segmentation created (a pause mid-sentence makes
     // the model capitalize the next segment's first word). See segmentJoin.
     return joinSegments(
-        s.texts.map((text, i) => ({ text: text ?? '', forcedSplit: s.forced[i] === true })),
+        s.texts.map((text, i) => ({ text: text ?? '', forcedSplit: s.forced[i] === true, seamText: s.seamTexts[i] })),
         diag.seamRepaired,
         diag.restartTrimmed,
     );

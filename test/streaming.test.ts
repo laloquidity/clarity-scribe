@@ -52,7 +52,8 @@ describe('streamingTranscriber', () => {
         onPartial(null);
         setLivePreview(false);
         calls = [];
-        configureStreaming(async (audio) => {
+        configureStreaming(async (audio, opts) => {
+            if (opts?.seam) return ''; // straddle context is never a segment
             calls.push(audio);
             return `seg${calls.length}`;
         });
@@ -161,6 +162,26 @@ describe('streamingTranscriber', () => {
         expect(result.segments).toBe(2); // pause-closed + tail
         expect(result.text).toBe('seg1 seg2');
         expect(partials.length).toBeGreaterThan(0); // live preview events fired
+    });
+
+    it('decodes a straddle across a forced seam and lets the joiner read its casing', async () => {
+        // "…an incredible | Product." (real dictation, 2026-09-01): the soft
+        // cap cut mid-phrase and the tail's lone word came back capitalized.
+        const seamCalls: Float32Array[] = [];
+        configureStreaming(async (audio, opts) => {
+            if (opts?.seam) { seamCalls.push(audio); return 'make this an incredible product'; }
+            calls.push(audio);
+            return calls.length === 1 ? "let's make this an incredible." : 'Product.';
+        });
+        startSession(SR);
+        pushAll(voiced(20_000)); // soft cap → forced seam + ~5s tail
+        const result = await finalizeSession();
+        expect(result.segments).toBe(2);
+        expect(seamCalls.length).toBe(1);
+        // ~2.5s from each side, resampled to 16k
+        expect(seamCalls[0].length).toBeGreaterThan(4 * 16000);
+        expect(seamCalls[0].length).toBeLessThanOrEqual(5.1 * 16000);
+        expect(result.text).toBe("let's make this an incredible product.");
     });
 
     it('marks preview decodes so the engine can skip expensive recovery', async () => {
