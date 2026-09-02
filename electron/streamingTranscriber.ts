@@ -40,7 +40,14 @@ type PartialListener = (fullTextSoFar: string, segmentIndex: number) => void;
 const SILENCE_RMS_FLOOR = 0.0025;   // never gate below this (true silence)
 const SILENCE_RMS_CEIL = 0.006;     // never require more than the old constant
 const PEAK_RATIO = 0.15;            // threshold = peakRms × this, clamped
-const SILENCE_CLOSE_MS = 650;       // continuous silence that closes a segment
+// Continuous silence that closes a segment. Was 650ms, which a speaker's
+// mid-sentence thinking pause routinely exceeds — each such close hands the
+// model an isolated clip it capitalizes and ends with a period ("…preserved.
+// Tell me…", real dictation 2026-09-01). With the fixed-shape encoder the
+// cost of a longer open segment at stop is flat, so the threshold only
+// trades seam artifacts for nothing. The "[Stream] Pause between speech"
+// log line reports every real pause length, for tuning against evidence.
+const SILENCE_CLOSE_MS = 1000;
 const MIN_VOICED_MS = 550;          // don't close segments with less voiced audio than this
 const SOFT_CAP_MS = 15_000;         // no-pause talkers: split at the quietest recent window
 const SOFT_CAP_LOOKBACK_MS = 6_000; // window in which the quietest split point is searched
@@ -131,6 +138,11 @@ interface Session {
     decodeMsTotal: number;          // real segment decodes (resample + decode)
     previewMsTotal: number;         // preview decodes — redundant by design
     previewCount: number;
+    // Pause measurement: after a pause closes a segment, keep counting the
+    // silence until speech resumes, so the log reports the pause's TRUE
+    // length (the close itself always fires at exactly SILENCE_CLOSE_MS).
+    measuringPause: boolean;
+    resumeSilenceMs: number;
 }
 
 /** Adaptive voice gate: scales with the session's loudest window, clamped. */
@@ -208,6 +220,8 @@ export function startSession(sampleRate: number): boolean {
         decodeMsTotal: 0,
         previewMsTotal: 0,
         previewCount: 0,
+        measuringPause: false,
+        resumeSilenceMs: 0,
     };
     return true;
 }
@@ -253,9 +267,14 @@ export function pushChunk(chunk: Float32Array): void {
         s.rmsHistory.push({ startSample: Math.max(0, firstWindowStart + off), rms });
         if (rms > s.peakRms) s.peakRms = rms;
         if (rms >= voiceGate(s)) {
+            if (s.measuringPause) {
+                s.measuringPause = false;
+                console.log(`[Stream] Pause between speech: ${SILENCE_CLOSE_MS + s.resumeSilenceMs}ms (segment closed at ${SILENCE_CLOSE_MS}ms)`);
+            }
             s.voicedMsInSegment += WINDOW_MS;
             s.silenceRunMs = 0;
         } else {
+            if (s.measuringPause) s.resumeSilenceMs += WINDOW_MS;
             s.silenceRunMs += WINDOW_MS;
         }
     }
@@ -266,6 +285,10 @@ export function pushChunk(chunk: Float32Array): void {
     if (pauseClose || openMs >= MAX_SEGMENT_MS) {
         // Hitting the hard cap means we cut mid-speech; a pause close did not.
         closeOpenSegment(s, undefined, !pauseClose);
+        if (pauseClose) {
+            s.measuringPause = true;
+            s.resumeSilenceMs = 0;
+        }
         return;
     }
 
