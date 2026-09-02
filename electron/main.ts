@@ -1498,6 +1498,9 @@ app.whenReady().then(async () => {
     createTray();
     setupIpcHandlers();
     mark('window + IPC ready');
+    // When the renderer has actually painted — the moment the user sees the
+    // app. Everything armed before this line is ready before they can look.
+    mainWindow?.webContents.once('did-finish-load', () => mark('renderer loaded — UI visible'));
 
     // Arm the hotkey, command mode, and app polling BEFORE the engines load.
     // Recording only needs the microphone; the engines are needed at STOP,
