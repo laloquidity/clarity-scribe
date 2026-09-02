@@ -50,6 +50,14 @@ describe('joinSegments — repairs the reported bug', () => {
         ])).toBe('we need to make sure the file is preserved');
     });
 
+    it('lowercases negated auxiliaries and pronoun contractions, never "I\'m"', () => {
+        // "…do this | Wouldn't we need intra bar data?" real dictation, 2026-09-01.
+        expect(joinSegments(['for us to accurately do this', "Wouldn't we need intra bar data?"]))
+            .toBe("for us to accurately do this wouldn't we need intra bar data?");
+        expect(joinSegments(['and then', "It’s gonna close"])).toBe("and then it’s gonna close");
+        expect(joinSegments(['he said', "I'm not sure"])).toBe("he said I'm not sure");
+    });
+
     it('applies the wide list after an UNFINISHED left segment too', () => {
         // Real dictation 2026-09-01: "…adapt those as well. Like | What should
         // the cap be…" — the left had no terminal punctuation, so the sentence

@@ -32,7 +32,7 @@ import { detectSpeechSegments, isVADReady } from './vadService';
 import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
 import { joinSegments } from './segmentJoin';
-import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt, QUIET_PEAK_RMS, quietestSplitPoint } from './decodeHealth';
+import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt, QUIET_PEAK_RMS, quietestSplitPoint, voicedMsAbove } from './decodeHealth';
 import { isSessionInProgress as isStreamingSessionInProgress } from './streamingTranscriber';
 import { diag } from './diagnostics';
 
@@ -503,6 +503,8 @@ const FIXED_SHAPE_WARM_LIMIT_MS = 700;
  * below which nothing is voiced); typical speech here peaks ~0.06–0.2.
  */
 const LEADING_SPEECH_PEAK_RMS = 0.02;
+/** ...and it must hold for this long in total — a word, not a click. */
+const LEADING_SPEECH_MIN_MS = 400;
 
 /** When the current inference sessions were created (for preventive refresh). */
 let sessionsBuiltAt = 0;
@@ -987,12 +989,15 @@ async function runTranscription(
             // first token at 1.9s of a 2.3s clip (real dictation, 2026-09-01).
             // Tail-coverage checks cannot see this, so it gets its own test:
             // speech-level energy for over a second ahead of the first token.
+            // Sustained energy, not a single loud window: the hotkey click and
+            // a breath both peak at speech level for one window and used to
+            // trigger a 600ms retry that found nothing (2026-09-01).
             const leadSec = firstTokenFrame > 0 ? firstTokenFrame * 0.08 : 0;
-            const leadPeak = leadSec >= 1.2
-                ? peakWindowRms(audioData.subarray(0, Math.floor((leadSec - 0.3) * 16000)))
-                : 0;
+            const leadAudio = leadSec >= 1.2 ? audioData.subarray(0, Math.floor((leadSec - 0.3) * 16000)) : null;
+            const leadPeak = leadAudio ? peakWindowRms(leadAudio) : 0;
+            const leadVoicedMs = leadAudio ? voicedMsAbove(leadAudio, LEADING_SPEECH_PEAK_RMS) : 0;
             const leadingLoss = !options.preview && text.trim() !== '' && leadSec >= 1.2
-                && leadPeak >= LEADING_SPEECH_PEAK_RMS;
+                && leadVoicedMs >= LEADING_SPEECH_MIN_MS;
             // The EMPTY case is checked before the truncation case on purpose:
             // a long clip that decoded to nothing satisfies both, and only the
             // empty path escalates to forced sub-windows when VAD hands back
@@ -1008,7 +1013,7 @@ async function runTranscription(
                 singlePassText = text;
                 // Fall through to batched encoding below
             } else if (leadingLoss) {
-                console.log(`[Parakeet] ⚠ First token only at ${leadSec.toFixed(1)}s with speech-level audio before it (peak RMS ${leadPeak.toFixed(4)}). Retrying with forced sub-windows...`);
+                console.log(`[Parakeet] ⚠ First token only at ${leadSec.toFixed(1)}s with ${leadVoicedMs.toFixed(0)}ms of speech-level audio before it (peak RMS ${leadPeak.toFixed(4)}). Retrying with forced sub-windows...`);
                 const forced = await transcribeForcedSplit(audioData, 3);
                 // Keep the retry only if it says MORE and still contains what
                 // the first pass heard — a hallucinated fragment must not win.

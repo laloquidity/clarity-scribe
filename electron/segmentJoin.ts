@@ -98,6 +98,13 @@ const FORCED_SEAM_WORDS = new Set([
     'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
     'do', 'does', 'did', 'have', 'has', 'had',
     'can', 'could', 'will', 'would', 'should', 'may', 'might', 'must', 'shall', 'not',
+    // negated auxiliaries and pronoun contractions — never "I'm"/"I've"
+    // (the pronoun stays capital), never a name. "…do this | Wouldn't we
+    // need intra bar data?" real dictation, 2026-09-01.
+    "wouldn't", "couldn't", "shouldn't", "isn't", "aren't", "wasn't", "weren't",
+    "don't", "doesn't", "didn't", "can't", "won't", "haven't", "hasn't", "hadn't",
+    "it's", "that's", "there's", "he's", "she's", "we're", "they're", "you're",
+    "we've", "they've", "you've", "we'll", "they'll", "you'll", "it'll", "that'll",
     // common adverbs
     'also', 'just', 'really', 'very', 'only', 'still', 'already', 'now', 'here', 'there',
 ]);
@@ -239,14 +246,16 @@ export function joinSegments(
             const fw = firstWord(right);
             if (fw && !isAcronym(fw.word)) {
                 const lower = fw.word.toLowerCase();
+                // Lookup key only — the text keeps the model's own apostrophe.
+                const key = lower.replace(/[’]/g, "'");
                 const isCapitalized = fw.word[0] !== lower[0];
                 // The wide list applies wherever the sentence is CERTAINLY in
                 // flight: a forced cut, or a left segment with no terminal
                 // punctuation at all ("…adapt those as well. Like | What
                 // should the cap be…", real dictation 2026-09-01). Only the
                 // period-closed pause seam (rule 3) keeps the narrow list.
-                const repairable = CONTINUATION_WORDS.has(lower)
-                    || ((forced || !leftEnds) && FORCED_SEAM_WORDS.has(lower));
+                const repairable = CONTINUATION_WORDS.has(key)
+                    || ((forced || !leftEnds) && FORCED_SEAM_WORDS.has(key));
                 // A comma right after the word marks a discourse opener
                 // ("So, what do you think?"), which does begin a sentence.
                 const opensAside = right.slice(fw.end).startsWith(',');
@@ -258,7 +267,7 @@ export function joinSegments(
                     } else if (pauseSeamAfterPeriod) {
                         // The speaker's pause becomes a comma before a
                         // conjunction/relativizer, nothing before a preposition.
-                        out = out.replace(ENDS_WITH_BARE_PERIOD, COMMA_CONTINUATIONS.has(lower) ? ',' : '');
+                        out = out.replace(ENDS_WITH_BARE_PERIOD, COMMA_CONTINUATIONS.has(key) ? ',' : '');
                     }
                     onRepair?.(); // diagnostics: how often does this actually fire?
                 }
