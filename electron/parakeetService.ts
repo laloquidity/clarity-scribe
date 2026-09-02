@@ -993,13 +993,19 @@ async function runTranscription(
                 : 0;
             const leadingLoss = !options.preview && text.trim() !== '' && leadSec >= 1.2
                 && leadPeak >= LEADING_SPEECH_PEAK_RMS;
-            if (truncated) {
-                console.log(`[Parakeet] ⚠ Truncation detected: last token at ${(coverage * 100).toFixed(0)}% coverage (frame ${lastTokenFrame}/${totalFrames}). Retrying with batched encoding...`);
-                singlePassText = text;
-                // Fall through to batched encoding below
-            } else if (ateSpeech) {
+            // The EMPTY case is checked before the truncation case on purpose:
+            // a long clip that decoded to nothing satisfies both, and only the
+            // empty path escalates to forced sub-windows when VAD hands back
+            // the same window. Checked the other way round, a 10.4s clip that
+            // decoded to "" went truncation → VAD (same window) → "" and was
+            // returned as silence (real dictation, 2026-09-01).
+            if (ateSpeech) {
                 console.log(`[Parakeet] ⚠ Empty decode of voiced audio (${durationSeconds.toFixed(1)}s, peak RMS ${peakWindowRms(audioData).toFixed(4)}). Retrying with VAD segmentation...`);
                 emptyVoicedFallthrough = true;
+                // Fall through to batched encoding below
+            } else if (truncated) {
+                console.log(`[Parakeet] ⚠ Truncation detected: last token at ${(coverage * 100).toFixed(0)}% coverage (frame ${lastTokenFrame}/${totalFrames}). Retrying with batched encoding...`);
+                singlePassText = text;
                 // Fall through to batched encoding below
             } else if (leadingLoss) {
                 console.log(`[Parakeet] ⚠ First token only at ${leadSec.toFixed(1)}s with speech-level audio before it (peak RMS ${leadPeak.toFixed(4)}). Retrying with forced sub-windows...`);
