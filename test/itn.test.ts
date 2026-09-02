@@ -271,6 +271,21 @@ describe('applyITN — spelled-out acronyms', () => {
     it("keeps a trailing possessive attached", () => {
         expect(applyITN("the C E O's decision")).toBe("the CEO's decision");
     });
+    it('joins a spelled acronym the model chunked into known pieces', () => {
+        // "USDC" came out "USD C" and "US DC" in one dictation, 2026-09-01.
+        expect(applyITN('only lend and borrow USD C')).toBe('only lend and borrow USDC');
+        expect(applyITN("the USD C's peg")).toBe("the USDC's peg");
+        // Two two-letter chunks carry no lone-letter signal, and "US EU
+        // trade" must not become "USEU" — this shape is the Personal
+        // Dictionary's job (a "USDC" entry also biases the decoder itself).
+        expect(applyITN("you're lending US DC, correct?")).toBe("you're lending US DC, correct?");
+        expect(applyITN('US EU trade talks')).toBe('US EU trade talks');
+    });
+    it('does not glue real acronyms together or eat the pronoun I', () => {
+        expect(applyITN('the FBI CIA rivalry')).toBe('the FBI CIA rivalry');
+        expect(applyITN('the US I think')).toBe('the US I think');
+        expect(applyITN('a NASA X-ray')).toBe('a NASA X-ray');
+    });
     it('leaves a lone capital alone', () => {
         expect(applyITN('the draft D that I reviewed')).toBe('the draft D that I reviewed');
     });
