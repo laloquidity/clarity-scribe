@@ -118,6 +118,19 @@ function parseCardinal(tokens: string[], start: number): { value: number; next: 
     while (i < tokens.length) {
         const w = tokens[i];
 
+        // "a hundred", "a thousand": the article is the multiplier one. Only
+        // at the start of a number and only before a scale word, so "a dog"
+        // is untouched. Spoken "a hundred sixty four thousand dollar pool"
+        // came out "hundred $64,000 pool" without this (real dictation,
+        // 2026-09-01) — the parser skipped "hundred" and began at "sixty".
+        if (w === 'a' && !consumedAny && i + 1 < tokens.length && isScale(tokens[i + 1])) {
+            tensOnes = 1;
+            lastKind = 'ones';
+            consumedAny = true;
+            i++;
+            continue;
+        }
+
         if (w === 'and') {
             // "and" only bridges within a number (e.g. "hundred and five").
             // Require something already consumed and a non-scale number word next.
@@ -162,9 +175,16 @@ function parseCardinal(tokens: string[], start: number): { value: number; next: 
         if (isScale(w)) {
             const scale = SCALES[w];
             if (scale === 100) {
-                // Need a multiplier (1..99) directly before "hundred".
-                if (tensOnes === 0 || hundreds !== 0) break;
-                hundreds = tensOnes * 100;
+                if (hundreds !== 0) break;
+                // "hundred" normally needs a multiplier (1..99) before it; a
+                // bare "hundred" OPENING a number is the spoken "a hundred"
+                // with the article dropped by the model — read it as 100.
+                if (tensOnes === 0) {
+                    if (consumedAny) break;
+                    hundreds = 100;
+                } else {
+                    hundreds = tensOnes * 100;
+                }
                 tensOnes = 0;
                 lastKind = 'hundred';
             } else {
