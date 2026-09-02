@@ -133,6 +133,7 @@ export function generateVariants(original: string): string[] {
 }
 
 export type AppState = 'IDLE' | 'RECORDING' | 'PROCESSING' | 'ERROR';
+export type EngineState = 'warming' | 'ready' | 'failed';
 
 // Electron API exposed via preload
 export interface ElectronAPI {
@@ -142,6 +143,10 @@ export interface ElectronAPI {
      *  full buffer through `transcribe` as the batch fallback. */
     transcribeStreamed?: (durationMs: number) => Promise<{ handled: boolean }>;
     isWhisperReady: () => Promise<boolean>;
+    /** Engine readiness: the mic is live from launch, but a dictation stopped
+     *  while 'warming' waits for the engine. Optional: older preloads lack it. */
+    getEngineState?: () => Promise<EngineState>;
+    onEngineState?: (cb: (state: EngineState) => void) => () => void;
     copyToClipboard: (text: string) => Promise<boolean>;
 
     // Streaming transcription (transcribe-while-recording)

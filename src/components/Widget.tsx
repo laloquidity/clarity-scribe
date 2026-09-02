@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Mic, Square, Check, GripVertical } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { AppState } from '../types';
+import type { AppState, EngineState } from '../types';
 
 interface WidgetProps {
     appState: AppState;
@@ -10,6 +10,9 @@ interface WidgetProps {
     whisperReady: boolean;
     whisperProgress: number;
     whisperStatus: string;
+    /** 'warming': you can record now; a dictation stopped before 'ready'
+     *  waits for the engine. Shown honestly instead of a premature "Ready". */
+    engineState?: EngineState;
     hotkey?: string;
     hotkeyMode?: 'toggle' | 'hold';
     /** A command-mode session is active (recording or pipeline running). */
@@ -49,6 +52,7 @@ const Widget: React.FC<WidgetProps> = ({
     whisperReady,
     whisperProgress,
     whisperStatus,
+    engineState = 'ready',
     hotkey,
     hotkeyMode,
     commandActive,
@@ -82,11 +86,14 @@ const Widget: React.FC<WidgetProps> = ({
             }
             return 'Processing';
         }
-        if (hotkey) {
-            const verb = hotkeyMode === 'hold' ? 'Hold' : 'Press';
-            return `${verb} ${formatHotkeyShort(hotkey, platform)} to record`;
-        }
-        return 'Ready';
+        if (engineState === 'failed') return 'Engine failed to load';
+        const prompt = hotkey
+            ? `${hotkeyMode === 'hold' ? 'Hold' : 'Press'} ${formatHotkeyShort(hotkey, platform)} to record`
+            : 'Ready';
+        // Three states, told honestly: the mic is live from the first frame,
+        // but the engine takes a few seconds to warm — a dictation stopped
+        // before then waits for it.
+        return engineState === 'warming' ? `${prompt} · warming up` : prompt;
     };
 
     return (

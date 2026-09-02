@@ -1231,6 +1231,8 @@ function setupIpcHandlers(): void {
     ipcMain.handle('stream-abort', () => { streaming.abortSession(); });
 
     ipcMain.handle('is-whisper-ready', () => isWhisperReady);
+    // Late-mount recovery for the engine-state broadcast, like is-whisper-ready.
+    ipcMain.handle('get-engine-state', () => engineState);
 
     // Engine management
     ipcMain.handle('get-engine-info', () => nativeWhisper.getEngineInfo());
@@ -1487,6 +1489,20 @@ app.on('second-instance', () => {
 let resolveEngineInit: () => void = () => {};
 const engineInitDone = new Promise<void>((resolve) => { resolveEngineInit = resolve; });
 
+/**
+ * Three-state engine readiness for the UI. The mic and hotkey are live from
+ * the moment the window appears (recording needs only the microphone), but
+ * a dictation STOPPED before the engine is warm waits for it — so the
+ * widget says "warming up" until this flips to ready, instead of claiming
+ * "Ready" the instant the window opens.
+ */
+type EngineState = 'warming' | 'ready' | 'failed';
+let engineState: EngineState = 'warming';
+function setEngineState(state: EngineState): void {
+    engineState = state;
+    mainWindow?.webContents.send('engine-state', state);
+}
+
 app.whenReady().then(async () => {
     // Startup timeline: where the seconds go, on every platform. The
     // number that matters to the user is "hotkey armed" — the moment a
@@ -1521,10 +1537,12 @@ app.whenReady().then(async () => {
     mark('hotkey armed — recording available');
 
     console.log('[Main] Initializing engines...');
+    setEngineState('warming');
     const sendStep = (id: string, label: string, percent: number, status: string) => {
         mainWindow?.webContents.send('setup-step-progress', { id, label, percent, status });
     };
 
+    let engineInitOk = false;
     try {
         const settings = store.get('settings') as any || {};
         const savedLang = settings?.whisperLanguage || 'en';
@@ -1633,10 +1651,12 @@ app.whenReady().then(async () => {
         // Signal overall completion
         mainWindow?.webContents.send('whisper-progress', 100, 'Ready');
         mainWindow?.webContents.send('whisper-ready', { acceleration: nativeWhisper.getAccelerationInfo().type });
+        engineInitOk = isWhisperReady;
     } catch (error) {
         console.error('[Main] Init error:', error);
     } finally {
         mark('engines initialized');
+        setEngineState(engineInitOk ? 'ready' : 'failed');
         resolveEngineInit();
     }
 
