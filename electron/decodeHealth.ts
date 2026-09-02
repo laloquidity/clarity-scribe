@@ -157,6 +157,21 @@ export function peakWindowRms(audio: Float32Array, windowSamples = RMS_WINDOW_SA
 }
 
 /**
+ * Milliseconds of audio (at 16kHz) whose window RMS is at or above `rms` —
+ * SUSTAINED energy, as opposed to peakWindowRms's single loudest window. A
+ * hotkey click or a breath is one loud window; speech is many in a row.
+ */
+export function voicedMsAbove(audio: Float32Array, rms: number, windowSamples = RMS_WINDOW_SAMPLES): number {
+    let windows = 0;
+    for (let off = 0; off + windowSamples <= audio.length; off += windowSamples) {
+        let sum = 0;
+        for (let i = off; i < off + windowSamples; i++) sum += audio[i] * audio[i];
+        if (Math.sqrt(sum / windowSamples) >= rms) windows++;
+    }
+    return (windows * windowSamples * 1000) / 16000;
+}
+
+/**
  * Sample index of the QUIETEST window in the middle half of the buffer — the
  * least-destructive place to cut audio that must be split (between words,
  * not through one). Searching only [25%, 75%] keeps the halves balanced, and

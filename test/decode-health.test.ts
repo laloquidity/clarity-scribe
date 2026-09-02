@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
     assessDecode, preferBetterDecode, shouldRefreshSessions, SESSION_MAX_AGE_MS, DecodeStats,
     peakWindowRms, nextRebuildAllowedAt, REBUILD_MIN_SPACING_MS, REBUILD_UNHELPFUL_BACKOFF_MS,
-    quietestSplitPoint,
+    quietestSplitPoint, voicedMsAbove,
 } from '../electron/decodeHealth';
 
 const stats = (o: Partial<DecodeStats>): DecodeStats =>
@@ -96,6 +96,18 @@ describe('peakWindowRms', () => {
 
     it('handles an empty buffer', () => {
         expect(peakWindowRms(new Float32Array(0))).toBe(0);
+    });
+});
+
+describe('voicedMsAbove', () => {
+    it('counts sustained energy, not a single loud window', () => {
+        // One 32ms click at speech level → ~32ms; a 600ms word → ~600ms.
+        const click = new Float32Array(16000 * 2);
+        click.fill(0.2, 8000, 8000 + 512);
+        expect(voicedMsAbove(click, 0.02)).toBeLessThan(100);
+        const word = new Float32Array(16000 * 2);
+        word.fill(0.2, 8000, 8000 + 9600);
+        expect(voicedMsAbove(word, 0.02)).toBeGreaterThanOrEqual(550);
     });
 });
 
