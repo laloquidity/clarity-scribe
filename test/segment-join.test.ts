@@ -50,7 +50,15 @@ describe('joinSegments — repairs the reported bug', () => {
         ])).toBe('we need to make sure the file is preserved');
     });
 
-    it('keeps the wide list for forced seams only — "In" can open a real sentence', () => {
+    it('applies the wide list after an UNFINISHED left segment too', () => {
+        // Real dictation 2026-09-01: "…adapt those as well. Like | What should
+        // the cap be…" — the left had no terminal punctuation, so the sentence
+        // was certainly in flight.
+        expect(joinSegments(['we can adapt those as well. Like', 'What should the cap be on each of those']))
+            .toBe('we can adapt those as well. Like what should the cap be on each of those');
+    });
+
+    it('keeps the wide list off period-closed pause seams — "In" can open a real sentence', () => {
         expect(joinSegments(['Did you know that.', 'In 1974 there was an act']))
             .toBe('Did you know that. In 1974 there was an act');
     });
@@ -112,11 +120,19 @@ describe('joinSegments — must NOT make things worse', () => {
         expect(joinSegments(['based in', 'US offices'])).toBe('based in US offices');
     });
 
-    it('leaves words that legitimately open sentences alone', () => {
-        // Deliberately excluded from the closed set — too risky to touch.
+    it('leaves words that legitimately open sentences alone after a period-closed pause', () => {
+        // At a seam the model closed with a period these are off the narrow
+        // list — "If something…" can genuinely open a sentence there.
         for (const w of ['If', 'When', 'After', 'Before', 'Since', 'While', 'The', 'This', 'That', 'Then', 'Because']) {
-            expect(joinSegments(['some text', `${w} something`])).toBe(`some text ${w} something`);
+            expect(joinSegments(['some text.', `${w} something`])).toBe(`some text. ${w} something`);
         }
+    });
+
+    it('lowercases those same words when the left segment was left UNFINISHED', () => {
+        // No terminal punctuation is the model itself saying the clip did not
+        // end — the sentence is certainly in flight, so the wide list applies.
+        expect(joinSegments(['some text', 'If something'])).toBe('some text if something');
+        expect(joinSegments(['we said', 'The plan is fine'])).toBe('we said the plan is fine');
     });
 
     it('leaves an already-lowercase continuation untouched', () => {

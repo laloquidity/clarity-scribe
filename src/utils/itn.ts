@@ -393,6 +393,16 @@ function applyLetterNumbers(text: string): string {
     });
 }
 
+/**
+ * Multiplier suffix: "20 X" → "20X", "33 X" → "33X" ("the flat 20 X is really
+ * interesting", real dictation 2026-09-01 — leverage multiples are written
+ * with the X attached). Runs after cardinals, so a spelled "twenty X" has
+ * already become "20 X". Only a lone capital X directly after digits.
+ */
+function applyMultiplierX(text: string): string {
+    return text.replace(/(?<![A-Za-z0-9.])(\d+(?:\.\d+)?) X(?![A-Za-z0-9])/g, '$1X');
+}
+
 // ---------------------------------------------------------------------------
 // Transform 2: Currency  (run before plain cardinals)
 // ---------------------------------------------------------------------------
@@ -1019,6 +1029,7 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     out = applyOrdinals(out);
     out = applyCardinals(out);
     out = applyPercent(out);
+    out = applyMultiplierX(out);
     out = applyDigitGrouping(out);
 
     // Final light spacing tidy (mirrors only spaces ITN may have introduced).
@@ -1096,6 +1107,7 @@ export const __itnInternals = {
     applyOrdinals,
     applyCardinals,
     applyPercent,
+    applyMultiplierX,
     applyDigitGrouping,
     parseCardinal,
     ordinalSuffix,

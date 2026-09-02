@@ -138,6 +138,12 @@ export function cleanTranscription(text: string, personalDictionary?: Dictionary
     cleaned = cleaned.replace(/\.\s*,/g, '.');          // Period before comma
     cleaned = cleaned.replace(/\s+([.,;:!?…])/g, '$1');  // Space before punctuation
     cleaned = cleaned.replace(/([.,;:!?…])\s*(?=[A-Z])/g, '$1 '); // Ensure space after punctuation before capital
+    // A stripped filler was carrying the capital: "…to me. Um you know" →
+    // "…to me. you know" (real dictation 2026-09-01). Any lowercase word
+    // right after a sentence end gets the capital back. Ellipses are still
+    // the protected "…" here, so "well... you know" is untouched.
+    cleaned = cleaned.replace(/([.!?])\s+([a-z])/g, (_m, p: string, c: string) => `${p} ${c.toUpperCase()}`);
+    cleaned = cleaned.replace(/,(?=['’][a-z])/gi, ', ');  // "weeds,'cause" → "weeds, 'cause"
     cleaned = cleaned.replace(/…/g, '...');             // Convert unicode ellipsis back to three dots
 
     // 5. Apply personal dictionary corrections (original + variants → replacement)
