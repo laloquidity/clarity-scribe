@@ -24,7 +24,17 @@
  *      punctuation, so whatever follows is a continuation of it; or
  *   2. The split was FORCED — we cut mid-speech at a length cap rather than at
  *      a pause, so both the capital and any trailing period are artifacts of
- *      our own segmentation, not the speaker.
+ *      our own segmentation, not the speaker; or
+ *   3. A PAUSE closed the left segment, the model ended it with a period, and
+ *      the right one opens with a continuation word. The model puts a period
+ *      on the end of EVERY isolated clip, so at a pause seam that period is
+ *      near-zero evidence of a sentence ending, while "And/But/Which" is
+ *      strong evidence it didn't. The pause itself was real — the speaker
+ *      thinking — so it is rendered as a comma before a conjunction or
+ *      relativizer ("…preserved, and then…") and as nothing before a
+ *      preposition ("…a copy of the file"). Chosen by the user (2026-09-01),
+ *      accepting that a sentence genuinely begun with "And" now joins too.
+ *      A "?" or "!" is left alone: those the model only writes on evidence.
  *
  * …and even then only for a closed set of words that essentially never begin a
  * dictated sentence. Anything outside that set is left exactly as the model
@@ -63,6 +73,21 @@ const CONTINUATION_WORDS = new Set([
 
 /** Terminal punctuation, allowing a trailing quote or bracket. */
 const ENDS_SENTENCE = /[.!?…]["'”’)\]]*$/;
+
+/**
+ * A bare period as the very last character — the model's default close for
+ * an isolated clip. A period inside a closing quote or bracket is excluded:
+ * that one belongs to quoted speech and is left as the speaker's.
+ */
+const ENDS_WITH_BARE_PERIOD = /[.]$/;
+
+/**
+ * Continuation words that read naturally with a COMMA after a pause
+ * ("…preserved, and then…", "…the file, which…"). The rest of
+ * CONTINUATION_WORDS are prepositions, where a pause is just hesitation and
+ * a comma would be wrong ("a copy, of the file").
+ */
+const COMMA_CONTINUATIONS = new Set(['and', 'but', 'or', 'nor', 'which', 'whom', 'whose']);
 
 // --- Restarted phrases ---
 //
@@ -176,16 +201,24 @@ export function joinSegments(
         const leftEnds = ENDS_SENTENCE.test(out);
         // Evidence the sentence is still in flight across this seam.
         const midSentence = forced || !leftEnds;
+        // Rule 3: a pause seam the model closed with its default period.
+        const pauseSeamAfterPeriod = !forced && ENDS_WITH_BARE_PERIOD.test(out);
 
-        if (midSentence) {
+        if (midSentence || pauseSeamAfterPeriod) {
             const fw = firstWord(right);
             if (fw && !isAcronym(fw.word)) {
                 const lower = fw.word.toLowerCase();
                 const isCapitalized = fw.word[0] !== lower[0];
                 if (isCapitalized && CONTINUATION_WORDS.has(lower)) {
                     right = lower + right.slice(fw.end);
-                    // A period we inserted by cutting mid-speech is bogus too.
-                    if (forced && leftEnds) out = out.replace(/[.]["'”’)\]]*$/, '');
+                    if (forced && leftEnds) {
+                        // A period we inserted by cutting mid-speech is bogus too.
+                        out = out.replace(/[.]["'”’)\]]*$/, '');
+                    } else if (pauseSeamAfterPeriod) {
+                        // The speaker's pause becomes a comma before a
+                        // conjunction/relativizer, nothing before a preposition.
+                        out = out.replace(ENDS_WITH_BARE_PERIOD, COMMA_CONTINUATIONS.has(lower) ? ',' : '');
+                    }
                     onRepair?.(); // diagnostics: how often does this actually fire?
                 }
             }

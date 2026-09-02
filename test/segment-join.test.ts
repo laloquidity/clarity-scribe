@@ -38,13 +38,33 @@ describe('joinSegments — repairs the reported bug', () => {
     });
 });
 
-describe('joinSegments — must NOT make things worse', () => {
-    it('leaves a genuine sentence break alone', () => {
+describe('joinSegments — a pause seam the model closed with its default period', () => {
+    // The model ends EVERY isolated clip with a period, so at a pause seam
+    // that period says nothing; a capitalized "And/Which" says the sentence
+    // continued. Real dictation 2026-09-01: "…preserved. Tell me…" / "…. And…".
+    it('renders the pause as a comma before a conjunction or relativizer', () => {
         expect(joinSegments(['I went to the store.', 'And then I left.']))
-            .toBe('I went to the store. And then I left.');
+            .toBe('I went to the store, and then I left.');
+        expect(joinSegments(['tell me if that was preserved.', 'Which it was']))
+            .toBe('tell me if that was preserved, which it was');
+    });
+    it('renders the pause as nothing before a preposition', () => {
+        expect(joinSegments(['I made a copy.', 'Of the file']))
+            .toBe('I made a copy of the file');
+    });
+    it('leaves a question or exclamation alone — the model only writes those on evidence', () => {
         expect(joinSegments(['Are you coming?', 'But not right now.']))
             .toBe('Are you coming? But not right now.');
+        expect(joinSegments(['Stop!', 'And listen']))
+            .toBe('Stop! And listen');
     });
+    it('still leaves words that can open a sentence alone after a period', () => {
+        expect(joinSegments(['that was preserved.', 'Tell me if it worked']))
+            .toBe('that was preserved. Tell me if it worked');
+    });
+});
+
+describe('joinSegments — must NOT make things worse', () => {
 
     it('never lowercases a name or ordinary noun', () => {
         expect(joinSegments(['I spoke to', 'David about the report']))
