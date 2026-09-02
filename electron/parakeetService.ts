@@ -514,6 +514,26 @@ let nextReactiveRebuildAt = 0;
 let deferredRebuildWanted = false;
 
 /**
+ * Reactive session rebuilds are OFF. Across every logged dictation since
+ * 2026-08-31 — dozens of "degraded" verdicts, inline retries and deferred
+ * idle rebuilds — a rebuilt session reproduced the prior decode bit-for-bit
+ * every single time: the collapses are a deterministic property of the
+ * audio window, not of session state, and the window-based recoveries
+ * (VAD retry, forced sub-windows) are what actually rescue speech. Each
+ * rebuild meanwhile costs ~4s of GPU work and a session teardown/rebuild
+ * on DirectML, and a run with many of them showed the encoder drifting from
+ * ~270ms to ~650ms per pass. The verdict is still computed and logged for
+ * diagnostics; the 4-hour preventive refresh still covers genuine session
+ * ageing. Flip this only with evidence a rebuild changed a result.
+ */
+const REACTIVE_REBUILDS_ENABLED = false;
+
+/** Whitespace-separated word count, for comparing decode attempts. */
+function wordCount(s: string): number {
+    return s.trim().split(/\s+/).filter(Boolean).length;
+}
+
+/**
  * Free ONNX sessions and swallow errors. Before this existed, every rebuild
  * LEAKED the replaced sessions — the DirectML encoder alone holds ~650MB of
  * GPU memory, so a run with several rebuilds degraded the whole machine's
@@ -604,6 +624,7 @@ function maybeRefreshSessions(): void {
     // already has their text.
     if (deferredRebuildWanted) {
         deferredRebuildWanted = false;
+        if (!REACTIVE_REBUILDS_ENABLED) return;
         if (Date.now() < nextReactiveRebuildAt) return; // throttled — the 4h preventive refresh still covers us
         nextReactiveRebuildAt = nextRebuildAllowedAt(Date.now(), true);
         console.log('[Parakeet] Deferred rebuild: a decode looked degraded during the last recording — rebuilding while idle');
@@ -651,6 +672,11 @@ async function transcribeSinglePass(audioData: Float32Array): Promise<{
     const verdict = assessDecode({ ...first, audioPeakRms: peakWindowRms(audioData) });
     if (!verdict.degraded) return first;
     diag.decodeDegraded();
+
+    if (!REACTIVE_REBUILDS_ENABLED) {
+        console.warn(`[Parakeet] ⚠ Degraded decode (${verdict.reason}) — noted; reactive rebuilds are disabled.`);
+        return first;
+    }
 
     // Mid-recording (or during the stop-time drain), a rebuild would stall
     // the serialized decode queue for seconds — previews, real segments, and
@@ -929,6 +955,11 @@ async function runTranscription(
         // empty — if the VAD retry ALSO comes back empty, escalate to the
         // forced-split decode instead of returning nothing.
         let emptyVoicedFallthrough = false;
+        // The single pass that a truncation retry is trying to IMPROVE ON.
+        // The retry must never replace it with less: in one logged run VAD
+        // found 0.6s of speech in an 11s clip, the batched decode read
+        // "Lomba", and that replaced "Empire signal flip is what causes".
+        let singlePassText = '';
 
         if (durationSeconds <= singlePassLimit) {
             const { text, melTime, encTime, decTime, firstTokenFrame, lastTokenFrame, totalFrames } = await transcribeSinglePass(audioData);
@@ -964,6 +995,7 @@ async function runTranscription(
                 && leadPeak >= LEADING_SPEECH_PEAK_RMS;
             if (truncated) {
                 console.log(`[Parakeet] ⚠ Truncation detected: last token at ${(coverage * 100).toFixed(0)}% coverage (frame ${lastTokenFrame}/${totalFrames}). Retrying with batched encoding...`);
+                singlePassText = text;
                 // Fall through to batched encoding below
             } else if (ateSpeech) {
                 console.log(`[Parakeet] ⚠ Empty decode of voiced audio (${durationSeconds.toFixed(1)}s, peak RMS ${peakWindowRms(audioData).toFixed(4)}). Retrying with VAD segmentation...`);
@@ -975,8 +1007,7 @@ async function runTranscription(
                 // Keep the retry only if it says MORE and still contains what
                 // the first pass heard — a hallucinated fragment must not win.
                 const anchor = text.trim().toLowerCase().replace(/[.!?,;:]+$/, '').split(/\s+/).slice(0, 3).join(' ');
-                const wordsOf = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
-                if (forced && wordsOf(forced) > wordsOf(text) && forced.toLowerCase().includes(anchor)) {
+                if (forced && wordCount(forced) > wordCount(text) && forced.toLowerCase().includes(anchor)) {
                     console.log(`[Parakeet] ✓ Leading speech recovered: "${forced.substring(0, 80)}"`);
                     return forced;
                 }
@@ -1134,6 +1165,13 @@ async function runTranscription(
                 return forced;
             }
             console.log('[Parakeet] Forced split found no speech either.');
+        }
+        // A truncation retry exists to EXTEND the single pass. If it came
+        // back with fewer words, VAD or the batched decode lost more than the
+        // truncation did — keep what the single pass heard.
+        if (singlePassText && wordCount(fullText) < wordCount(singlePassText)) {
+            console.log(`[Parakeet] Batched retry said less (${wordCount(fullText)} vs ${wordCount(singlePassText)} words) — keeping the single pass.`);
+            return singlePassText;
         }
         return fullText;
     } catch (error) {
