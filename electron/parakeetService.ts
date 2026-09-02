@@ -346,34 +346,27 @@ async function initParakeetOnnx(
         const gpuProvider = providers[0]; // dml on Windows, cuda on Linux, coreml on macOS
         console.log(`[Parakeet] Loading with providers: ${providers.join(' → ')} (GPU tier: ${gpuProvider.toUpperCase()})`);
 
-        // Load encoder (largest model — GPU on Win/Linux, CPU on macOS).
-        // Session options (incl. the Windows DirectML stability settings) come
-        // from core.encoderSessionOptions so production and tests share them.
+        // Load all three sessions CONCURRENTLY. The encoder (largest model —
+        // GPU on Win/Linux, CPU on macOS) dominates; the CPU decoder and
+        // joiner (sequential loops — GPU kernel launch overhead hurts) are
+        // small and used to wait behind it for nothing. Session options
+        // (incl. the Windows DirectML stability settings) come from
+        // core.encoderSessionOptions so production and tests share them.
         onProgress?.(85, 'Loading encoder...');
-        console.log('[Parakeet] Loading encoder...');
-        encoderSession = await ort.InferenceSession.create(
-            join(modelDir, 'encoder.int8.onnx'),
-            core.encoderSessionOptions(providers)
-        );
+        console.log('[Parakeet] Loading encoder, decoder, joiner...');
+        const [enc, dec, joi] = await Promise.all([
+            ort.InferenceSession.create(join(modelDir, 'encoder.int8.onnx'), core.encoderSessionOptions(providers)),
+            ort.InferenceSession.create(join(modelDir, 'decoder.int8.onnx'), core.smallModelSessionOptions()),
+            ort.InferenceSession.create(join(modelDir, 'joiner.int8.onnx'), core.smallModelSessionOptions()),
+        ]);
+        encoderSession = enc;
+        decoderSession = dec;
+        joinerSession = joi;
         console.log(`[Parakeet] ✓ Encoder loaded on ${gpuProvider.toUpperCase()} (inputs: ${encoderSession.inputNames}, outputs: ${encoderSession.outputNames})`);
 
         // Read metadata to get decoder state dimensions
         readEncoderMetadata(encoderSession);
-
-        // Load decoder on CPU (sequential loop — GPU kernel launch overhead hurts)
-        onProgress?.(90, 'Loading decoder...');
-        decoderSession = await ort.InferenceSession.create(
-            join(modelDir, 'decoder.int8.onnx'),
-            core.smallModelSessionOptions()
-        );
         console.log(`[Parakeet] ✓ Decoder loaded on CPU (inputs: ${decoderSession.inputNames}, outputs: ${decoderSession.outputNames})`);
-
-        // Load joiner on CPU (sequential loop — GPU kernel launch overhead hurts)
-        onProgress?.(93, 'Loading joiner...');
-        joinerSession = await ort.InferenceSession.create(
-            join(modelDir, 'joiner.int8.onnx'),
-            core.smallModelSessionOptions()
-        );
         console.log(`[Parakeet] ✓ Joiner loaded on CPU (inputs: ${joinerSession.inputNames}, outputs: ${joinerSession.outputNames})`);
 
         // Load vocabulary
@@ -971,6 +964,18 @@ async function runTranscription(
             const segments = await detectSpeechSegments(audioData, 16000);
             audioSegments = segments.map(seg => audioData.slice(seg.startSample, seg.endSample));
             console.log(`[Parakeet] VAD: ${audioSegments.length} segments (${audioSegments.map(s => (s.length / 16000).toFixed(1) + 's').join(', ')})`);
+
+            // We came here to escape a window that collapsed. If VAD hands
+            // back essentially that same window (one all-speech segment), the
+            // batched decode would reproduce the collapse bit-for-bit — ~0.5s
+            // for nothing, measured. Go straight to forced sub-windows.
+            if (emptyVoicedFallthrough && audioSegments.length === 1 && audioSegments[0].length >= 0.9 * audioData.length) {
+                console.log('[Parakeet] VAD returned the same window — skipping to forced sub-window decode');
+                const forced = await transcribeForcedSplit(audioData, 3);
+                if (forced) console.log(`[Parakeet] ✓ Forced split recovered: "${forced.substring(0, 80)}"`);
+                else console.log('[Parakeet] Forced split found no speech either.');
+                return forced;
+            }
         } else {
             // Fallback: fixed 30s chunks (no VAD available)
             console.warn('[Parakeet] VAD not ready, using fixed 30s chunks');

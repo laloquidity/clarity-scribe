@@ -8,7 +8,9 @@
         "skipLibCheck": true,
         "resolveJsonModule": true,
         "declaration": false,
-        "sourceMap": false
+        "sourceMap": false,
+        "incremental": true,
+        "tsBuildInfoFile": "dist-electron/.tsbuildinfo"
     },
     "include": [
         "electron/**/*.ts"

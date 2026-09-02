@@ -285,6 +285,25 @@ describe('applyITN — spaced/dotted meridiems (real ASR output)', () => {
     });
 });
 
+describe('applyITN — percent', () => {
+    it('writes a percentage with the symbol, whatever form the number took', () => {
+        expect(applyITN('it rose 80 percent')).toBe('it rose 80%');
+        expect(applyITN('it rose eighty percent')).toBe('it rose 80%');
+        expect(applyITN('eighty point six percent')).toBe('80.6%');
+        expect(applyITN('only five percent')).toBe('only 5%');
+        expect(applyITN('one hundred percent sure')).toBe('100% sure');
+    });
+    it('leaves surrounding punctuation exactly where it was', () => {
+        expect(applyITN('it rose 80 percent.')).toBe('it rose 80%.');
+        expect(applyITN('about 80 percent, which is a lot')).toBe('about 80%, which is a lot');
+        expect(applyITN('was it 80 percent?')).toBe('was it 80%?');
+    });
+    it('never touches "percentage" or a number-less "percent"', () => {
+        expect(applyITN('a large percentage of users')).toBe('a large percentage of users');
+        expect(applyITN('the percent of users')).toBe('the percent of users');
+    });
+});
+
 describe('applyITN — decimals in any word/digit mix', () => {
     it('reads the decimal however the model chose to write it', () => {
         // "10 point six" verbatim from real dictation, 2026-08-31.
@@ -431,6 +450,7 @@ describe('applyITN — idempotency', () => {
         'around nine 17 A. M. I found that the milk',
         'compare C five and C six',
         'it came out to 10 point six',
+        'it rose eighty point six percent.',
         'the year twenty twenty six',
         'twenty-four',
     ];
