@@ -192,6 +192,22 @@ describe('applyITN — ordinals', () => {
     });
 });
 
+describe('applyITN — "a hundred" and a bare leading "hundred"', () => {
+    it('reads the article or a dropped article as the multiplier one', () => {
+        // Spoken "$164,000 pool" came out "hundred $64,000 pool" (real
+        // dictation, 2026-09-01).
+        expect(applyITN('a hundred sixty four thousand dollar pool')).toBe('$164,000 pool');
+        expect(applyITN('hundred sixty four thousand dollar pool')).toBe('$164,000 pool');
+        expect(applyITN('a hundred dollars')).toBe('$100');
+        expect(applyITN('a thousand times')).toBe('1000 times');
+        expect(applyITN('a hundred and five people')).toBe('105 people');
+    });
+    it('leaves a lone "hundred" and an ordinary article alone', () => {
+        expect(applyITN('the hundred people')).toBe('the hundred people');
+        expect(applyITN('a dog and a cat')).toBe('a dog and a cat');
+    });
+});
+
 describe('applyITN — currency', () => {
     it('converts dollars', () => {
         expect(applyITN('five dollars')).toBe('$5');
