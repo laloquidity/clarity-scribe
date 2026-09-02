@@ -1018,6 +1018,7 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     out = applyDecimals(out);
     out = applyOrdinals(out);
     out = applyCardinals(out);
+    out = applyPercent(out);
     out = applyDigitGrouping(out);
 
     // Final light spacing tidy (mirrors only spaces ITN may have introduced).
@@ -1025,6 +1026,28 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     out = out.replace(/[ \t]{2,}/g, ' ');
 
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Transform: Percent  (runs after cardinals, so the number is already digits)
+// ---------------------------------------------------------------------------
+
+/**
+ * "80 percent" → "80%", "eighty point six percent" → "80.6%", "five percent"
+ * → "5%". Runs after the cardinal and decimal passes, so any spelled number
+ * ten and up is already digits; the spelled 0–9 that the under-ten rule
+ * leaves as words are converted here, because a percentage is always
+ * written numerically. Surrounding punctuation is untouched: "80 percent."
+ * → "80%.", "80 percent, and" → "80%, and". "percentage" never matches
+ * (word boundary), and a bare "percent" with no number before it stays.
+ */
+function applyPercent(text: string): string {
+    const smallAlt = Object.keys(ONES).filter(w => ONES[w] <= 9).join('|');
+    const re = new RegExp(`\\b(\\d[\\d,]*(?:\\.\\d+)?|${smallAlt}) per ?cent\\b`, 'gi');
+    return text.replace(re, (_m, num: string) => {
+        const n = /^\d/.test(num) ? num : String(ONES[num.toLowerCase()]);
+        return `${n}%`;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1072,6 +1095,7 @@ export const __itnInternals = {
     applyDecimals,
     applyOrdinals,
     applyCardinals,
+    applyPercent,
     applyDigitGrouping,
     parseCardinal,
     ordinalSuffix,

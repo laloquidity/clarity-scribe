@@ -1157,6 +1157,7 @@ function setupIpcHandlers(): void {
     // streaming was healthy. Audio now travels only when this returns
     // handled:false and the renderer falls back to the batch 'transcribe'.
     ipcMain.handle('transcribe-streamed', async (_, durationMs: number) => {
+        await engineInitDone;
         if (!isWhisperReady) return { handled: false };
         const dictationStart = Date.now(); // stop key pressed → text ready
         try {
@@ -1170,6 +1171,9 @@ function setupIpcHandlers(): void {
     });
 
     ipcMain.handle('transcribe', async (_, audioData: Float32Array | number[], sampleRate: number) => {
+        // A dictation recorded during startup waits here for the engines
+        // rather than being refused or misrouted to a cold Whisper load.
+        await engineInitDone;
         if (!isWhisperReady) return { success: false, error: 'Whisper not ready' };
         const dictationStart = Date.now(); // stop key pressed → text ready
         try {
@@ -1474,10 +1478,44 @@ app.on('second-instance', () => {
     mainWindow?.focus();
 });
 
+/**
+ * Resolves once engine initialization has finished (succeeded or not). The
+ * transcribe handlers await it so a dictation recorded while the engines
+ * were still loading waits for them instead of skidding into the "engine
+ * unavailable" branch — which on English setups meant a cold Whisper load.
+ */
+let resolveEngineInit: () => void = () => {};
+const engineInitDone = new Promise<void>((resolve) => { resolveEngineInit = resolve; });
+
 app.whenReady().then(async () => {
+    // Startup timeline: where the seconds go, on every platform. The
+    // number that matters to the user is "hotkey armed" — the moment a
+    // dictation can begin — which no longer waits for the engines.
+    const startupT0 = Date.now();
+    const mark = (label: string) => console.log(`[Startup] +${Date.now() - startupT0}ms ${label}`);
+
     createWindow();
     createTray();
     setupIpcHandlers();
+    mark('window + IPC ready');
+
+    // Arm the hotkey, command mode, and app polling BEFORE the engines load.
+    // Recording only needs the microphone; the engines are needed at STOP,
+    // and the transcribe handlers wait for them (engineInitDone). This used
+    // to run last, so the key was dead for the whole model load + warm-up.
+    setupHotkeyCallbacks();
+    recipeStore.loadRecipes(app.getPath('userData')); // builtin pack + learned
+    applyCommandModeSettings(); // command hotkey + router (if enabled)
+    const savedSettings = store.get('settings') as any;
+    registerHotkey(
+        (store.get('hotkey') as string) || savedSettings?.hotkey || 'Alt+Space',
+        savedSettings?.hotkeyMode || 'toggle'
+    );
+    // If setup was already completed on a prior launch, start polling immediately
+    if (store.get('setupDone') && !pollingInterval) {
+        startActiveAppPolling();
+    }
+    mark('hotkey armed — recording available');
 
     console.log('[Main] Initializing engines...');
     const sendStep = (id: string, label: string, percent: number, status: string) => {
@@ -1515,11 +1553,16 @@ app.whenReady().then(async () => {
             mainWindow?.webContents.send('whisper-ready', { acceleration: 'DirectML' });
         }
 
-        // Step 2: VAD (needed by both engines)
+        // Step 2: VAD (needed by both engines) — loaded IN PARALLEL with the
+        // Parakeet engine below. Nothing in Parakeet's init touches VAD (its
+        // warm-up is a short single-pass clip), and both are awaited before
+        // engineInitDone resolves, so no transcription can run without it.
         sendStep('vad', 'Voice Detection', 0, 'Downloading...');
-        await nativeWhisper.initAudioSegmentation();
-        sendStep('vad', 'Voice Detection', 100, 'Ready');
-        console.log(`[Main] ✓ VAD ready`);
+        const vadInit = nativeWhisper.initAudioSegmentation().then(() => {
+            sendStep('vad', 'Voice Detection', 100, 'Ready');
+            console.log(`[Main] ✓ VAD ready`);
+            mark('VAD ready');
+        });
 
         // Step 3: Parakeet (for English — the default language)
         if (!needsWhisperNow) {
@@ -1533,6 +1576,7 @@ app.whenReady().then(async () => {
                 });
                 sendStep('parakeet', 'Parakeet Engine', 100, 'Ready');
                 console.log(`[Main] ✓ Parakeet ready`);
+                mark('Parakeet ready (loaded + warm)');
 
                 // Enable transcribe-while-recording: segments (≤28s, cut at
                 // pauses) go straight through the Parakeet single-pass path.
@@ -1581,11 +1625,16 @@ app.whenReady().then(async () => {
             }
         }
 
+        await vadInit;
+
         // Signal overall completion
         mainWindow?.webContents.send('whisper-progress', 100, 'Ready');
         mainWindow?.webContents.send('whisper-ready', { acceleration: nativeWhisper.getAccelerationInfo().type });
     } catch (error) {
         console.error('[Main] Init error:', error);
+    } finally {
+        mark('engines initialized');
+        resolveEngineInit();
     }
 
     // --- Local API (programmable voice layer) ---
@@ -1629,19 +1678,6 @@ app.whenReady().then(async () => {
                 .then(({ port }) => console.log(`[LocalAPI] listening on 127.0.0.1:${port}`))
                 .catch((err) => console.error('[LocalAPI] failed to start:', err));
         }
-    }
-
-    setupHotkeyCallbacks();
-    recipeStore.loadRecipes(app.getPath('userData')); // builtin pack + learned
-    applyCommandModeSettings(); // command hotkey + router (if enabled)
-    const savedSettings = store.get('settings') as any;
-    registerHotkey(
-        (store.get('hotkey') as string) || savedSettings?.hotkey || 'Alt+Space',
-        savedSettings?.hotkeyMode || 'toggle'
-    );
-    // If setup was already completed on a prior launch, start polling immediately
-    if (store.get('setupDone') && !pollingInterval) {
-        startActiveAppPolling();
     }
 
     powerMonitor.on('suspend', () => { lastKnownFrontApp = null; });
