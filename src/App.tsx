@@ -18,7 +18,7 @@ import { retainAudioContext, releaseAudioContext } from './utils/audioContextMan
 import { cleanTranscription } from './utils/cleanTranscription';
 import { applyITN } from './utils/itn';
 import { applySpokenPunctuation } from './utils/spokenPunctuation';
-import type { AppState, HistoryEntry, DictionaryEntry, CommandStageEvent } from './types';
+import type { AppState, EngineState, HistoryEntry, DictionaryEntry, CommandStageEvent } from './types';
 
 const COLLAPSED_HEIGHT = 64;
 const EXPANDED_HEIGHT = 460;
@@ -55,6 +55,7 @@ const App: React.FC = () => {
     const [whisperReady, setWhisperReady] = useState(false);
     const [whisperProgress, setWhisperProgress] = useState(0);
     const [whisperStatus, setWhisperStatus] = useState('Initializing...');
+    const [engineState, setEngineState] = useState<EngineState>('warming');
     const [copiedToast, setCopiedToast] = useState(false);
     const [setupDone, setSetupDone] = useState(false);
     const [personalDictionary, setPersonalDictionary] = useState<DictionaryEntry[]>([]);
@@ -147,6 +148,8 @@ const App: React.FC = () => {
                 setWhisperStatus('Ready');
             }
         });
+        // Same recovery for the engine-state broadcast.
+        window.electronAPI?.getEngineState?.().then(s => { if (s) setEngineState(s); });
     }, []);
 
     // Save dictionary when it changes (debounced via the effect)
@@ -203,7 +206,9 @@ const App: React.FC = () => {
             setWhisperStatus(m);
         });
 
-        return () => { unsubReady?.(); unsubProgress?.(); };
+        const unsubEngine = api.onEngineState?.((s) => setEngineState(s));
+
+        return () => { unsubReady?.(); unsubProgress?.(); unsubEngine?.(); };
     }, []);
 
     // Live transcript preview (streaming mode): update while recording, clear
@@ -506,6 +511,7 @@ const App: React.FC = () => {
                         whisperReady={whisperReady}
                         whisperProgress={whisperProgress}
                         whisperStatus={whisperStatus}
+                        engineState={engineState}
                         hotkey={settings.hotkey}
                         hotkeyMode={settings.hotkeyMode}
                         commandActive={commandRecording || (commandVisible && commandStage?.stage !== 'done')}

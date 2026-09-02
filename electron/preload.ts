@@ -7,6 +7,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // handled:false → caller must resample and send the full buffer above.
     transcribeStreamed: (durationMs: number) => ipcRenderer.invoke('transcribe-streamed', durationMs),
     isWhisperReady: () => ipcRenderer.invoke('is-whisper-ready'),
+    // Engine readiness: 'warming' (mic live, transcription waits) → 'ready' | 'failed'.
+    getEngineState: () => ipcRenderer.invoke('get-engine-state'),
+    onEngineState: (cb: (state: 'warming' | 'ready' | 'failed') => void) => {
+        const handler = (_: any, state: 'warming' | 'ready' | 'failed') => cb(state);
+        ipcRenderer.on('engine-state', handler);
+        return () => { ipcRenderer.removeListener('engine-state', handler); };
+    },
     copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text),
 
     // Streaming transcription (transcribe-while-recording)
