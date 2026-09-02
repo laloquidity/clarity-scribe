@@ -1534,7 +1534,25 @@ app.whenReady().then(async () => {
     if (store.get('setupDone') && !pollingInterval) {
         startActiveAppPolling();
     }
-    mark('hotkey armed — recording available');
+    mark('hotkey armed');
+
+    // Let the window PAINT before the engine load. onnxruntime-node's
+    // InferenceSession.create is a setImmediate around a SYNCHRONOUS native
+    // loadModel: the 650MB DirectML encoder freezes this thread for ~4s, and
+    // nothing on it runs meanwhile — not the renderer's navigation commit
+    // (so the UI could not appear), not the hotkey callback, not IPC.
+    // Measured 2026-09-01: renderer loaded at +4877ms, 79ms AFTER the engine
+    // finished. Waiting for first paint moves the freeze after the window is
+    // visible and honestly labelled "warming up". The freeze itself remains
+    // until the sessions move to a worker thread.
+    await Promise.race([
+        new Promise<void>((resolve) => {
+            if (!mainWindow || mainWindow.webContents.isLoading() === false) return resolve();
+            mainWindow.webContents.once('did-finish-load', () => resolve());
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 3000)), // never hold the engine hostage to a stuck page
+    ]);
+    mark('engine load starting (main thread blocks until the encoder is loaded)');
 
     console.log('[Main] Initializing engines...');
     setEngineState('warming');
