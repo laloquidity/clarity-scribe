@@ -378,10 +378,28 @@ function applyPunctuation(text: string): string {
  * Trailing possessives survive: "the C E O's call" → "the CEO's call".
  */
 function applyAcronyms(text: string): string {
-    return text.replace(
+    let out = text.replace(
         /(?<![A-Za-z0-9])[A-Z](?: [A-Z])+(?![A-Za-z0-9])/g,
         (m) => m.replace(/ /g, ''),
     );
+    // The model also GROUPS spelled letters into chunks it knows: "USDC" came
+    // out "USD C" and "US DC" in one dictation (2026-09-01). A run of short
+    // all-caps chunks that includes at least one lone letter is still a
+    // spelled acronym, so it joins. Guards: chunks of 1–3 letters and a
+    // joined length of at most six (so "NASA X-ray" and "FBI CIA" stay
+    // apart), and the pronoun "I" never counts as a lone letter ("the US I
+    // think" stays).
+    out = out.replace(
+        /(?<![A-Za-z0-9])[A-Z]{1,3}(?: [A-Z]{1,3})+(?![A-Za-z0-9-])/g,
+        (m) => {
+            const chunks = m.split(' ');
+            if (chunks.includes('I')) return m;
+            if (!chunks.some(c => c.length === 1)) return m;
+            const joined = chunks.join('');
+            return joined.length <= 6 ? joined : m;
+        },
+    );
+    return out;
 }
 
 // ---------------------------------------------------------------------------
