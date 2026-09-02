@@ -61,8 +61,10 @@ export interface JoinPart {
  * repair is invisible; a wrong one is a new bug.
  */
 const CONTINUATION_WORDS = new Set([
-    // coordinating conjunctions
-    'and', 'but', 'or', 'nor',
+    // coordinating conjunctions ("so" chosen by the user, 2026-09-01: "…a
+    // very important design decision, so we need to get this right"; a
+    // discourse-opener "So, …" is exempted below by its comma)
+    'and', 'but', 'or', 'nor', 'so',
     // prepositions
     'of', 'to', 'with', 'from', 'by', 'at', 'into', 'onto', 'upon',
     'among', 'amongst', 'between', 'beyond', 'during', 'except',
@@ -115,7 +117,7 @@ const ENDS_WITH_BARE_PERIOD = /[.]$/;
  * CONTINUATION_WORDS are prepositions, where a pause is just hesitation and
  * a comma would be wrong ("a copy, of the file").
  */
-const COMMA_CONTINUATIONS = new Set(['and', 'but', 'or', 'nor', 'which', 'whom', 'whose']);
+const COMMA_CONTINUATIONS = new Set(['and', 'but', 'or', 'nor', 'so', 'which', 'whom', 'whose']);
 
 // --- Restarted phrases ---
 //
@@ -238,7 +240,10 @@ export function joinSegments(
                 const lower = fw.word.toLowerCase();
                 const isCapitalized = fw.word[0] !== lower[0];
                 const repairable = CONTINUATION_WORDS.has(lower) || (forced && FORCED_SEAM_WORDS.has(lower));
-                if (isCapitalized && repairable) {
+                // A comma right after the word marks a discourse opener
+                // ("So, what do you think?"), which does begin a sentence.
+                const opensAside = right.slice(fw.end).startsWith(',');
+                if (isCapitalized && repairable && !opensAside) {
                     right = lower + right.slice(fw.end);
                     if (forced && leftEnds) {
                         // A period we inserted by cutting mid-speech is bogus too.

@@ -73,6 +73,14 @@ describe('joinSegments — a pause seam the model closed with its default period
         expect(joinSegments(['tell me if that was preserved.', 'Which it was']))
             .toBe('tell me if that was preserved, which it was');
     });
+    it('joins a resultive "So" with a comma, but leaves a discourse-opening "So," alone', () => {
+        // Chosen by the user, 2026-09-01.
+        expect(joinSegments(['This is a very important design decision.', 'So we need to get this right.']))
+            .toBe('This is a very important design decision, so we need to get this right.');
+        expect(joinSegments(['That is the plan.', 'So, what do you think?']))
+            .toBe('That is the plan. So, what do you think?');
+    });
+
     it('renders the pause as nothing before a preposition', () => {
         expect(joinSegments(['I made a copy.', 'Of the file']))
             .toBe('I made a copy of the file');
