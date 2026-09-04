@@ -88,7 +88,7 @@ describe('applyITN — cardinal numbers', () => {
     });
     it('converts thousands', () => {
         expect(applyITN('two thousand twenty four')).toBe('2024');
-        expect(applyITN('one thousand')).toBe('1000');
+        expect(applyITN('one thousand')).toBe('1,000');
     });
     it('converts standalone teen/tens words', () => {
         expect(applyITN('fifteen')).toBe('15');
@@ -199,7 +199,7 @@ describe('applyITN — "a hundred" and a bare leading "hundred"', () => {
         expect(applyITN('a hundred sixty four thousand dollar pool')).toBe('$164,000 pool');
         expect(applyITN('hundred sixty four thousand dollar pool')).toBe('$164,000 pool');
         expect(applyITN('a hundred dollars')).toBe('$100');
-        expect(applyITN('a thousand times')).toBe('1000 times');
+        expect(applyITN('a thousand times')).toBe('1,000 times');
         expect(applyITN('a hundred and five people')).toBe('105 people');
     });
     it('leaves a lone "hundred" and an ordinary article alone', () => {
@@ -314,6 +314,15 @@ describe('applyITN — spaced/dotted meridiems (real ASR output)', () => {
         // is that "a month" must never be read as "AM".)
         expect(applyITN('paid eight a month ago')).toBe('paid eight a month ago');
     });
+    it('reads "p. M" whose M the acronym pass would otherwise swallow', () => {
+        // "…a big wick at five twenty p. M E…" (real dictation, 2026-09-04;
+        // the E is the clipped start of "Eastern"). "M E" joined into "ME"
+        // and the time came out "five 20 p. ME".
+        expect(applyITN('a big wick at five twenty p. M E that broke'))
+            .toBe('a big wick at 5:20 PM E that broke');
+        expect(applyITN('five twenty p. M.')).toBe('5:20 PM');
+        expect(applyITN('at five twenty p. M eastern time')).toBe('at 5:20 PM eastern time');
+    });
 });
 
 describe('applyITN — percent', () => {
@@ -384,6 +393,17 @@ describe('applyITN — letter-number designators', () => {
     it('a scale word after the number keeps the quantity reading', () => {
         expect(applyITN('vitamin C five hundred milligrams'))
             .toBe('vitamin C 500 milligrams');
+    });
+    it('joins a short spelled acronym and a number too', () => {
+        // "a T D nine" → "TD nine" (acronym pass) → "TD9". Real dictation,
+        // 2026-09-04: the TD Sequential indicator's ninth candle.
+        expect(applyITN('a couple candles before was a T D nine')).toBe('a couple candles before was a TD9');
+        expect(applyITN('a TD 9 on the daily')).toBe('a TD9 on the daily');
+    });
+    it('never treats an everyday acronym as a designator stem', () => {
+        expect(applyITN('one that the US five agencies use')).toBe('one that the US five agencies use');
+        expect(applyITN('the EU 27 members')).toBe('the EU 27 members');
+        expect(applyITN('the CEO 20 minutes late')).toBe('the CEO 20 minutes late');
     });
 });
 
@@ -508,11 +528,13 @@ describe('applyITN — already-written / negative passthrough', () => {
         expect(applyITN('I have 23 apples')).toBe('I have 23 apples');
         expect(applyITN('it cost $5')).toBe('it cost $5');
         expect(applyITN('meet at 2:30 PM')).toBe('meet at 2:30 PM');
-        expect(applyITN('12345')).toBe('12345');
+        expect(applyITN('1234')).toBe('1234');
     });
     it('leaves the digit-string the model emitted untouched', () => {
-        // Parakeet renders "one two three four five" as "12345" already.
-        expect(applyITN('the code is 12345')).toBe('the code is 12345');
+        // Parakeet renders "one two three four" as "1234" already. (Five
+        // digits and up now take separators — see the thousands tests — so a
+        // five-digit code would; four-digit codes and years never do.)
+        expect(applyITN('the code is 1234')).toBe('the code is 1234');
     });
     it('leaves plain prose unchanged', () => {
         expect(applyITN('the quick brown fox')).toBe('the quick brown fox');
@@ -563,19 +585,47 @@ describe('applyITN — thousands separators', () => {
         expect(applyITN('$5000')).toBe('$5,000');
         expect(applyITN('€1234567')).toBe('€1,234,567');
     });
-    it('groups large bare integers (6+ digits)', () => {
+    it('groups large bare integers (5+ digits)', () => {
         expect(applyITN('need to pay 5000000.')).toBe('need to pay 5,000,000.');
         expect(applyITN('about 123456789 rows')).toBe('about 123,456,789 rows');
+        expect(applyITN('peaked at 82000')).toBe('peaked at 82,000');
     });
     it('groups spoken currency end-to-end', () => {
         expect(applyITN('fifty million dollars')).toBe('$50,000,000');
     });
-    it('leaves years, codes, ZIPs, and fractions alone', () => {
+    it('groups spoken thousands as they are written', () => {
+        // Real dictation, 2026-09-04: prices that came out "82000", "80800",
+        // "79400" — "give proper formatting and account for tens, hundreds,
+        // thousands, 100,000s, 1,000,000s, 10,000,000".
+        expect(applyITN('up at eighty two thousand')).toBe('up at 82,000');
+        expect(applyITN('peaked at eighty two thousand two hundred and seventy nine'))
+            .toBe('peaked at 82,279');
+        expect(applyITN('went to eighty thousand eight hundred')).toBe('went to 80,800');
+        expect(applyITN('down to seventy nine thousand four hundred')).toBe('down to 79,400');
+        expect(applyITN('three thousand rows')).toBe('3,000 rows');
+        expect(applyITN('twelve hundred units')).toBe('1,200 units');
+        expect(applyITN('a hundred sixty four thousand')).toBe('164,000');
+        expect(applyITN('two point five million')).toBe('2.5 million');
+        expect(applyITN('ten million')).toBe('10,000,000');
+        expect(applyITN('three hundred million')).toBe('300,000,000');
+    });
+    it('keeps a spoken year range bare — "two thousand twenty six" is a year', () => {
+        expect(applyITN('in two thousand twenty six')).toBe('in 2026');
+        expect(applyITN('two thousand and twenty four')).toBe('2024');
+        // The accepted cost: a spoken count in that range stays ungrouped.
+        expect(applyITN('two thousand people')).toBe('2000 people');
+    });
+    it('leaves years, PINs, and fractions alone', () => {
         expect(applyITN('back in 2026 it was fine')).toBe('back in 2026 it was fine');
-        expect(applyITN('the code is 12345')).toBe('the code is 12345');
         expect(applyITN('PIN 1234')).toBe('PIN 1234');
         expect(applyITN('pi is 3.1415926')).toBe('pi is 3.1415926');
         expect(applyITN('$50000.25')).toBe('$50,000.25');
+    });
+    it('reads a spoken decimal on a large number', () => {
+        expect(applyITN('eighty two thousand point three eight')).toBe('82,000.38');
+        expect(applyITN('eighty two thousand point thirty eight')).toBe('82,000.38');
+        expect(applyITN('82000 point 38')).toBe('82,000.38');
+        expect(applyITN('eighty two dollars and thirty eight cents')).toBe('$82.38');
     });
     it('is idempotent on grouped output', () => {
         expect(applyITN('$50,000,000')).toBe('$50,000,000');

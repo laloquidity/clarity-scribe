@@ -377,10 +377,17 @@ function applyPunctuation(text: string): string {
  * can end a sentence ("...went with plan B. Development starts Monday").
  * Trailing possessives survive: "the C E O's call" → "the CEO's call".
  */
+// A run opening on "M" right after "a." / "p." is the second half of a
+// spoken meridiem the model wrote as "p. M" — leave it for the times rule.
+// "…a big wick at five twenty p. M E…" (real dictation, 2026-09-04): joining
+// "M E" into "ME" hid the PM, and the time never converted.
+const afterMeridiemLetter = (whole: string, offset: number, run: string): boolean =>
+    /^M(?: |$)/.test(run) && /(?<![A-Za-z])[AaPp]\. ?$/.test(whole.slice(0, offset));
+
 function applyAcronyms(text: string): string {
     let out = text.replace(
         /(?<![A-Za-z0-9])[A-Z](?: [A-Z])+(?![A-Za-z0-9])/g,
-        (m) => m.replace(/ /g, ''),
+        (m, offset: number, whole: string) => (afterMeridiemLetter(whole, offset, m) ? m : m.replace(/ /g, '')),
     );
     // The model also GROUPS spelled letters into chunks it knows: "USDC" came
     // out "USD C" and "US DC" in one dictation (2026-09-01). A run of short
@@ -391,7 +398,8 @@ function applyAcronyms(text: string): string {
     // think" stays).
     out = out.replace(
         /(?<![A-Za-z0-9])[A-Z]{1,3}(?: [A-Z]{1,3})+(?![A-Za-z0-9-])/g,
-        (m) => {
+        (m, offset: number, whole: string) => {
+            if (afterMeridiemLetter(whole, offset, m)) return m;
             const chunks = m.split(' ');
             if (chunks.includes('I')) return m;
             if (!chunks.some(c => c.length === 1)) return m;
@@ -407,27 +415,44 @@ function applyAcronyms(text: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * "C five" → "C5", "T six" → "T6", "B twelve" → "B12": a spoken single letter
- * followed by a spoken small number is a designator — versions, models,
- * vitamins, gates — dictated letter-then-number and transcribed as an
- * isolated capital plus a number word ("C five and C six" should read
- * "C5 and C6"; real dictation, 2026-08-31).
+ * Short all-caps words that are ordinary vocabulary, not designator stems: a
+ * number after them is a count, not a model number ("the US five", "EU 27").
+ * The single letters A and I are handled by the pattern itself.
+ */
+const NOT_DESIGNATOR_STEMS = new Set([
+    'US', 'USA', 'UK', 'EU', 'UN', 'UAE', 'AM', 'PM', 'OK', 'TV', 'ID', 'IT', 'AI',
+    'DC', 'LA', 'NY', 'CA', 'CEO', 'CFO', 'CTO', 'COO', 'CIO', 'VP', 'HR', 'PR', 'IP', 'PC', 'HQ',
+    'PIN', 'ZIP', 'SKU', 'ETA', 'GDP', 'CPI', 'API', 'URL', 'PDF', 'FAQ',
+]);
+
+/**
+ * "C five" → "C5", "T six" → "T6", "B twelve" → "B12", "TD nine" → "TD9": a
+ * spoken letter or short acronym followed by a spoken small number is a
+ * designator — versions, models, vitamins, gates, indicator names —
+ * dictated stem-then-number and transcribed as an isolated capital run plus
+ * a number word ("C five and C six" should read "C5 and C6", real dictation
+ * 2026-08-31; "a T D nine" came out "TD nine", 2026-09-04).
  *
  * Guards: A and I are excluded (article and pronoun — "A five minute break"
- * must survive), the letter must be a bare capital, and a scale word after
- * the number vetoes the join, so "vitamin C five hundred milligrams" keeps
- * its quantity (and still becomes "vitamin C 500 milligrams" downstream).
+ * must survive), the stem must be bare capitals of at most three letters and
+ * not an everyday acronym (NOT_DESIGNATOR_STEMS), and a scale word after the
+ * number vetoes the join, so "vitamin C five hundred milligrams" keeps its
+ * quantity (and still becomes "vitamin C 500 milligrams" downstream).
  */
 function applyLetterNumbers(text: string): string {
     const numAlt = Object.keys(ONES).join('|');
     const scaleAlt = Object.keys(SCALES).join('|');
     const re = new RegExp(
-        `(?<![A-Za-z0-9])([B-HJ-Z]) ((?:${numAlt})|\\d{1,4})(?![A-Za-z0-9])(?![ -](?:${scaleAlt})\\b)`,
+        `(?<![A-Za-z0-9])([B-HJ-Z]|[A-Z]{2,3}) ((?:${numAlt})|\\d{1,4})(?![A-Za-z0-9])(?![ -](?:${scaleAlt})\\b)`,
         'g'
     );
-    return text.replace(re, (_m, letter: string, num: string) => {
+    return text.replace(re, (m, stem: string, num: string) => {
+        if (NOT_DESIGNATOR_STEMS.has(stem)) return m;
+        // An acronym stem takes a short number only: "TD 9", "GPT 4" — never
+        // "PIN 1234", where the digits are a code that follows a noun.
+        if (stem.length > 1 && /^\d{3,}$/.test(num)) return m;
         const v = /^\d+$/.test(num) ? num : String(ONES[num]);
-        return `${letter}${v}`;
+        return `${stem}${v}`;
     });
 }
 
@@ -784,8 +809,11 @@ function applyDecimals(text: string): string {
     const teensW = Object.keys(ONES).filter(w => ONES[w] >= 10);      // ten..nineteen
     const tensW = Object.keys(TENS);
     const digitAlt = `(?:${onesW.join('|')}|oh|\\d)`;
-    const intAlt = `\\d+|(?:${tensW.join('|')})(?:[ -](?:${onesW.join('|')}))?|${teensW.join('|')}|${onesW.join('|')}`;
-    const fracAlt = `(?:${tensW.join('|')})[ -](?:${onesW.join('|')})|(?:${tensW.join('|')})|${teensW.join('|')}|${digitAlt}(?:[ ]${digitAlt})*`;
+    // The integer part may already be digits — grouped ones included, since
+    // this also runs after the cardinal pass has turned "eighty two thousand
+    // point three eight" into "82,000 point three eight".
+    const intAlt = `\\d[\\d,]*|(?:${tensW.join('|')})(?:[ -](?:${onesW.join('|')}))?|${teensW.join('|')}|${onesW.join('|')}`;
+    const fracAlt = `(?:${tensW.join('|')})[ -](?:${onesW.join('|')})|(?:${tensW.join('|')})|${teensW.join('|')}|${digitAlt}(?:[ ]${digitAlt})*|\\d{2,}`;
     const re = new RegExp(`\\b(${intAlt}) point (${fracAlt})\\b`, 'gi');
 
     const partValue = (w: string): number | null => {
@@ -799,7 +827,7 @@ function applyDecimals(text: string): string {
     return text.replace(re, (match, intRaw: string, fracRaw: string) => {
         // Integer part: digits verbatim, or spelled 0..99.
         let intPart: string;
-        if (/^\d+$/.test(intRaw)) {
+        if (/^\d[\d,]*$/.test(intRaw)) {
             intPart = intRaw;
         } else {
             const words = intRaw.toLowerCase().split(/[ -]+/);
@@ -972,6 +1000,22 @@ function applyOrdinals(text: string): string {
  * of 2+ number words, OR a single unambiguously-numeric word (ten..nineteen,
  * twenty..ninety).
  */
+/**
+ * A spoken cardinal in written form. From a thousand up it takes separators
+ * ("eighty two thousand" → "82,000", "seventy nine thousand four hundred" →
+ * "79,400"; real dictation 2026-09-04, where "82000" was the complaint).
+ * The one exception is the year range: "two thousand twenty six" is a year
+ * far more often than a count, and "2,026" would be wrong there, so four-
+ * digit values from 1900 to 2099 stay bare. That costs a separator on a
+ * spoken count in that range ("two thousand people" → "2000 people"), which
+ * reads fine; the reverse mistake would not.
+ */
+function writtenCardinal(value: number): string {
+    if (value < 1000) return String(value);
+    if (value >= 1900 && value <= 2099) return String(value);
+    return groupDigits(String(value));
+}
+
 function applyCardinals(text: string): string {
     const tokens = tokenize(text);
     const out: Token[] = [];
@@ -994,7 +1038,7 @@ function applyCardinals(text: string): string {
 
             if (allowed) {
                 const lastTokenIdx = words.map[parsed.next - 1];
-                out.push({ type: 'word', value: `${parsed.value}` });
+                out.push({ type: 'word', value: writtenCardinal(parsed.value) });
                 i = lastTokenIdx + 1;
                 continue;
             }
@@ -1044,7 +1088,9 @@ export interface ITNOptions {
  *   5. Dates     (consumes "<month> <ordinal>" before ordinals/cardinals).
  *   6. Years     (consumes "twenty twenty six" before cardinals split it).
  *   7. Ordinals  ("first" → "1st").
- *   8. Cardinals ("twenty three" → "23").
+ *   8. Cardinals ("twenty three" → "23", "eighty two thousand" → "82,000").
+ *   9. Percent, multiplier X, thousands separators on model-written digits,
+ *      and a second decimal pass over the digits the cardinal pass produced.
  *
  * Idempotent and conservative: already-written text returns unchanged, and
  * applying twice equals applying once.
@@ -1069,6 +1115,10 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     out = applyPercent(out);
     out = applyMultiplierX(out);
     out = applyDigitGrouping(out);
+    // Again, now that big spoken integers are digits: "eighty two thousand
+    // point three eight" only becomes "82,000.38" once the cardinal pass has
+    // produced the "82,000" (spoken decimals on a large number, 2026-09-04).
+    out = applyDecimals(out);
 
     // Final light spacing tidy (mirrors only spaces ITN may have introduced).
     out = out.replace(/[ \t]+([,.;:!?])/g, '$1');
@@ -1113,10 +1163,12 @@ function groupDigits(digits: string): string {
  * Insert thousands separators into large plain integers:
  *   "$50000000"  → "$50,000,000"   (currency: grouped from 4 digits up — the
  *                                    symbol makes "quantity" unambiguous)
- *   "5000000"    → "5,000,000"     (bare: grouped from 6 digits up — 4-5 digit
- *                                    runs stay untouched because they're often
- *                                    years, PINs, ZIP codes, or spoken digit
- *                                    strings like "12345")
+ *   "82000"      → "82,000"        (bare: grouped from 5 digits up. Four-digit
+ *                                    runs stay untouched because they are so
+ *                                    often years and PINs; five digits and up
+ *                                    are quantities far more often than ZIP
+ *                                    codes — "82000" for a spoken price was
+ *                                    the complaint, real dictation 2026-09-04)
  *   "3.1415926"  → unchanged        (never groups a fraction)
  *   "$50000.25"  → "$50,000.25"     (integer part only)
  * Idempotent: a grouped number contains commas, so neither pattern rematches.
@@ -1126,8 +1178,8 @@ function applyDigitGrouping(text: string): string {
     // Currency-prefixed: $/€/£ then 4+ digits (not already separated, not a
     // fraction part). Lookbehind excludes digit/dot/comma so "1.5000" stays.
     out = out.replace(/([$€£])(\d{4,})(?![\d])(?!,\d)/g, (_m, sym: string, num: string) => sym + groupDigits(num));
-    // Bare integers of 6+ digits standing alone.
-    out = out.replace(/(?<![\d.,€£$])(\d{6,})(?![\d])(?!,\d)/g, (_m, num: string) => groupDigits(num));
+    // Bare integers of 5+ digits standing alone.
+    out = out.replace(/(?<![\d.,€£$])(\d{5,})(?![\d])(?!,\d)/g, (_m, num: string) => groupDigits(num));
     return out;
 }
 
