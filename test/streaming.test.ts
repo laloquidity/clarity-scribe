@@ -184,6 +184,50 @@ describe('streamingTranscriber', () => {
         expect(result.text).toBe("let's make this an incredible product.");
     });
 
+    it('decodes a straddle across a PAUSE seam, mid-recording, with a slice of the pause', async () => {
+        // "…showed such small | Losses per trade" (real dictation, 2026-09-04):
+        // a thinking pause closed the segment and the noun came back
+        // capitalized. The straddle carries 2.5s of speech from each side and
+        // 1s of the pause between them, and is queued as soon as the right
+        // side holds 2.5s of speech — before the segment closes, so it costs
+        // the stop nothing.
+        const seamCalls: Float32Array[] = [];
+        configureStreaming(async (audio, opts) => {
+            if (opts?.seam) { seamCalls.push(audio); return 'showed such small losses per trade'; }
+            calls.push(audio);
+            return calls.length === 1 ? 'data showed such small' : 'Losses per trade.';
+        });
+        startSession(SR);
+        pushAll(concat(voiced(5000), silence(2300), voiced(3000)));
+        await drain();
+        expect(seamCalls.length).toBe(1); // already queued while still recording
+        // 2.5s + 1s of pause + 2.5s, resampled to 16k
+        expect(seamCalls[0].length).toBeGreaterThan(5.8 * 16000);
+        expect(seamCalls[0].length).toBeLessThanOrEqual(6.1 * 16000);
+        const result = await finalizeSession();
+        expect(result.segments).toBe(2);
+        expect(seamCalls.length).toBe(1);
+        expect(result.text).toBe('data showed such small losses per trade.');
+    });
+
+    it('queues the straddle at close when the segment ends before enough speech arrived', async () => {
+        const seamCalls: Float32Array[] = [];
+        configureStreaming(async (audio, opts) => {
+            if (opts?.seam) { seamCalls.push(audio); return ''; }
+            calls.push(audio);
+            return `seg${calls.length}`;
+        });
+        startSession(SR);
+        pushAll(concat(voiced(3000), silence(2300), voiced(1000)));
+        await drain();
+        expect(seamCalls.length).toBe(0);
+        const result = await finalizeSession();
+        expect(result.segments).toBe(2);
+        expect(seamCalls.length).toBe(1);
+        expect(seamCalls[0].length).toBeGreaterThan(4 * 16000);
+        expect(result.text).toBe('seg1 seg2');
+    });
+
     it('marks preview decodes so the engine can skip expensive recovery', async () => {
         const flags: Array<boolean | undefined> = [];
         configureStreaming(async (audio, opts) => {
