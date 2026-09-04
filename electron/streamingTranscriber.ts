@@ -63,15 +63,23 @@ const MIN_TAIL_MS = 250;            // tail shorter than this (and unvoiced) is 
 const WINDOW_MS = 32;               // RMS analysis window
 
 // ── Seam context ────────────────────────────────────────────────────────────
-// A forced cut (length cap / quietest-window split) lands mid-phrase, and the
-// segment after it is decoded in isolation — so its first word comes back
-// capitalized whether it is a noun or a name ("…an incredible | Product.",
-// real dictation 2026-09-01). Word lists cannot tell those apart; the model
-// can, given context. So across every forced seam a STRADDLE window — this
-// much audio from each side — is decoded too, and the joiner reads the
-// model's casing of the seam word from it. One extra decode per forced seam
-// (~300ms, mid-recording); at stop only when the tail follows a forced cut.
+// Every segment is decoded in isolation, so its first word comes back
+// capitalized whether it is a noun or a name — after a forced cut ("…an
+// incredible | Product.", real dictation 2026-09-01) and just as much after a
+// mid-sentence thinking pause ("…showed such small | Losses per trade",
+// 2026-09-04). Word lists cannot tell a noun from a name; the model can,
+// given context. So across EVERY seam a STRADDLE window — this much speech
+// from each side — is decoded too, and the joiner reads the model's casing
+// and punctuation of the seam word from it. One extra ~200ms decode per seam,
+// queued as soon as the right side holds enough speech, so it lands
+// mid-recording; at stop only when the final segment is shorter than that.
 const SEAM_CONTEXT_MS = 2500;
+// At a pause seam the straddle keeps this much of the real pause between the
+// two sides. Enough for the model to hear a pause; short of the ~1.2s of
+// blank frames that trips the decoder-collapse reset, which would restart
+// the decoder mid-straddle and capitalize the seam word for the same reason
+// the isolated segment did — telling us nothing.
+const SEAM_PAUSE_KEEP_MS = 1000;
 
 // ── Live mid-segment preview ────────────────────────────────────────────────
 // The partial events above fire only when a segment CLOSES — a ≥650ms pause,
@@ -161,11 +169,19 @@ interface Session {
     // length (the close itself always fires at exactly SILENCE_CLOSE_MS).
     measuringPause: boolean;
     resumeSilenceMs: number;
-    // Seam context (see SEAM_CONTEXT_MS): the tail of the last FORCED-closed
-    // segment, waiting for the next segment's head; and the straddle decodes
-    // by index of the segment they precede.
+    // Seam context (see SEAM_CONTEXT_MS): the tail of the last closed voiced
+    // segment (plus a slice of the pause, at a pause close), waiting for the
+    // next segment's head; and the straddle decodes by index of the segment
+    // they precede.
     seamLeftTail: Float32Array | null;
     seamTexts: Array<string | undefined>;
+}
+
+/** Offset of the first voiced window in the open segment, or -1 if none yet. */
+function firstVoicedSample(s: Session): number {
+    const gate = voiceGate(s);
+    for (const w of s.rmsHistory) if (w.rms >= gate) return w.startSample;
+    return -1;
 }
 
 /** Adaptive voice gate: scales with the session's loudest window, clamped. */
@@ -252,14 +268,13 @@ export function startSession(sampleRate: number): boolean {
 }
 
 /**
- * Decode the straddle across a forced seam — the previous segment's tail plus
- * this segment's head — and file the text under this segment's index for the
- * joiner. Queued BEFORE the segment's own decode so the partial emitted after
- * that decode already carries the repaired seam. Best-effort throughout.
+ * Decode the straddle across a seam — the previous segment's tail plus this
+ * segment's head — and file the text under this segment's index for the
+ * joiner. Queued as soon as the head is available, so it normally runs while
+ * the user is still talking and is on the books before the segment's own
+ * decode emits its partial. Best-effort throughout.
  */
-function queueSeamDecode(s: Session, index: number, leftTail: Float32Array, right: Float32Array): void {
-    const n = Math.round((SEAM_CONTEXT_MS / 1000) * s.sampleRate);
-    const head = right.subarray(0, Math.min(right.length, n));
+function queueSeamDecode(s: Session, index: number, leftTail: Float32Array, head: Float32Array): void {
     const straddle = new Float32Array(leftTail.length + head.length);
     straddle.set(leftTail, 0);
     straddle.set(head, leftTail.length);
@@ -273,6 +288,37 @@ function queueSeamDecode(s: Session, index: number, leftTail: Float32Array, righ
             // Context only — the joiner falls back to its word lists.
         }
     });
+}
+
+/**
+ * The right half of a pending straddle: SEAM_CONTEXT_MS of the open segment
+ * starting at its first speech (a pause seam's right side opens with the rest
+ * of the pause). Queued the moment that much has arrived, so the decode
+ * overlaps speech instead of the stop; if the segment closes first,
+ * closeOpenSegment queues whatever it holds.
+ */
+function maybeQueuePendingSeam(s: Session, force = false): void {
+    if (!s.seamLeftTail) return;
+    if (s.voicedMsInSegment < MIN_VOICED_MS) return;
+    const from = firstVoicedSample(s);
+    if (from < 0) return;
+    const n = Math.round((SEAM_CONTEXT_MS / 1000) * s.sampleRate);
+    if (!force && s.openSamples < from + n) return;
+    const end = Math.min(s.openSamples, from + n);
+    const head = new Float32Array(end - from);
+    let off = 0, pos = 0;
+    for (const c of s.chunks) {
+        const cStart = pos, cEnd = pos + c.length;
+        pos = cEnd;
+        if (cEnd <= from) continue;
+        if (cStart >= end) break;
+        const part = c.subarray(Math.max(0, from - cStart), Math.min(c.length, end - cStart));
+        head.set(part, off);
+        off += part.length;
+    }
+    const leftTail = s.seamLeftTail;
+    s.seamLeftTail = null;
+    queueSeamDecode(s, s.segmentsQueued, leftTail, head);
 }
 
 /** Abort and discard the current session (recording error / cancel). */
@@ -376,6 +422,7 @@ export function pushChunk(chunk: Float32Array): void {
         }
     }
 
+    maybeQueuePendingSeam(s);
     maybeEnqueuePreview(s);
 }
 
@@ -442,6 +489,15 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
     const raw = all.subarray(0, cut).slice();
     const remainder = cut < s.openSamples ? all.subarray(cut).slice() : null;
     const hadVoice = s.voicedMsInSegment >= MIN_VOICED_MS;
+    // A straddle still waiting for this segment's head (the segment closed
+    // before SEAM_CONTEXT_MS of speech arrived): queue it with what there is.
+    // Must run before the state below is rebased.
+    if (hadVoice) maybeQueuePendingSeam(s, true);
+    // At a pause close the segment ends with the pause itself; where speech
+    // ended is what the seam tail is measured from.
+    const trailingSilenceSamples = !forced && splitAt === undefined
+        ? Math.min(raw.length, Math.round((s.silenceRunMs / 1000) * s.sampleRate))
+        : 0;
 
     // Reset open-segment state to the remainder (empty when no split).
     s.chunks = remainder ? [remainder] : [];
@@ -478,15 +534,15 @@ function closeOpenSegment(s: Session, splitAt?: number, forced = splitAt !== und
     diag.segmentClosed(forced);
     const sampleRate = s.sampleRate;
 
-    // Seam context: if the previous segment was force-cut, decode the straddle
-    // across that cut now (ahead of this segment's own decode); and if THIS
-    // close is forced, keep our tail for the next segment.
-    const leftTail = s.seamLeftTail;
-    s.seamLeftTail = null;
-    if (leftTail) queueSeamDecode(s, index, leftTail, raw);
-    if (forced) {
+    // Seam context: keep this segment's tail for the straddle across the seam
+    // that follows it — the last SEAM_CONTEXT_MS of speech, plus (at a pause
+    // close) the first SEAM_PAUSE_KEEP_MS of the pause.
+    {
         const n = Math.round((SEAM_CONTEXT_MS / 1000) * sampleRate);
-        s.seamLeftTail = raw.subarray(Math.max(0, raw.length - n)).slice();
+        const keep = Math.round((SEAM_PAUSE_KEEP_MS / 1000) * sampleRate);
+        const speechEnd = raw.length - trailingSilenceSamples;
+        const tailEnd = Math.min(raw.length, speechEnd + keep);
+        s.seamLeftTail = raw.subarray(Math.max(0, speechEnd - n), tailEnd).slice();
     }
 
     s.pendingDecodes++;

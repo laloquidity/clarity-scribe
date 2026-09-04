@@ -124,6 +124,69 @@ describe('joinSegments — a straddle decode decides the casing at a forced seam
     });
 });
 
+describe('joinSegments — a straddle decode decides a PAUSE seam too', () => {
+    // Real dictation 2026-09-04: "…my 2024 data showed such small | Losses per
+    // trade on losing trades?" — a thinking pause mid-sentence, and no word
+    // list can lowercase a noun. The straddle across the pause can.
+    it('lowercases a noun the model reads lowercase across the pause', () => {
+        expect(joinSegments([
+            'my 2024 data showed such small',
+            { text: 'Losses per trade on losing trades?', seamText: 'data showed such small losses per trade on' },
+        ])).toBe('my 2024 data showed such small losses per trade on losing trades?');
+    });
+
+    it('replaces the default period with the separator the model wrote — a comma…', () => {
+        expect(joinSegments([
+            'I went to the store.',
+            { text: 'And then I left.', seamText: 'went to the store, and then I' },
+        ])).toBe('I went to the store, and then I left.');
+    });
+
+    it('…or nothing', () => {
+        expect(joinSegments([
+            'showed such small.',
+            { text: 'Losses per trade', seamText: 'showed such small losses per trade' },
+        ])).toBe('showed such small losses per trade');
+    });
+
+    it('keeps a name and drops the default period', () => {
+        expect(joinSegments([
+            'I need to message.',
+            { text: 'Ryan about it', seamText: 'need to message Ryan about it' },
+        ])).toBe('I need to message Ryan about it');
+    });
+
+    it('gives a real sentence break its period when the left clip was left open', () => {
+        expect(joinSegments([
+            'ended up causing a lot of issues',
+            { text: 'For one, I said', seamText: 'a lot of issues. For one, I said' },
+        ])).toBe('ended up causing a lot of issues. For one, I said');
+        expect(joinSegments([
+            'did it work',
+            { text: 'Yes it did', seamText: 'did it work? Yes it did' },
+        ])).toBe('did it work? Yes it did');
+    });
+
+    it('leaves a sentence break the model confirms exactly as it was', () => {
+        expect(joinSegments([
+            'That is done.',
+            { text: 'Losses were small', seamText: 'that is done. Losses were small' },
+        ])).toBe('That is done. Losses were small');
+    });
+
+    it('never touches a question or exclamation on the left', () => {
+        expect(joinSegments([
+            'Are you coming?',
+            { text: 'Because we leave soon', seamText: 'are you coming because we leave' },
+        ])).toBe('Are you coming? because we leave soon');
+    });
+
+    it('falls back to the pause-seam rules without a straddle', () => {
+        expect(joinSegments(['my data showed such small', 'Losses per trade']))
+            .toBe('my data showed such small Losses per trade');
+    });
+});
+
 describe('joinSegments — a pause seam the model closed with its default period', () => {
     // The model ends EVERY isolated clip with a period, so at a pause seam
     // that period says nothing; a capitalized "And/Which" says the sentence

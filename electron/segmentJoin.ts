@@ -18,7 +18,14 @@
  * THE FIX, and its guiding rule: NEVER MAKE OUTPUT WORSE. Real capitalization
  * is unrecoverable once lost (a wrongly-lowercased name is a new bug, and a
  * worse one than the bug being fixed), so repairs happen only where the
- * evidence is strong:
+ * evidence is strong.
+ *
+ * The best evidence is a STRADDLE decode of the audio across the seam (see
+ * JoinPart.seamText): the model reading the seam WITH context, which is the
+ * only thing that can tell "…such small | Losses per trade" (a noun) from
+ * "…message | Ryan" (a name), or a thinking pause from a sentence end. Where
+ * the streaming path supplies one, it decides. Without it, the word-list
+ * rules apply, and only where:
  *
  *   1. The left segment does not end a sentence — it has no terminal
  *      punctuation, so whatever follows is a continuation of it; or
@@ -52,11 +59,15 @@ export interface JoinPart {
     /**
      * A STRADDLE decode across the seam BEFORE this part: the last couple of
      * seconds of the previous segment plus the first couple of this one,
-     * decoded together. The model's casing of this part's first word, seen
-     * with context, is the one signal that separates a common noun from a
-     * name — "…an incredible | Product." (real dictation, 2026-09-01) reads
-     * "incredible product" in the straddle. Best-effort: absent or unhelpful,
-     * the word lists below apply.
+     * decoded together (with a slice of the pause between them, at a pause
+     * seam). The model's casing of this part's first word, seen with
+     * context, is the one signal that separates a common noun from a name —
+     * "…an incredible | Product." (real dictation, 2026-09-01) reads
+     * "incredible product" in the straddle, and "…such small | Losses per
+     * trade" (2026-09-04) reads "small losses". The punctuation the model
+     * wrote before that word is read the same way: a comma, nothing, or a
+     * sentence break. Best-effort: absent or unhelpful, the word lists below
+     * apply.
      */
     seamText?: string;
 }
@@ -208,8 +219,10 @@ function isAcronym(word: string): boolean {
  *   'sentence' — capitalized after terminal punctuation: a real sentence break
  *   null       — not found, or only as the straddle's own first word (which is
  *                capitalized for the same reason as the seam: no information)
+ * `sep` is the punctuation the model placed right before the word ("" or ","
+ * mid-sentence; ".", "?", "!" at a break) — how it rendered the seam itself.
  */
-function seamCasing(seamText: string, word: string): 'lower' | 'proper' | 'sentence' | null {
+function seamCasing(seamText: string, word: string): { casing: 'lower' | 'proper' | 'sentence'; sep: string } | null {
     const esc = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(`(^|[^A-Za-z0-9'’])(${esc})(?=$|[^A-Za-z0-9'’])`, 'gi');
     const mid = seamText.length / 2;
@@ -222,9 +235,11 @@ function seamCasing(seamText: string, word: string): 'lower' | 'proper' | 'sente
     if (!best) return null;
     const before = seamText.slice(0, best.at).trimEnd();
     if (before === '') return null;
+    const sepMatch = before.match(/[,;:.!?…]$/);
+    const sep = sepMatch ? sepMatch[0] : '';
     const cap = best.found[0] !== best.found[0].toLowerCase();
-    if (!cap) return 'lower';
-    return ENDS_SENTENCE.test(before) ? 'sentence' : 'proper';
+    if (!cap) return { casing: 'lower', sep };
+    return { casing: ENDS_SENTENCE.test(before) ? 'sentence' : 'proper', sep };
 }
 
 /**
@@ -275,22 +290,33 @@ export function joinSegments(
 
         const leftEnds = ENDS_SENTENCE.test(out);
 
-        // A straddle decode across a FORCED seam beats any word list: it is
-        // the model's own reading of the cut with context on both sides.
+        // A straddle decode across the seam beats any word list: it is the
+        // model's own reading of the seam with context on both sides — the
+        // audio either side of our cut, or of the speaker's pause.
         const seamText = norm[i].seamText;
-        if (forced && seamText) {
+        if (seamText) {
             const fw = firstWord(right);
             const verdict = fw && !isAcronym(fw.word) ? seamCasing(seamText, fw.word) : null;
             if (verdict) {
-                if (verdict === 'lower') {
+                // The model's own separator at the seam, in place of the bare
+                // period the isolated left clip ended with. A "?" or "!" on
+                // the left is the model's on evidence and stays.
+                const bareLeft = ENDS_WITH_BARE_PERIOD.test(out);
+                const midSep = verdict.sep === ',' ? ',' : '';
+                if (verdict.casing === 'lower') {
                     right = fw!.word.toLowerCase() + right.slice(fw!.end);
-                    if (leftEnds) out = out.replace(/[.]["'”’)\]]*$/, '');
+                    if (bareLeft) out = out.replace(ENDS_WITH_BARE_PERIOD, midSep);
+                    else if (!leftEnds) out += midSep;
                     onRepair?.();
-                } else if (verdict === 'proper') {
-                    // A name: keep the capital, drop the period our cut invented.
-                    if (leftEnds) out = out.replace(/[.]["'”’)\]]*$/, '');
+                } else if (verdict.casing === 'proper') {
+                    // A name: keep the capital, drop the period the seam invented.
+                    if (bareLeft) out = out.replace(ENDS_WITH_BARE_PERIOD, midSep);
+                    else if (!leftEnds) out += midSep;
+                } else if (!leftEnds) {
+                    // The model breaks the sentence here even with context,
+                    // and the left clip was left open: give the break its mark.
+                    out += /[.!?…]/.test(verdict.sep) ? verdict.sep : '.';
                 }
-                // 'sentence': the model breaks here even with context — leave it.
                 out += ' ' + right;
                 continue;
             }
