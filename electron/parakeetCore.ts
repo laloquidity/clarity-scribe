@@ -86,6 +86,9 @@ export const CONTINUATION_BOOST_MULTIPLIER = 2.0;
  * never did this, even at boosts well above the shipped default. The threshold
  * sits in the empty middle of that range.
  *
+ * Independently of the count, a start that is a single bare letter is always
+ * rejected — see the guard in buildBiasContext.
+ *
  * Rejecting the sequence outright (rather than merely declining to boost its
  * start) matters: left in the trie, an organically emitted start token would
  * still collect the continuation pull and complete the term. Rejected terms
@@ -179,6 +182,16 @@ export function buildBiasContext(terms: string[], vocabulary: string[], boost = 
     const startIsSpecific = (ids: number[]): boolean => {
         const piece = vocabulary[ids[0]] ?? '';
         if (!piece) return false;
+        // A bare single letter ("▁U") is never specific, whatever its
+        // branching count says. It is the model's SPELLING route: every
+        // out-of-inventory word starting with that letter is built through it
+        // ("▁U"+"ser" for "User"), and it is what the model writes when the
+        // user spells a letter aloud. Only 8 pieces begin with "▁U", so the
+        // count above let "USDC" (▁U|S|D|C) into the trie, and one dictation
+        // (2026-09-04) came back with "US" where every "uh"/"use" had been and
+        // "USDC" in place of "user" — the +6 on "▁U" won against weak fillers,
+        // and the 2x continuation pull finished the term from any organic "U".
+        if (piece.length <= 2 && piece.startsWith('▁')) return false;
         let branching = branchingCache.get(piece);
         if (branching === undefined) {
             branching = 0;
