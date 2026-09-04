@@ -99,6 +99,21 @@ describe('buildBiasContext', () => {
         expect(ctx.termCount).toBe(1);
         expect(ctx.rejectedTerms).toEqual([]);
     });
+
+    // …except a single bare letter, which is never specific however few pieces
+    // share it: it is the spelling route for every unknown word starting with
+    // that letter. Only two pieces begin '▁K' here, and it is still refused.
+    // Real case: 'USDC' (▁U|S|D|C) turned every "uh"/"use" into "US" and
+    // "user" into "USDC" (dictation, 2026-09-04).
+    it('refuses a term that opens on a single bare letter', () => {
+        // "Kab" → ▁K(4) a(14) b(15)
+        expect(core.tokenizeTerm('Kab', pieceMap, MAX_LEN)).toEqual([4, 14, 15]);
+        expect(core.buildBiasContext(['Kab'], PIECES)).toBeNull();
+        const mixed = core.buildBiasContext(['Kab', 'Kubernetes'], PIECES)!;
+        expect(mixed.termCount).toBe(1);
+        expect(mixed.rejectedTerms).toEqual(['Kab']);
+        expect(mixed.root.children.has(pieceMap.get('▁K')!)).toBe(false);
+    });
 });
 
 // ── Live decode integration (models required; skipped otherwise) ────────────
@@ -117,6 +132,8 @@ describe('real vocabulary term safety', () => {
         // '▁D' is shared by ~28 pieces, '▁N' by ~20.
         expect(core.buildBiasContext(['D-Link'], vocab)).toBeNull();
         expect(core.buildBiasContext(['Nginx'], vocab)).toBeNull();
+        // '▁U' is shared by only 8 — and is still a bare letter (USDC → ▁U|S|D|C).
+        expect(core.buildBiasContext(['USDC'], vocab)).toBeNull();
 
         const ctx = core.buildBiasContext(['D-Link', 'Nginx', 'Kubernetes'], vocab)!;
         expect(ctx.termCount).toBe(1);
