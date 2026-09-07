@@ -122,6 +122,30 @@ describe('applyITN — "and" between two separate numbers', () => {
     });
 });
 
+describe('applyITN — digit strings read with "oh"', () => {
+    it('reads a digit-by-digit number with "oh" for zero', () => {
+        // "one oh one" stayed as words (real dictation, 2026-09-07).
+        expect(applyITN('room one oh one')).toBe('room 101');
+        expect(applyITN('a four oh four error')).toBe('a 404 error');
+        expect(applyITN('two oh nine')).toBe('209');
+        expect(applyITN('one oh oh one')).toBe('1001');
+        expect(applyITN('one zero one')).toBe('101');
+        expect(applyITN('take the one oh one south')).toBe('take the 101 south');
+    });
+    it('reads a first-decade year the same way', () => {
+        expect(applyITN('back in twenty oh five')).toBe('back in 2005');
+        expect(applyITN('nineteen oh eight')).toBe('1908');
+    });
+    it('leaves a leading or trailing "oh" and longer runs alone', () => {
+        expect(applyITN('oh one more thing')).toBe('oh one more thing');
+        expect(applyITN('one oh')).toBe('one oh');
+        expect(applyITN('five five five oh one two three')).toBe('five five five oh one two three');
+        // Times and decimals still own their "oh" forms.
+        expect(applyITN('ten oh five am')).toBe('10:05 AM');
+        expect(applyITN('nine point oh five')).toBe('9.05');
+    });
+});
+
 describe('applyITN — ordinals', () => {
     it('spells out ordinals below ten, converts ten and up', () => {
         // Mirrors the cardinal rule this file already applies (a standalone

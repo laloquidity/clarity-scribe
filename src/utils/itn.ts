@@ -784,16 +784,25 @@ function applyYears(text: string): string {
     const teensAlt = Object.keys(ONES).filter(w => ONES[w] >= 10).join('|');
     const tensAlt = Object.keys(TENS).join('|');
     const onesAlt = Object.keys(ONES).filter(w => ONES[w] >= 1 && ONES[w] <= 9).join('|');
-    const secondHalf = `(?:${tensAlt})(?:[ -](?:${onesAlt}))?|(?:${teensAlt})`;
+    // "twenty oh five" / "nineteen oh eight": the spoken zero of a year's
+    // first decade is "oh" (same dictation habit as "one oh one", 2026-09-07).
+    const secondHalf = `(?:${tensAlt})(?:[ -](?:${onesAlt}))?|(?:${teensAlt})|oh[ -](?:${onesAlt})`;
     const scaleAlt = Object.keys(SCALES).join('|');
     const re = new RegExp(
         `\\b(nineteen|twenty) (${secondHalf})\\b(?![ -](?:${scaleAlt}))`,
         'gi'
     );
     return text.replace(re, (match, century: string, rest: string) => {
-        const parsed = parseCardinal(rest.toLowerCase().split(/[ -]+/), 0);
-        if (!parsed || parsed.value < 10 || parsed.value > 99) return match;
-        return `${(century.toLowerCase() === 'nineteen' ? 1900 : 2000) + parsed.value}`;
+        const words = rest.toLowerCase().split(/[ -]+/);
+        let value: number;
+        if (words[0] === 'oh') {
+            value = ONES[words[1]];
+        } else {
+            const parsed = parseCardinal(words, 0);
+            if (!parsed || parsed.value < 10 || parsed.value > 99) return match;
+            value = parsed.value;
+        }
+        return `${(century.toLowerCase() === 'nineteen' ? 1900 : 2000) + value}`;
     });
 }
 
@@ -865,6 +874,38 @@ function applyDecimals(text: string): string {
         }
 
         return `${intPart}.${fracPart}`;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Transform: Digit strings read with "oh"  (run after decimals, before cardinals)
+// ---------------------------------------------------------------------------
+
+/**
+ * "one oh one" → "101", "four oh four" → "404", "two oh nine" → "209",
+ * "one zero one" → "101": a number read digit by digit, with "oh" (or
+ * "zero") for the zero. The cardinal parser cannot see it — "one" and "one"
+ * are two numbers to it and "oh" is not a number word at all — so "one oh
+ * one" survived as words (real dictation, 2026-09-07).
+ *
+ * Conservative by shape: three or four spoken digits, each a single digit
+ * word or digit, with at least one "oh"/"zero" strictly INSIDE the run. A
+ * leading "oh" is a time or decimal fragment those rules own ("oh five"), a
+ * trailing one is ambiguous ("one, oh…"), and longer runs are phone numbers
+ * and codes that read better spelled as dictated. Runs after the decimal
+ * pass, so "nine point oh five" is already "9.05".
+ */
+function applyDigitStrings(text: string): string {
+    const digitW = Object.keys(ONES).filter(w => ONES[w] <= 9);
+    const D = `(?:${digitW.join('|')}|\\d)`;
+    const scaleAlt = Object.keys(SCALES).join('|');
+    const re = new RegExp(`\\b(${D})((?:[ ](?:${D}|oh)){1,2})[ ](${D})\\b(?![ -](?:${scaleAlt})\\b)`, 'gi');
+    const isZero = (w: string): boolean => w === 'oh' || w === 'zero' || w === '0';
+    const digit = (w: string): string => (w === 'oh' ? '0' : /^\d$/.test(w) ? w : String(ONES[w]));
+    return text.replace(re, (match, first: string, middle: string, last: string) => {
+        const inner = middle.trim().toLowerCase().split(' ');
+        if (!inner.some(isZero)) return match;
+        return [first, ...inner, last].map(w => digit(w.toLowerCase())).join('');
     });
 }
 
@@ -1119,6 +1160,7 @@ export function applyITN(text: string, opts: ITNOptions = {}): string {
     out = applyDates(out);
     out = applyYears(out);
     out = applyDecimals(out);
+    out = applyDigitStrings(out);
     out = applyOrdinals(out);
     out = applyCardinals(out);
     out = applyPercent(out);
@@ -1203,6 +1245,7 @@ export const __itnInternals = {
     applyDates,
     applyYears,
     applyDecimals,
+    applyDigitStrings,
     applyOrdinals,
     applyCardinals,
     applyPercent,
