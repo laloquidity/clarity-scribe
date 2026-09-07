@@ -112,6 +112,11 @@ function parseCardinal(tokens: string[], start: number): { value: number; next: 
     let tensOnes = 0;    // the tens+ones portion (0..99) being built
     let consumedAny = false;
     let lastKind: 'none' | 'ones' | 'tens' | 'hundred' = 'none';
+    // Where the number ends: just past the last NUMBER word taken. A bridging
+    // "and" is only part of the number if a number word follows AND joins —
+    // "eleven and twelve" is two numbers, and consuming that "and" produced
+    // "Slides 11 12." (real dictation, 2026-09-07).
+    let end = start;
 
     const groupValue = () => hundreds + tensOnes;
 
@@ -128,6 +133,7 @@ function parseCardinal(tokens: string[], start: number): { value: number; next: 
             lastKind = 'ones';
             consumedAny = true;
             i++;
+            end = i;
             continue;
         }
 
@@ -160,6 +166,7 @@ function parseCardinal(tokens: string[], start: number): { value: number; next: 
             lastKind = 'ones';
             consumedAny = true;
             i++;
+            end = i;
             continue;
         }
 
@@ -169,6 +176,7 @@ function parseCardinal(tokens: string[], start: number): { value: number; next: 
             lastKind = 'tens';
             consumedAny = true;
             i++;
+            end = i;
             continue;
         }
 
@@ -197,6 +205,7 @@ function parseCardinal(tokens: string[], start: number): { value: number; next: 
             }
             consumedAny = true;
             i++;
+            end = i;
             continue;
         }
 
@@ -206,7 +215,7 @@ function parseCardinal(tokens: string[], start: number): { value: number; next: 
     if (!consumedAny) return null;
     const value = total + groupValue();
     if (value > MAX_CARDINAL) return null;
-    return { value, next: i };
+    return { value, next: end };
 }
 
 // ---------------------------------------------------------------------------

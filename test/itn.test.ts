@@ -105,6 +105,23 @@ describe('applyITN — cardinal numbers', () => {
     });
 });
 
+describe('applyITN — "and" between two separate numbers', () => {
+    it('keeps the "and" when the next number does not extend the first', () => {
+        // "slides eleven and twelve" came out "Slides 11 12." (real dictation,
+        // 2026-09-07): the parser swallowed the "and" while probing whether
+        // "twelve" continued the number, then kept it after giving up.
+        expect(applyITN('slides eleven and twelve')).toBe('slides 11 and 12');
+        expect(applyITN('twenty and thirty')).toBe('20 and 30');
+        expect(applyITN('between fifty and sixty five')).toBe('between 50 and 65');
+        expect(applyITN('two hundred and')).toBe('200 and');
+    });
+    it('still bridges inside one number', () => {
+        expect(applyITN('one hundred and five')).toBe('105');
+        expect(applyITN('two thousand and twenty four')).toBe('2024');
+        expect(applyITN('five dollars and fifty cents')).toBe('$5.50');
+    });
+});
+
 describe('applyITN — ordinals', () => {
     it('spells out ordinals below ten, converts ten and up', () => {
         // Mirrors the cardinal rule this file already applies (a standalone
