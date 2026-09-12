@@ -424,7 +424,7 @@ a random bearer token on first start, stored locally (copy it from Settings).
 Every request requires the token, supplied either way:
 
 - Header: `Authorization: Bearer <token>`
-- Query param: `?token=<token>` (needed for `EventSource`, which can't set headers)
+- Query param: `?token=<token>` — accepted on `GET /v1/events` only, because `EventSource` can't set headers. Every other route requires the header: a token in a URL leaks into shell history, logs and pasted links.
 
 Requests without a valid token get `401`.
 
@@ -451,7 +451,7 @@ a `data:` line, with a `ts` (epoch ms):
 - `{type:"partial", text, ts}` — live in-progress transcript
 - `{type:"result", text, ts}` — finalized transcript
 - `{type:"state", state:"RECORDING"|"PROCESSING"|"IDLE", ts}` — recording lifecycle
-- `{type:"file", stage:"decoding"|"transcribing"|"formatting"|"done", detail, ts}` — progress of a `/v1/audio/transcriptions` job
+- `{type:"file", stage:"decoding"|"transcribing"|"formatting"|"done", detail, ts}` — progress of a `/v1/audio/transcriptions` job. `detail` is a size, duration or character count — never the filename or any transcript text
 
 A heartbeat comment is sent every 15s to keep the connection alive.
 
@@ -548,6 +548,7 @@ curl -X POST http://127.0.0.1:5111/v1/audio/transcriptions \
 | **Max upload** | 25 MB (`maxUploadBytes` in the API config). A 45-minute call at mono 32–64 kbps is about 15 MB |
 | **Length** | No limit beyond the size cap. Long audio is split on Silero VAD speech boundaries and reassembled, the same pipeline a long dictation uses |
 | **Where it runs** | Entirely on this machine, on the same Parakeet/Whisper models as dictation. The audio never leaves the device and is never written to disk |
+| **What it keeps** | Nothing. Uploads are not added to history, and the engines log a transcript's length rather than its words. The filename is never logged, broadcast on the event stream, or shown to another caller |
 | **Concurrency** | One file at a time, and it yields to live dictation — both cases answer `409` rather than queue |
 | **Speed** | About **50× real time** on an RTX 3090: 45 minutes of speech in 52 s, 15 minutes in 18 s. Measured in a harness without the app's window — the app shares the GPU with its own UI and runs somewhat slower. Upload, decoding and sample transfer add about 0.5 s. (The 1000×+ figures above measure stop-to-text latency for live dictation, where the work happens while you talk; a file has no such head start.) |
 | **App state** | Scribe must be **running**, because it hosts the server and its window does the audio decoding. It does **not** need focus and can sit minimized in the tray |

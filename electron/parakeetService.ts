@@ -32,6 +32,7 @@ import { detectSpeechSegments, isVADReady } from './vadService';
 import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
 import { joinSegments } from './segmentJoin';
+import { transcriptExcerpt } from './transcriptLog';
 import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt, QUIET_PEAK_RMS, quietestSplitPoint, voicedMsAbove } from './decodeHealth';
 import { isSessionInProgress as isStreamingSessionInProgress } from './streamingTranscriber';
 import { diag } from './diagnostics';
@@ -793,7 +794,7 @@ async function runSinglePass(audioData: Float32Array): Promise<{
  */
 export async function transcribeParakeet(
     audioData: Float32Array,
-    options: { language?: string; onProgress?: (progress: number) => void; preview?: boolean } = {}
+    options: { language?: string; onProgress?: (progress: number) => void; preview?: boolean; logTranscript?: boolean } = {}
 ): Promise<string> {
     if (!isInitialized) {
         throw new Error('Parakeet not initialized');
@@ -907,7 +908,7 @@ async function transcribeForcedSplit(audio: Float32Array, depth: number): Promis
 
 async function runTranscription(
     audioData: Float32Array,
-    options: { language?: string; onProgress?: (progress: number) => void; preview?: boolean } = {}
+    options: { language?: string; onProgress?: (progress: number) => void; preview?: boolean; logTranscript?: boolean } = {}
 ): Promise<string> {
 
     const durationSeconds = audioData.length / 16000;
@@ -921,13 +922,13 @@ async function runTranscription(
             const hybrid = await tryHybridDecode(audioData);
             if (hybrid !== null) {
                 const ms = Date.now() - sStart;
-                console.log(`[Parakeet] \u2713 CoreML ANE + biased decode: ${ms}ms (${(durationSeconds / (ms / 1000)).toFixed(1)}x real-time): "${hybrid.substring(0, 80)}"`);
+                console.log(`[Parakeet] \u2713 CoreML ANE + biased decode: ${ms}ms (${(durationSeconds / (ms / 1000)).toFixed(1)}x real-time): ${transcriptExcerpt(hybrid, options.logTranscript)}`);
                 return hybrid;
             }
             console.log(`[Parakeet] Transcribing ${durationSeconds.toFixed(1)}s via CoreML ANE sidecar...`);
             const text = await sidecar.transcribe(audioData);
             const ms = Date.now() - sStart;
-            console.log(`[Parakeet] \u2713 CoreML sidecar: ${ms}ms (${(durationSeconds / (ms / 1000)).toFixed(1)}x real-time): "${text.substring(0, 80)}"`);
+            console.log(`[Parakeet] \u2713 CoreML sidecar: ${ms}ms (${(durationSeconds / (ms / 1000)).toFixed(1)}x real-time): ${transcriptExcerpt(text, options.logTranscript)}`);
             return text;
         } catch (e) {
             console.warn('[Parakeet] CoreML sidecar failed \u2014 falling back to ONNX for this session:', e);
@@ -1019,13 +1020,13 @@ async function runTranscription(
                 // the first pass heard — a hallucinated fragment must not win.
                 const anchor = text.trim().toLowerCase().replace(/[.!?,;:]+$/, '').split(/\s+/).slice(0, 3).join(' ');
                 if (forced && wordCount(forced) > wordCount(text) && forced.toLowerCase().includes(anchor)) {
-                    console.log(`[Parakeet] ✓ Leading speech recovered: "${forced.substring(0, 80)}"`);
+                    console.log(`[Parakeet] ✓ Leading speech recovered: ${transcriptExcerpt(forced, options.logTranscript)}`);
                     return forced;
                 }
-                console.log(`[Parakeet] Retry did not add to the first pass — keeping: "${text.substring(0, 80)}"`);
+                console.log(`[Parakeet] Retry did not add to the first pass — keeping: ${transcriptExcerpt(text, options.logTranscript)}`);
                 return text;
             } else {
-                console.log(`[Parakeet] Result: "${text.substring(0, 80)}"`);
+                console.log(`[Parakeet] Result: ${transcriptExcerpt(text, options.logTranscript)}`);
                 return text;
             }
         }
@@ -1051,7 +1052,7 @@ async function runTranscription(
             if (emptyVoicedFallthrough && audioSegments.length === 1 && audioSegments[0].length >= 0.9 * audioData.length) {
                 console.log('[Parakeet] VAD returned the same window — skipping to forced sub-window decode');
                 const forced = await transcribeForcedSplit(audioData, 3);
-                if (forced) console.log(`[Parakeet] ✓ Forced split recovered: "${forced.substring(0, 80)}"`);
+                if (forced) console.log(`[Parakeet] ✓ Forced split recovered: ${transcriptExcerpt(forced, options.logTranscript)}`);
                 else console.log('[Parakeet] Forced split found no speech either.');
                 return forced;
             }
@@ -1162,7 +1163,7 @@ async function runTranscription(
         const totalTime = Date.now() - startTime;
         const rtf = durationSeconds / (totalTime / 1000);
         console.log(`[Parakeet] ⏱ Mel: ${totalMel}ms | Encoder: ${totalEnc}ms | Decoder: ${totalDec}ms | Total: ${totalTime}ms (${rtf.toFixed(1)}x real-time)`);
-        console.log(`[Parakeet] Result (${audioSegments.length} segments): "${fullText.substring(0, 80)}"`);
+        console.log(`[Parakeet] Result (${audioSegments.length} segments): ${transcriptExcerpt(fullText, options.logTranscript)}`);
 
         // VAD can hand back essentially the same window it was asked to save
         // (one all-speech segment) — the deterministic collapse then repeats
@@ -1172,7 +1173,7 @@ async function runTranscription(
             console.log('[Parakeet] ⚠ VAD retry still empty — forcing sub-window decode');
             const forced = await transcribeForcedSplit(audioData, 3);
             if (forced) {
-                console.log(`[Parakeet] ✓ Forced split recovered: "${forced.substring(0, 80)}"`);
+                console.log(`[Parakeet] ✓ Forced split recovered: ${transcriptExcerpt(forced, options.logTranscript)}`);
                 return forced;
             }
             console.log('[Parakeet] Forced split found no speech either.');

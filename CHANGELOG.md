@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 🔒 Privacy
+
+- **An uploaded recording's words and filename stay out of logs and other callers' view.** A client call is somebody else's conversation, and its filename routinely names the client. Three places exposed one or the other: the engines printed the first 80 characters of every transcript to the console, the upload's filename was logged and broadcast on the `/v1/events` stream as progress detail, and a second caller refused with `409` was told which file was in progress. The engines now log an upload's length instead of its words (`[105 chars, text withheld]`) — dictation logging is unchanged — progress detail carries only sizes, durations and counts, and the `409` says "another file".
+- **A token in the URL is accepted on the event stream only.** `?token=` existed because `EventSource` cannot send headers, but every route accepted it, and a token in a URL leaks into shell history, proxy logs and pasted links. `GET /v1/events` still takes it; every other route now requires the `Authorization` header and answers `401` otherwise. The MCP bridge already used the header everywhere else, so it is unaffected. **Scripts that pass `?token=` to other routes must switch to the header.**
+- **A malicious audio file can fail only its own upload.** Decoding runs in the app window, which reports back how much audio to expect. Every reply is now validated — sample counts must be whole numbers under four hours of audio, chunks must be real float samples at a valid position, error text is bounded — and anything else fails that one job instead of throwing inside the main process, where an exception would take down the app.
+
 ### ✨ New Features
 
 - **Scribe can now transcribe an audio file, not just a microphone.** Until now the Local API only drove live dictation — start, stop, read history — so a recording you already had (a client call, a voice memo, an interview) had to go to a cloud service, which is exactly the wrong place for a confidential conversation. `POST /v1/audio/transcriptions` takes an uploaded file and returns `{"text": "…"}` on the same Parakeet/Whisper models that serve dictation, entirely on-device: the audio is never written to disk and never leaves the machine.
@@ -22,6 +28,9 @@
 
 - **Smart formatting no longer converts punctuation words behind the Spoken Punctuation setting's back.** Two separate features were converting spoken punctuation, and only one of them had a toggle. With Spoken Punctuation **off** and Smart formatting **on**, saying the ordinary word "period" or "comma" still produced a symbol — and because smart formatting used plain regex substitution rather than the token walk that replaces punctuation the model already wrote, it emitted **both**: "…about that time period?" became "…about that time.?", and "…is off comma, it's still" became "…is off,, it's still". Punctuation conversion is now opt-in inside ITN (`applyITN(text, { punctuation })`) and is passed through only when Spoken Punctuation is on, so smart formatting means numbers, currency, times, and dates — exactly what its description promised. Guarded by tests using the verbatim reported strings.
 
+### 🧱 Internal
+
+- **Leaner native build output.** The prebuilt Windows Whisper module's debug record holds only the PDB file name, rebuilds link with `/PDBALTPATH:%_PDB%`, node-gyp byproducts are excluded from packaging, and an `afterPack` check (`scripts/check-no-personal-paths.js`) inspects every packaged build.
 ---
 
 ## v3.8.0 — Custom vocabulary that reaches the decoder

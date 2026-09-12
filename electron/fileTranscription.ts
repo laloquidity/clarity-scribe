@@ -54,6 +54,17 @@ const RENDERER_SILENCE_TIMEOUT_MS = 180_000;
 /** Sample rate the engines require. */
 const SAMPLE_RATE = 16000;
 
+/**
+ * The most decoded audio we will allocate for: 4 hours at 16 kHz, ~0.9 GB.
+ *
+ * The window tells us how many samples to expect, and the main process
+ * allocates that up front. A window compromised through a malicious file must
+ * not be able to name an allocation that takes the whole app down. Four hours
+ * is far beyond any call a 25 MB upload realistically holds (25 MB of speech at
+ * 32 kbps is under two hours).
+ */
+const MAX_DECODED_SAMPLES = 4 * 60 * 60 * SAMPLE_RATE;
+
 /** Anything shorter than this almost certainly decoded wrong. */
 const MIN_AUDIO_SECONDS = 0.05;
 
@@ -67,7 +78,12 @@ export interface FileTranscriptionDeps {
     busyReason: () => string | null;
     /** Whether the transcription engines have finished loading. */
     engineReady: () => boolean;
-    /** Optional hook so the host can log/emit progress. */
+    /**
+     * Optional hook so the host can log/emit progress. `detail` is only ever a
+     * size, a duration or a character count — never the filename and never
+     * transcript text. The host logs it and broadcasts it on the event stream,
+     * and a client call's filename routinely names the client.
+     */
     onStage?: (stage: 'decoding' | 'transcribing' | 'formatting' | 'done', detail?: string) => void;
 }
 
@@ -85,8 +101,12 @@ interface PendingJob {
 const pending = new Map<string, PendingJob>();
 let jobCounter = 0;
 
-/** One in-flight upload at a time; holds the caller's description for the 409. */
-let activeUpload: string | null = null;
+/**
+ * One in-flight upload at a time. A flag, deliberately not the filename: the
+ * 409 goes to a DIFFERENT caller, who has no business learning what the first
+ * caller is transcribing.
+ */
+let uploadInFlight = false;
 
 /**
  * Handle one message from the renderer. Wire this to
@@ -102,11 +122,29 @@ export function handleRendererMessage(msg: any): void {
     // Any message is proof of life — restart the watchdog.
     job.timer.refresh();
 
+    // This runs inside an ipcMain listener, where an exception is an uncaught
+    // error in the main process. Whatever the window sends — including garbage
+    // from a window a malicious file has compromised — fails THIS job, never
+    // the app.
+    try {
+        applyRendererMessage(msg, job);
+    } catch (e: any) {
+        settle(msg.jobId, () => job.reject(new Error(`The window sent an unusable reply (${String(e?.message || e).slice(0, 200)}).`)));
+    }
+}
+
+function applyRendererMessage(msg: any, job: PendingJob): void {
     switch (msg.kind) {
         case 'begin': {
+            if (job.pcm) throw new Error('decode began twice');
             const total = Number(msg.totalSamples);
-            if (!Number.isFinite(total) || total <= 0) {
+            if (!Number.isInteger(total) || total <= 0) {
                 settle(msg.jobId, () => job.reject(httpError(400, 'The audio file decoded to zero samples — it contains no audio.')));
+                return;
+            }
+            if (total > MAX_DECODED_SAMPLES) {
+                const hours = (total / SAMPLE_RATE / 3600).toFixed(1);
+                settle(msg.jobId, () => job.reject(httpError(413, `The recording is ${hours} hours long, over the 4-hour limit. Split it into shorter files.`)));
                 return;
             }
             job.pcm = new Float32Array(total);
@@ -114,11 +152,14 @@ export function handleRendererMessage(msg: any): void {
             return;
         }
         case 'chunk': {
-            if (!job.pcm) return; // chunk before begin — renderer bug; let the watchdog fire
-            const offset = Number(msg.offset) || 0;
-            const samples: Float32Array = msg.samples instanceof Float32Array
-                ? msg.samples
-                : new Float32Array(msg.samples);
+            if (!job.pcm) throw new Error('audio arrived before the decode began');
+            // Structured clone delivers a real Float32Array. Anything else is a
+            // broken or hostile window, and converting it would let it pick an
+            // arbitrary allocation size.
+            if (!(msg.samples instanceof Float32Array)) throw new Error('audio chunk was not float samples');
+            const offset = Number(msg.offset);
+            if (!Number.isInteger(offset) || offset < 0) throw new Error('audio chunk had an invalid position');
+            const samples: Float32Array = msg.samples;
             if (offset + samples.length > job.pcm.length) {
                 settle(msg.jobId, () => job.reject(new Error('Decoded audio was larger than the renderer declared.')));
                 return;
@@ -146,7 +187,7 @@ export function handleRendererMessage(msg: any): void {
             // truncated, a codec it cannot open) — the caller's problem to fix,
             // so 400. Left as a plain Error it surfaced as a 500, which reads as
             // a Scribe bug and invites pointless retries.
-            settle(msg.jobId, () => job.reject(httpError(400, String(msg.message || 'The audio could not be decoded.'))));
+            settle(msg.jobId, () => job.reject(httpError(400, String(msg.message || 'The audio could not be decoded.').slice(0, 500))));
             return;
         }
         default:
@@ -203,8 +244,8 @@ export async function transcribeUploadedFile(
     req: FileTranscriptionRequest,
     deps: FileTranscriptionDeps
 ): Promise<FileTranscriptionResult> {
-    if (activeUpload) {
-        throw httpError(409, `Clarity Scribe is already transcribing "${activeUpload}". This endpoint handles one file at a time — retry when it finishes.`);
+    if (uploadInFlight) {
+        throw httpError(409, 'Clarity Scribe is already transcribing another file. This endpoint handles one file at a time — retry when it finishes.');
     }
 
     const busy = deps.busyReason();
@@ -219,9 +260,9 @@ export async function transcribeUploadedFile(
     const check = checkAudioUpload(req.bytes, req.filename);
     if (!check.ok) throw httpError(400, check.reason);
 
-    activeUpload = req.filename || 'an uploaded file';
+    uploadInFlight = true;
     try {
-        deps.onStage?.('decoding', activeUpload);
+        deps.onStage?.('decoding', `${(req.bytes.length / (1024 * 1024)).toFixed(1)} MB`);
 
         // Copy into a plain Uint8Array: `req.bytes` is a view into the whole
         // request body, and structured-cloning a view sends the entire backing
@@ -265,7 +306,7 @@ export async function transcribeUploadedFile(
         deps.onStage?.('done', `${text.length} chars`);
         return { text: text.trim(), durationSec, language: req.language };
     } finally {
-        activeUpload = null;
+        uploadInFlight = false;
     }
 }
 
@@ -276,5 +317,5 @@ export const RENDERER_CHUNK_SAMPLES = CHUNK_SAMPLES;
 export function __resetFileTranscription(): void {
     for (const [, job] of pending) clearTimeout(job.timer);
     pending.clear();
-    activeUpload = null;
+    uploadInFlight = false;
 }

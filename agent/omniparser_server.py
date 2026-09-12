@@ -28,7 +28,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-OMNI_DIR = Path(os.environ.get('SCRIBE_OMNIPARSER_DIR', r'C:\Users\alex\tools\OmniParser'))
+OMNI_DIR = Path(os.environ.get('SCRIBE_OMNIPARSER_DIR', str(Path.home() / 'tools' / 'OmniParser')))
 PORT = int(os.environ.get('SCRIBE_OMNIPARSER_PORT', '8093'))
 sys.path.insert(0, str(OMNI_DIR))
 

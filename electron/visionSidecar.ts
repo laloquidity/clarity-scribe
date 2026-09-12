@@ -46,7 +46,6 @@ let lastParseMs: number | null = null;
 function omniDir(): string | null {
     const candidates = [
         process.env.SCRIBE_OMNIPARSER_DIR,
-        'C:\\Users\\alex\\tools\\OmniParser',
         join(homedir(), 'tools', 'OmniParser'),
         join(homedir(), 'OmniParser'),
     ].filter(Boolean) as string[];

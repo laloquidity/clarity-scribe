@@ -102,6 +102,9 @@ export function httpError(status: number, message: string): Error & { status: nu
  */
 const TRANSCRIPTIONS_PATH = '/v1/audio/transcriptions';
 
+/** The SSE route — the one place a query-string token is accepted. */
+const EVENTS_PATH = '/v1/events';
+
 /** Default upload ceiling: 25 MB, matching the contract clients already target. */
 const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
@@ -275,7 +278,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         // envelope even for auth, because its clients read `error.message` and
         // show it to a human. Every other route keeps the original flat shape.
         if (path === TRANSCRIPTIONS_PATH) {
-            sendOpenAiError(res, 401, 'Invalid API key. Copy the token from Clarity Scribe → Settings → Local API and send it as "Authorization: Bearer <token>".', 'invalid_request_error');
+            sendOpenAiError(res, 401, 'Invalid API key. Copy the token from Clarity Scribe → Settings → Local API and send it in the header "Authorization: Bearer <token>".', 'invalid_request_error');
         } else {
             sendJson(res, 401, { error: 'unauthorized' });
         }
@@ -296,7 +299,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     }
 
     // GET /v1/events — the SSE subscription. Long-lived; never returns JSON.
-    if (path === '/v1/events' && method === 'GET') {
+    if (path === EVENTS_PATH && method === 'GET') {
         openSseStream(req, res, cfg);
         return;
     }
@@ -551,9 +554,16 @@ function sendText(res: http.ServerResponse, status: number, text: string): void 
 
 /**
  * Authorize a request. Accepts the token two ways:
- *   - `Authorization: Bearer <token>` header (preferred for scripts/agents), or
- *   - `?token=<token>` query param (needed for EventSource, which can't set
- *     custom headers).
+ *   - `Authorization: Bearer <token>` header — every route, and the only form
+ *     most routes accept; or
+ *   - `?token=<token>` query param — ONLY on the event stream, because
+ *     EventSource cannot set custom headers.
+ *
+ * WHY the query form is confined to one route: a token in a URL ends up in
+ * places a header never does — shell history, proxy and server logs, a
+ * browser's history, a pasted link. The event stream has no alternative; no
+ * other route needs to accept that risk.
+ *
  * Uses a constant-time compare to avoid leaking the token via timing.
  */
 function isAuthorized(req: http.IncomingMessage, url: URL, cfg: LocalApiConfig): boolean {
@@ -565,7 +575,7 @@ function isAuthorized(req: http.IncomingMessage, url: URL, cfg: LocalApiConfig):
     if (typeof auth === 'string' && auth.startsWith('Bearer ')) {
         provided = auth.slice('Bearer '.length).trim();
     }
-    if (!provided) {
+    if (!provided && url.pathname === EVENTS_PATH) {
         provided = url.searchParams.get('token');
     }
     if (!provided) return false;

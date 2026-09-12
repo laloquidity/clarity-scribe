@@ -12,6 +12,7 @@ import { createWriteStream, mkdirSync, statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import { initVAD, detectSpeechSegments, isVADReady } from './vadService';
 import * as parakeetService from './parakeetService';
+import { transcriptExcerpt } from './transcriptLog';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -399,7 +400,7 @@ export function getEngineInfo(): { whisper: string; parakeet: boolean; currentEn
 
 export async function transcribe(
     audioData: Float32Array,
-    options: { language?: string; onProgress?: (progress: number) => void } = {}
+    options: { language?: string; onProgress?: (progress: number) => void; logTranscript?: boolean } = {}
 ): Promise<string> {
     const durationSeconds = audioData.length / 16000;
     console.log(`[Engine] Transcribing ${durationSeconds.toFixed(1)}s (engine=${currentEngine}, lang=${options.language || 'auto'})...`);
@@ -464,7 +465,7 @@ export async function transcribe(
                 'thanks.',
             ]);
             if (THANK_YOU_HALLUCINATIONS.has(normalized)) {
-                console.warn(`[Engine] Suppressed Whisper hallucination on ${durationSeconds.toFixed(2)}s clip: "${result}"`);
+                console.warn(`[Engine] Suppressed Whisper hallucination on ${durationSeconds.toFixed(2)}s clip: ${transcriptExcerpt(result, options.logTranscript)}`);
                 return '';
             }
         }
@@ -594,7 +595,7 @@ function extractContextPrompt(text: string): string {
 // --- Windows: smart-whisper transcription ---
 async function transcribeSmartWhisper(
     audioData: Float32Array,
-    options: { language?: string; onProgress?: (progress: number) => void },
+    options: { language?: string; onProgress?: (progress: number) => void; logTranscript?: boolean },
     durationSeconds: number,
     startTime: number
 ): Promise<string> {
@@ -662,14 +663,14 @@ async function transcribeSmartWhisper(
 
     const fullText = transcriptions.join(' ').trim();
     const duration = Date.now() - startTime;
-    console.log(`[Whisper] Done in ${duration}ms (${chunks.length} chunks): "${fullText?.substring(0, 80) || ''}"`);
+    console.log(`[Whisper] Done in ${duration}ms (${chunks.length} chunks): ${transcriptExcerpt(fullText, options.logTranscript)}`);
     return fullText || '';
 }
 
 // --- macOS: @napi-rs/whisper transcription ---
 async function transcribeNapi(
     audioData: Float32Array,
-    options: { language?: string; onProgress?: (progress: number) => void },
+    options: { language?: string; onProgress?: (progress: number) => void; logTranscript?: boolean },
     durationSeconds: number,
     startTime: number
 ): Promise<string> {
@@ -736,7 +737,7 @@ async function transcribeNapi(
 
     const fullText = transcriptions.join(' ').trim();
     const duration = Date.now() - startTime;
-    console.log(`[Whisper] Done in ${duration}ms (${chunks.length} chunks): "${fullText?.substring(0, 80) || ''}"`);
+    console.log(`[Whisper] Done in ${duration}ms (${chunks.length} chunks): ${transcriptExcerpt(fullText, options.logTranscript)}`);
     return fullText || '';
 }
 

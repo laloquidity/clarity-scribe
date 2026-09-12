@@ -134,9 +134,25 @@ describe('authentication', () => {
         expect(res.status).toBe(401);
     });
 
-    it('accepts the token via query param (for EventSource)', async () => {
-        const res = await fetch(`${baseUrl}/v1/status?token=${token}`);
+    it('accepts a query-string token on the event stream (EventSource cannot send headers)', async () => {
+        const ctrl = new AbortController();
+        const res = await fetch(`${baseUrl}/v1/events?token=${token}`, { signal: ctrl.signal });
         expect(res.status).toBe(200);
+        ctrl.abort();
+    });
+
+    it('rejects a query-string token on every other route', async () => {
+        // A token in a URL leaks into shell history, logs and pasted links; only
+        // the event stream has no alternative, so only it accepts one.
+        const status = await fetch(`${baseUrl}/v1/status?token=${token}`);
+        expect(status.status).toBe(401);
+
+        const history = await fetch(`${baseUrl}/v1/history?token=${token}`);
+        expect(history.status).toBe(401);
+
+        const start = await fetch(`${baseUrl}/v1/record/start?token=${token}`, { method: 'POST' });
+        expect(start.status).toBe(401);
+        expect(fake.recording).toBe(false);
     });
 
     it('accepts the token via Authorization header', async () => {

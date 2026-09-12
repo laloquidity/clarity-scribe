@@ -48,7 +48,17 @@ execSync('node scripts/patch-smart-whisper.js', { cwd: ROOT, stdio: 'inherit' })
 console.log('[prebuilt] Rebuilding smart-whisper (BYOL)…');
 execSync(
     `npx node-gyp rebuild --directory=node_modules/smart-whisper --nodedir="${nodedir}" --arch=x64`,
-    { cwd: ROOT, stdio: 'inherit', env: { ...process.env, BYOL: byol } }
+    {
+        cwd: ROOT,
+        stdio: 'inherit',
+        env: {
+            ...process.env,
+            BYOL: byol,
+            // Record only the PDB's file name in the binary rather than its
+            // full build path.
+            _LINK_: `${process.env._LINK_ ? process.env._LINK_ + ' ' : ''}/PDBALTPATH:%_PDB%`,
+        },
+    }
 );
 
 // 3. Copy the freshly built binary into the committed prebuilt location.

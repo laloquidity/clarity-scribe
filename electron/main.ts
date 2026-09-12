@@ -1733,6 +1733,9 @@ app.whenReady().then(async () => {
                         // An explicit `language` from the caller wins; otherwise
                         // fall back to the language dictation is configured for.
                         language: language || (store.get('settings') as any)?.whisperLanguage || 'en',
+                        // An upload is someone else's conversation (a client
+                        // call): the engines log its length, never its words.
+                        logTranscript: false,
                     }),
                     // Live dictation owns the engines. A batch job must never be
                     // the reason someone's hotkey feels slow, so we refuse for

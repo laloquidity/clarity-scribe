@@ -194,12 +194,15 @@ describe('transcribeUploadedFile — refusals carry an HTTP status', () => {
             .rejects.toMatchObject({ status: 409, message: expect.stringContaining('dictation') });
     });
 
-    it('refuses with 409 when another upload is already running', async () => {
+    it('refuses with 409 when another upload is already running, without naming that file', async () => {
+        // The 409 goes to a DIFFERENT caller. A client call's filename often
+        // names the client, so it must not leak across requests.
         const fake = makeDeps({ autoRespond: false });
-        const first = transcribeUploadedFile({ bytes: wavBytes(), filename: 'first.wav' }, fake.deps);
+        const first = transcribeUploadedFile({ bytes: wavBytes(), filename: 'acme-renewal-call.wav' }, fake.deps);
 
-        await expect(transcribeUploadedFile({ bytes: wavBytes(), filename: 'second.wav' }, fake.deps))
-            .rejects.toMatchObject({ status: 409, message: expect.stringContaining('first.wav') });
+        const refusal = transcribeUploadedFile({ bytes: wavBytes(), filename: 'second.wav' }, fake.deps);
+        await expect(refusal).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/another file/) });
+        await expect(refusal).rejects.not.toMatchObject({ message: expect.stringContaining('acme') });
 
         // Let the first one finish so the test leaves no dangling job.
         const job = fake.jobs[0];
@@ -334,6 +337,68 @@ describe('handleRendererMessage — protocol robustness', () => {
 
         handleRendererMessage({ jobId: fake.jobs[0].jobId, kind: 'begin', totalSamples: 0 });
         await expect(promise).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/zero samples/i) });
+    });
+});
+
+describe('transcribeUploadedFile — privacy', () => {
+    it('never puts the filename or the transcript into a stage detail', async () => {
+        // Stage details are logged and broadcast on the event stream, where any
+        // local tool holding the token can read them.
+        const fake = makeDeps({ transcript: 'the confidential budget is four million' });
+        const details: string[] = [];
+        fake.deps.onStage = (stage, detail) => { details.push(`${stage} ${detail ?? ''}`); };
+
+        await transcribeUploadedFile({ bytes: wavBytes(), filename: 'acme-renewal-call.wav' }, fake.deps);
+
+        expect(details.length).toBeGreaterThan(0);
+        for (const d of details) {
+            expect(d).not.toMatch(/acme|renewal|\.wav/i);
+            expect(d).not.toMatch(/confidential|budget|million/i);
+        }
+    });
+});
+
+describe('handleRendererMessage — a hostile or broken window cannot crash the app', () => {
+    /** Start a job whose decode is driven by hand, and return its id. */
+    async function startJob() {
+        const fake = makeDeps({ autoRespond: false });
+        const promise = transcribeUploadedFile({ bytes: wavBytes(), filename: 'c.wav' }, fake.deps);
+        promise.catch(() => {}); // asserted below; never an unhandled rejection
+        await vi.waitFor(() => expect(fake.jobs).toHaveLength(1));
+        return { promise, jobId: fake.jobs[0].jobId as string };
+    }
+
+    it('refuses a decode that claims more than 4 hours of audio, before allocating it', async () => {
+        const { promise, jobId } = await startJob();
+        expect(() => handleRendererMessage({ jobId, kind: 'begin', totalSamples: 5 * 60 * 60 * 16000 })).not.toThrow();
+        await expect(promise).rejects.toMatchObject({ status: 413, message: expect.stringMatching(/4-hour limit/) });
+    });
+
+    const garbage: Array<[string, (jobId: string) => any[]]> = [
+        ['a fractional sample count', (jobId) => [{ jobId, kind: 'begin', totalSamples: 1600.5 }]],
+        ['a second begin', (jobId) => [{ jobId, kind: 'begin', totalSamples: 16000 }, { jobId, kind: 'begin', totalSamples: 16000 }]],
+        ['audio before the decode began', (jobId) => [{ jobId, kind: 'chunk', offset: 0, samples: new Float32Array(10) }]],
+        ['a chunk that is not float samples', (jobId) => [{ jobId, kind: 'begin', totalSamples: 16000 }, { jobId, kind: 'chunk', offset: 0, samples: { length: 1e12 } }]],
+        ['a negative position', (jobId) => [{ jobId, kind: 'begin', totalSamples: 16000 }, { jobId, kind: 'chunk', offset: -5, samples: new Float32Array(10) }]],
+        ['a non-numeric position', (jobId) => [{ jobId, kind: 'begin', totalSamples: 16000 }, { jobId, kind: 'chunk', offset: 'x', samples: new Float32Array(10) }]],
+    ];
+
+    for (const [label, messages] of garbage) {
+        it(`fails only that job when the window sends ${label}`, async () => {
+            const { promise, jobId } = await startJob();
+            for (const msg of messages(jobId)) {
+                expect(() => handleRendererMessage(msg)).not.toThrow();
+            }
+            await expect(promise).rejects.toThrow();
+        });
+    }
+
+    it('bounds how much of a window error message reaches the caller', async () => {
+        const { promise, jobId } = await startJob();
+        handleRendererMessage({ jobId, kind: 'error', message: 'x'.repeat(10_000) });
+        const err: any = await promise.catch((e) => e);
+        expect(err.status).toBe(400);
+        expect(err.message.length).toBeLessThanOrEqual(500);
     });
 });
 

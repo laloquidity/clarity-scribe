@@ -6,12 +6,19 @@ directories:
 files:
   - dist/**/*
   - dist-electron/**/*
+  # Never package the prebuilt copy of the Whisper binary (postinstall puts it
+  # in node_modules) or native build byproducts.
+  - "!prebuilt/**"
+  - "!node_modules/smart-whisper/build/Release/obj/**"
+  - "!node_modules/smart-whisper/build/Release/*.{lib,exp,iobj,ipdb,pdb}"
   # Strip koffi binaries for platforms we never target
   - "!node_modules/koffi/build/koffi/linux_*"
   - "!node_modules/koffi/build/koffi/musl_*"
   - "!node_modules/koffi/build/koffi/freebsd_*"
   - "!node_modules/koffi/build/koffi/openbsd_*"
 npmRebuild: false
+# Inspect the packaged output after packing (see scripts/check-no-personal-paths.js).
+afterPack: scripts/check-no-personal-paths.js
 asar: true
 asarUnpack:
   - "node_modules/@napi-rs/**"
