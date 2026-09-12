@@ -13,6 +13,7 @@ import * as nativeWhisper from './nativeWhisper';
 import * as streaming from './streamingTranscriber';
 import { transcribeParakeet, setVocabularyBoostTerms, getWarmDecodeMs, isLivePreviewAffordable, LIVE_PREVIEW_WARM_LIMIT_MS } from './parakeetService';
 import { startLocalApi, stopLocalApi, emitEvent, isRunning as isLocalApiRunning } from './localApi';
+import { transcribeUploadedFile, handleRendererMessage as handleFileJobMessage, JOB_EMIT_CHANNEL } from './fileTranscription';
 import { initWinPaste, focusAndPaste, isNativePasteAvailable, captureTargetWindow, getForegroundPid } from './winPaste';
 import { initHotkeyService, registerHotkeyService, registerCommandHotkeyService, stopHotkeyService, HOLD_MODE_KEYS, type HotkeyMode } from './hotkeyService';
 import * as llmRouter from './llmRouter';
@@ -1382,6 +1383,11 @@ function setupIpcHandlers(): void {
         };
     });
 
+    // Replies from the renderer for file-transcription jobs (decoded audio
+    // chunks, cleaned text, or a failure). See fileTranscription.ts for why the
+    // window has to do those two steps.
+    ipcMain.on(JOB_EMIT_CHANNEL, (_e, msg) => handleFileJobMessage(msg));
+
     // Window
     ipcMain.handle('quit-app', () => { (app as any).isQuitting = true; app.quit(); });
     ipcMain.handle('minimize-to-tray', () => {
@@ -1715,6 +1721,35 @@ app.whenReady().then(async () => {
                     if (!isCommandModeEnabled()) return Promise.resolve({ stage: 'error', message: 'Command mode is disabled' });
                     return runCommand(text, { route: llmRouter.route, deps: commandDeps, emit: emitCommandStage, tryRecipe });
                 },
+                // File transcription (OpenAI-compatible). Everything stays on
+                // this machine: the same local engines that serve dictation.
+                transcribeFile: (fileReq) => transcribeUploadedFile(fileReq, {
+                    sendToRenderer: (channel, payload) => {
+                        if (!mainWindow || mainWindow.isDestroyed()) return false;
+                        mainWindow.webContents.send(channel, payload);
+                        return true;
+                    },
+                    transcribe: (pcm, language) => nativeWhisper.transcribe(pcm, {
+                        // An explicit `language` from the caller wins; otherwise
+                        // fall back to the language dictation is configured for.
+                        language: language || (store.get('settings') as any)?.whisperLanguage || 'en',
+                    }),
+                    // Live dictation owns the engines. A batch job must never be
+                    // the reason someone's hotkey feels slow, so we refuse for
+                    // the seconds a dictation is in flight rather than compete.
+                    busyReason: () => {
+                        if (isCurrentlyRecording) return 'Clarity Scribe is recording a dictation right now. Try again when it finishes.';
+                        if (streaming.isSessionActive()) return 'Clarity Scribe is still finishing a dictation. Try again in a moment.';
+                        return null;
+                    },
+                    engineReady: () => isWhisperReady,
+                    onStage: (stage, detail) => {
+                        console.log(`[LocalAPI] file transcription: ${stage}${detail ? ` (${detail})` : ''}`);
+                        // Mirror to the SSE stream so a watching agent sees the
+                        // same lifecycle it gets for live dictation.
+                        emitEvent({ type: 'file', stage, detail: detail ?? null });
+                    },
+                }),
             })
                 .then(({ port }) => console.log(`[LocalAPI] listening on 127.0.0.1:${port}`))
                 .catch((err) => console.error('[LocalAPI] failed to start:', err));

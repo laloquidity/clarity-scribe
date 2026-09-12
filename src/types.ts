@@ -158,6 +158,10 @@ export interface ElectronAPI {
     // Local API (programmable voice layer)
     getLocalApiInfo: () => Promise<{ enabled: boolean; running: boolean; port: number; token: string | null }>;
 
+    // File transcription jobs (POST /v1/audio/transcriptions)
+    onFileJob: (cb: (job: FileJobRequest) => void) => () => void;
+    fileJobEmit: (msg: FileJobReply) => void;
+
     // Command mode
     onCommandStage: (cb: (stage: CommandStageEvent) => void) => () => void;
     commandConfirm: (approved: boolean) => Promise<boolean>;
@@ -218,6 +222,23 @@ export interface ElectronAPI {
     // Platform
     getPlatform: () => Promise<string>;
 }
+
+/**
+ * Work the main process hands to the window on behalf of the file-transcription
+ * endpoint: `decode` needs Chromium's audio codecs, `postprocess` needs the
+ * dictation cleanup pipeline. Neither exists in the main process.
+ */
+export type FileJobRequest =
+    | { jobId: string; kind: 'decode'; bytes: Uint8Array; mime: string }
+    | { jobId: string; kind: 'postprocess'; text: string };
+
+/** The window's answers. A decode replies begin → chunk* → done. */
+export type FileJobReply =
+    | { jobId: string; kind: 'begin'; totalSamples: number }
+    | { jobId: string; kind: 'chunk'; offset: number; samples: Float32Array }
+    | { jobId: string; kind: 'done' }
+    | { jobId: string; kind: 'text'; text: string }
+    | { jobId: string; kind: 'error'; message: string };
 
 declare global {
     interface Window {

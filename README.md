@@ -22,7 +22,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 - **Spoken Punctuation** (opt-in) — Say "comma", "period", "new line", "question mark" — with context-aware "dot" that only activates in URLs ("google dot com" → "google.com").
 - **Sound Cues** (opt-in) — Subtle generated blips on recording start/stop.
 - **Personal Dictionary with decoder-level recognition** — Add custom word corrections that apply to every transcription (e.g. `Chat GPT` to `ChatGPT`), with full CRUD, Export/Import JSON, and ~12 auto-generated variants per entry. Dictionary terms also feed **shallow-fusion vocabulary biasing inside the decoder** on every platform: the model is nudged toward emitting your custom terms as it hears them, instead of only being string-replaced afterwards. Both sides of an entry are boosted where the term is specific enough to be safe, which is what makes rare words recoverable — see [Custom vocabulary](#custom-vocabulary-words-the-model-gets-wrong).
-- **Local API** (opt-in) — Loopback-only HTTP API + SSE event stream: scripts and agents can start/stop dictation and consume live transcripts. See [Local API](#local-api-programmable-voice-layer).
+- **Local API** (opt-in) — Loopback-only HTTP API + SSE event stream: scripts and agents can start/stop dictation and consume live transcripts, and an **OpenAI-compatible `/v1/audio/transcriptions` endpoint transcribes existing audio files** on the same on-device engines — point any tool that already speaks that contract at Scribe and nothing leaves the machine. See [Local API](#local-api-programmable-voice-layer).
 - **MCP Server** — Scribe is callable as a tool provider from Claude Desktop, Claude Code, and any MCP-speaking agent: `dictate`, `start/stop_dictation`, `get_recent_transcripts`. See [MCP server](#mcp-server-use-scribe-from-ai-agents).
 - **Command Mode** (experimental, opt-in, default OFF) — Speak commands instead of dictation: a second hotkey (F10) routes your words through a **local LLM** (llama.cpp + Gemma 4, fully offline) to actions — open apps/folders, search the web, type text, show transcripts. A **risk rulebook** governs execution: benign actions **just run**; consequential ones (launching executables, contacting people) show a Confirm/Cancel proposal that auto-cancels if unanswered; severe tiers (money, credentials, bulk deletion) refuse outright. Unsupported requests get an honest "I can't do that" instead of a wrong action. Requires `llama-server` + a Gemma 4 GGUF (auto-discovered from `C:\llama-server` / overridable via `SCRIBE_LLAMA_SERVER` + `SCRIBE_ROUTER_MODEL`).
 - **Screen Agent** (experimental, part of Command Mode, Windows) — Multi-step commands drive the computer like a person would: *"open spotify and play we will rock you"* → the agent reads the app's **real controls** via the Windows **accessibility tree** (exact names + rectangles, ~100 ms, no GPU), decides one action at a time with the local LLM, and activates controls **programmatically** (so it can't misclick), falling back to computer vision (OmniParser) only for apps with no accessibility data. Live step feed with a Stop button (**Esc aborts instantly, even mid-step**); every click is re-checked against the risk rulebook mid-flight — "Send"/"Buy"/"Delete" pause for approval, credential fields are refused; a step cap + loop detection stop a wandering agent. See [Screen agent](#screen-agent-voice-driven-computer-use).
@@ -437,6 +437,7 @@ Requests without a valid token get `401`.
 | POST   | `/v1/record/stop`       | Stop recording. `200 {ok:true}` or `409` if not on      |
 | GET    | `/v1/status`            | `{recording, engine, version}`                          |
 | GET    | `/v1/history?limit=N`   | `{entries:[…]}` — recent transcripts, newest first      |
+| POST   | `/v1/audio/transcriptions` | Transcribe an uploaded audio file (see below)         |
 
 Unknown routes return a JSON `404`. All responses are `application/json` except
 the event stream.
@@ -450,6 +451,7 @@ a `data:` line, with a `ts` (epoch ms):
 - `{type:"partial", text, ts}` — live in-progress transcript
 - `{type:"result", text, ts}` — finalized transcript
 - `{type:"state", state:"RECORDING"|"PROCESSING"|"IDLE", ts}` — recording lifecycle
+- `{type:"file", stage:"decoding"|"transcribing"|"formatting"|"done", detail, ts}` — progress of a `/v1/audio/transcriptions` job
 
 A heartbeat comment is sent every 15s to keep the connection alive.
 
@@ -475,6 +477,86 @@ Browser / EventSource:
 const es = new EventSource(`http://127.0.0.1:5111/v1/events?token=${TOKEN}`);
 es.onmessage = (e) => console.log(JSON.parse(e.data));
 ```
+
+### Transcribe an audio file (OpenAI-compatible)
+
+Everything above drives the **microphone**. This route transcribes a **file you
+already have** — a recorded call, a voice memo, an interview — on the same local
+engines, with nothing leaving the machine.
+
+```
+POST http://127.0.0.1:5111/v1/audio/transcriptions
+```
+
+It implements the OpenAI audio-transcription contract, which most transcription
+tools copy. An app already written against that contract needs **no code
+changes**: point it at the base URL `http://127.0.0.1:5111/v1` and paste your
+Scribe token in as the API key.
+
+**Request** — `multipart/form-data`, with `Authorization: Bearer <token>`:
+
+| Part | Required | Value |
+| --- | --- | --- |
+| `file` | yes | The audio, with a filename |
+| `model` | no | Accepted and ignored — Scribe uses the engine set in Settings. Send anything (`scribe`, `whisper-1`); it is recorded in the log, not acted on |
+| `response_format` | no | `json` (default), `text`, or `verbose_json` |
+| `language` | no | ISO-639-1 code (`en`, `de`, …). Omitted → the dictation language from Settings |
+
+**Success — `200`:**
+
+```json
+{ "text": "the full transcript as one string" }
+```
+
+`response_format=text` returns the bare transcript as `text/plain`;
+`verbose_json` adds `task`, `duration` (seconds) and `language`. There are no
+word timings, speaker labels or segments.
+
+**Failure — any non-2xx**, always in the OpenAI error envelope, with a message
+written to be shown to a person as-is:
+
+```json
+{ "error": { "message": "That file looks like a PDF document, not an audio recording.", "type": "invalid_request_error", "param": null, "code": null } }
+```
+
+| Status | When |
+| --- | --- |
+| `400` | No `file` part, an unreadable or non-audio file, a malformed body, or an unsupported `response_format` |
+| `401` | Missing or wrong token |
+| `405` | Anything other than `POST` on this path |
+| `409` | A dictation is in flight, or another file is already being transcribed — retry shortly |
+| `413` | Upload over 25 MB |
+| `503` | Engines still loading, or the app window is unavailable |
+| `504` | The app stopped responding mid-job |
+
+**Example:**
+
+```bash
+curl -X POST http://127.0.0.1:5111/v1/audio/transcriptions \
+  -H "Authorization: Bearer $TOKEN" \
+  -F file=@scoping-call.m4a \
+  -F model=scribe \
+  -F response_format=json
+```
+
+#### What it accepts, and what it does with it
+
+| | |
+| --- | --- |
+| **Formats** | `.m4a` `.mp3` `.wav` `.webm` `.ogg` `.oga` `.opus` `.flac` `.mp4` `.mpga` `.aac` `.aiff` `.caf` — decoded by the Chromium media stack Electron already ships |
+| **Sample rates / channels** | Anything. The file is resampled to 16 kHz and downmixed to mono for you — an `.m4a` straight off a phone works unchanged |
+| **Max upload** | 25 MB (`maxUploadBytes` in the API config). A 45-minute call at mono 32–64 kbps is about 15 MB |
+| **Length** | No limit beyond the size cap. Long audio is split on Silero VAD speech boundaries and reassembled, the same pipeline a long dictation uses |
+| **Where it runs** | Entirely on this machine, on the same Parakeet/Whisper models as dictation. The audio never leaves the device and is never written to disk |
+| **Concurrency** | One file at a time, and it yields to live dictation — both cases answer `409` rather than queue |
+| **Speed** | Batch decode, roughly **74× real time** on a Windows GPU: a 45-minute call lands in well under a minute. (The 1000×+ figures above are the *streaming* path, which applies to live dictation only.) |
+| **App state** | Scribe must be **running**, because it hosts the server and its window does the audio decoding. It does **not** need focus and can sit minimized in the tray |
+
+The transcript goes through the same cleanup a dictation does — filler-word
+removal and Personal Dictionary replacement, plus Smart Formatting when that
+setting is on. **Spoken Punctuation is deliberately not applied**: it is a
+dictation command language, and in a recorded conversation "period" is an
+ordinary word.
 
 ## MCP server (use Scribe from AI agents)
 

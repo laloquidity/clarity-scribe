@@ -27,6 +27,7 @@
 
 import * as http from 'http';
 import * as crypto from 'crypto';
+import { parseBoundary, parseMultipart, fieldValue, findPart } from './multipart';
 
 export interface LocalApiConfig {
     /** TCP port to bind on 127.0.0.1. Defaults to 5111. Pass 0 for an
@@ -48,7 +49,61 @@ export interface LocalApiConfig {
      *  had been spoken). Stages stream over SSE; the promise resolves with the
      *  terminal stage. Absent → POST /v1/command returns 501. */
     runCommand?: (text: string) => Promise<any>;
+    /** Optional: transcribe an uploaded audio file. Absent → POST
+     *  /v1/audio/transcriptions returns 501. Reject with an Error carrying a
+     *  numeric `status` property to choose the HTTP code (see `httpError`);
+     *  anything else becomes a 500. */
+    transcribeFile?: (req: FileTranscriptionRequest) => Promise<FileTranscriptionResult>;
+    /** Largest upload accepted by /v1/audio/transcriptions, in bytes.
+     *  Defaults to 25 MB — the same ceiling OpenAI's endpoint uses, which is
+     *  what client apps built against this contract already expect. */
+    maxUploadBytes?: number;
 }
+
+/** An audio file handed to the host for transcription. */
+export interface FileTranscriptionRequest {
+    /** Raw bytes of the uploaded file. */
+    bytes: Buffer;
+    /** Client-supplied filename, used for format detection and error text. */
+    filename?: string;
+    /** ISO-639-1 language code the caller asked for, if any. */
+    language?: string;
+    /** The `model` form field verbatim. Scribe records it but does not switch
+     *  engines on it — see the docs for why. */
+    model?: string;
+}
+
+/** What the host gives back. Only `text` is required by the wire contract. */
+export interface FileTranscriptionResult {
+    text: string;
+    /** Audio length in seconds, surfaced only in `verbose_json`. */
+    durationSec?: number;
+    /** Language actually used, surfaced only in `verbose_json`. */
+    language?: string;
+}
+
+/**
+ * Build an Error that maps to a specific HTTP status on the way out.
+ *
+ * The host (main.ts) uses this so "a dictation is already running" becomes a
+ * 409 the caller can retry, rather than an opaque 500 that reads like a bug.
+ */
+export function httpError(status: number, message: string): Error & { status: number } {
+    return Object.assign(new Error(message), { status });
+}
+
+/**
+ * The OpenAI-compatible transcription route.
+ *
+ * Kept as a named constant because three things key off it: the route table,
+ * the error-body shape (this path answers in OpenAI's `{error:{message}}`
+ * envelope, every other path keeps Scribe's original flat `{error:"..."}` so
+ * existing clients are untouched), and the upload size guard.
+ */
+const TRANSCRIPTIONS_PATH = '/v1/audio/transcriptions';
+
+/** Default upload ceiling: 25 MB, matching the contract clients already target. */
+const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 /** How often we push an SSE heartbeat comment. Idle proxies and some OS socket
  *  layers drop connections with no traffic; a lightweight comment line keeps
@@ -216,7 +271,27 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     // Auth gate — applies to EVERY route including the event stream. Fail
     // closed: no token, wrong token, or malformed header → 401.
     if (!isAuthorized(req, url, cfg)) {
-        sendJson(res, 401, { error: 'unauthorized' });
+        // The OpenAI-compatible route answers in that ecosystem's error
+        // envelope even for auth, because its clients read `error.message` and
+        // show it to a human. Every other route keeps the original flat shape.
+        if (path === TRANSCRIPTIONS_PATH) {
+            sendOpenAiError(res, 401, 'Invalid API key. Copy the token from Clarity Scribe → Settings → Local API and send it as "Authorization: Bearer <token>".', 'invalid_request_error');
+        } else {
+            sendJson(res, 401, { error: 'unauthorized' });
+        }
+        return;
+    }
+
+    // POST /v1/audio/transcriptions — OpenAI-compatible file transcription.
+    if (path === TRANSCRIPTIONS_PATH && method === 'POST') {
+        handleTranscriptionUpload(req, res, cfg);
+        return;
+    }
+
+    // Same path, wrong verb: say so explicitly. A caller that lands here with a
+    // GET has usually pasted the URL into a browser to check the setup.
+    if (path === TRANSCRIPTIONS_PATH) {
+        sendOpenAiError(res, 405, `${method} is not supported on ${TRANSCRIPTIONS_PATH}. Send a POST with a multipart/form-data body.`, 'invalid_request_error');
         return;
     }
 
@@ -283,6 +358,195 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
     // Everything else — JSON 404 (never an HTML error page).
     sendJson(res, 404, { error: 'not_found', path });
+}
+
+// --- POST /v1/audio/transcriptions -------------------------------------------
+
+/**
+ * Transcribe an uploaded audio file.
+ *
+ * WHY this shape: it is the OpenAI audio-transcription contract, which the
+ * whole transcription ecosystem has copied. An app that already speaks it needs
+ * no new code to use Scribe — the owner pastes a base URL and a token into a
+ * settings screen and the existing client works. Deviating "because ours is
+ * nicer" would cost every integrator a code change, which is the entire thing
+ * this endpoint exists to avoid.
+ *
+ * The work itself is delegated to the injected `transcribeFile`; everything
+ * here is wire protocol — read the body under a cap, pull the parts out, pick a
+ * response shape, and turn failures into messages a human can act on.
+ */
+function handleTranscriptionUpload(req: http.IncomingMessage, res: http.ServerResponse, cfg: LocalApiConfig): void {
+    if (!cfg.transcribeFile) {
+        sendOpenAiError(res, 501, 'This build of Clarity Scribe cannot transcribe uploaded files.', 'invalid_request_error');
+        return;
+    }
+
+    const boundary = parseBoundary(req.headers['content-type']);
+    if (!boundary) {
+        sendOpenAiError(res, 400, 'Expected a multipart/form-data body with a boundary. Send the audio as a file upload, not as raw bytes or JSON.', 'invalid_request_error');
+        return;
+    }
+
+    const maxBytes = cfg.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES;
+    const maxMb = Math.round(maxBytes / (1024 * 1024));
+
+    // Refuse an oversized upload from the header alone, before a byte of it
+    // crosses the wire. Content-Length can lie or be absent (chunked encoding),
+    // so readBody enforces the same ceiling again while reading.
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+        rejectOversized(req, res, `The upload is ${(declared / (1024 * 1024)).toFixed(1)} MB, over the ${maxMb} MB limit. Re-encode the recording at a lower bitrate (mono, 32-64 kbps is plenty for speech) or split it.`);
+        return;
+    }
+
+    readBody(req, maxBytes, (err, body) => {
+        if (err === 'too_large') {
+            rejectOversized(req, res, `The upload is over the ${maxMb} MB limit. Re-encode the recording at a lower bitrate (mono, 32-64 kbps is plenty for speech) or split it.`);
+            return;
+        }
+        if (err || !body) {
+            sendOpenAiError(res, 400, 'The upload ended before it was complete.', 'invalid_request_error');
+            return;
+        }
+
+        let parts;
+        try {
+            parts = parseMultipart(body, boundary);
+        } catch (e: any) {
+            sendOpenAiError(res, 400, String(e?.message || 'Could not read the multipart body.'), 'invalid_request_error');
+            return;
+        }
+
+        const filePart = findPart(parts, 'file');
+        if (!filePart || filePart.data.length === 0) {
+            sendOpenAiError(res, 400, 'No audio was uploaded: the request has no "file" part (or it is empty).', 'invalid_request_error');
+            return;
+        }
+
+        // `response_format` decides the envelope, not the work. Default to
+        // `json` so a caller that omits it still gets the documented shape.
+        const responseFormat = (fieldValue(parts, 'response_format') || 'json').toLowerCase();
+        if (!['json', 'text', 'verbose_json'].includes(responseFormat)) {
+            sendOpenAiError(res, 400, `response_format "${responseFormat}" is not supported. Use "json", "text" or "verbose_json". Scribe does not produce timestamped subtitle formats.`, 'invalid_request_error');
+            return;
+        }
+
+        cfg.transcribeFile!({
+            bytes: filePart.data,
+            filename: filePart.filename,
+            language: fieldValue(parts, 'language') || undefined,
+            model: fieldValue(parts, 'model') || undefined,
+        }).then(
+            (result) => {
+                const text = result?.text ?? '';
+                if (responseFormat === 'text') {
+                    sendText(res, 200, text);
+                    return;
+                }
+                if (responseFormat === 'verbose_json') {
+                    sendJson(res, 200, {
+                        task: 'transcribe',
+                        language: result.language ?? null,
+                        duration: result.durationSec ?? null,
+                        text,
+                    });
+                    return;
+                }
+                sendJson(res, 200, { text });
+            },
+            (e: any) => {
+                // A status the host attached (busy, not ready, bad audio) is a
+                // deliberate answer; anything else is an unexpected failure.
+                const status = typeof e?.status === 'number' ? e.status : 500;
+                const message = String(e?.message || 'Transcription failed.');
+                const type = status === 429 || status === 409 ? 'rate_limit_error'
+                    : status >= 500 ? 'server_error'
+                        : 'invalid_request_error';
+                sendOpenAiError(res, status, message, type);
+            }
+        );
+    });
+}
+
+/**
+ * Refuse an over-sized upload with a 413 the client can actually read.
+ *
+ * WHY drain instead of destroy: killing the socket the moment we decide to
+ * refuse discards the response along with it, and the caller sees a connection
+ * reset rather than the message explaining the limit — the one thing they most
+ * need. So we answer, ask for the connection to close, and then let the rest of
+ * the upload arrive and be thrown away (`resume` with no `data` listener
+ * discards it, so nothing accumulates in memory) while the client finishes
+ * sending and reads its reply.
+ */
+function rejectOversized(req: http.IncomingMessage, res: http.ServerResponse, message: string): void {
+    sendJson(
+        res,
+        413,
+        { error: { message, type: 'invalid_request_error', param: null, code: null } },
+        { Connection: 'close' }
+    );
+    req.resume();
+}
+
+/**
+ * Buffer a request body, refusing anything past `maxBytes`.
+ *
+ * The cap is enforced on the running total rather than on Content-Length alone,
+ * so a client that under-declares its length (or uses chunked encoding) cannot
+ * push the process into swap. Chunks are collected and concatenated once, which
+ * keeps a 25 MB upload to a single copy.
+ */
+function readBody(
+    req: http.IncomingMessage,
+    maxBytes: number,
+    done: (err: 'too_large' | 'aborted' | null, body: Buffer | null) => void
+): void {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let finished = false;
+
+    const finish = (err: 'too_large' | 'aborted' | null, body: Buffer | null) => {
+        if (finished) return; // a socket can emit both 'aborted' and 'error'
+        finished = true;
+        done(err, body);
+    };
+
+    req.on('data', (chunk: Buffer) => {
+        if (finished) return;
+        total += chunk.length;
+        if (total > maxBytes) {
+            finish('too_large', null);
+            return;
+        }
+        chunks.push(chunk);
+    });
+    req.on('end', () => finish(null, Buffer.concat(chunks, total)));
+    req.on('aborted', () => finish('aborted', null));
+    req.on('error', () => finish('aborted', null));
+}
+
+/**
+ * Write an error in OpenAI's envelope: `{"error":{"message":…}}`.
+ *
+ * Clients built against that contract surface `error.message` to the user
+ * verbatim, so the message must be a complete, actionable sentence — never a
+ * bare code. Status text is duplicated into `code` for clients that switch on
+ * it.
+ */
+function sendOpenAiError(res: http.ServerResponse, status: number, message: string, type: string): void {
+    sendJson(res, status, { error: { message, type, param: null, code: null } });
+}
+
+/** Plain-text response, used only by `response_format=text`. */
+function sendText(res: http.ServerResponse, status: number, text: string): void {
+    const body = Buffer.from(text, 'utf8');
+    res.writeHead(status, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Length': body.length,
+    });
+    res.end(body);
 }
 
 /**
@@ -373,11 +637,12 @@ function sendHeartbeat(): void {
 
 /** Write a JSON response with the given status. Central so every non-stream
  *  route stays consistent (content-type, serialization). */
-function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+function sendJson(res: http.ServerResponse, status: number, body: unknown, extraHeaders?: Record<string, string>): void {
     const text = JSON.stringify(body);
     res.writeHead(status, {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(text),
+        ...extraHeaders,
     });
     res.end(text);
 }

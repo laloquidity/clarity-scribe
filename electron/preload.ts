@@ -29,6 +29,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Local API (programmable voice layer)
     getLocalApiInfo: () => ipcRenderer.invoke('get-local-api-info'),
 
+    // File transcription jobs (POST /v1/audio/transcriptions).
+    // The main process hands the window the two things only a renderer can do —
+    // decode compressed audio through Chromium's codecs, and run the dictation
+    // text cleanup — and the window answers on a single channel. `send` rather
+    // than `invoke` because a long decode replies in many chunks and the main
+    // process has nothing to return for each one.
+    onFileJob: (cb: (job: any) => void) => {
+        const handler = (_: any, job: any) => cb(job);
+        ipcRenderer.on('file-job-request', handler);
+        return () => { ipcRenderer.removeListener('file-job-request', handler); };
+    },
+    fileJobEmit: (msg: any) => ipcRenderer.send('file-job-emit', msg),
+
     // Command mode
     onCommandStage: (cb: (stage: any) => void) => {
         const handler = (_: any, stage: any) => cb(stage);

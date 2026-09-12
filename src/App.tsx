@@ -14,6 +14,7 @@ import { PersonalDictionary } from './components/PersonalDictionary';
 import SetupScreen from './components/SetupScreen';
 import { useSettings } from './hooks/useSettings';
 import { useAudioRecording } from './hooks/useAudioRecording';
+import { useFileJobs } from './hooks/useFileJobs';
 import { retainAudioContext, releaseAudioContext } from './utils/audioContextManager';
 import { cleanTranscription } from './utils/cleanTranscription';
 import { applyITN } from './utils/itn';
@@ -83,6 +84,12 @@ const App: React.FC = () => {
     useEffect(() => { itnEnabledRef.current = settings.itnEnabled; }, [settings.itnEnabled]);
     const spokenPunctRef = useRef<boolean>(false);
     useEffect(() => { spokenPunctRef.current = settings.spokenPunctuation; }, [settings.spokenPunctuation]);
+
+    // Serve decode + cleanup requests from the file-transcription endpoint
+    // (POST /v1/audio/transcriptions). Chromium's audio codecs and the text
+    // pipeline both live in the renderer, so the main process delegates those
+    // two steps here. No UI, no focus needed — the widget can be in the tray.
+    useFileJobs({ dictionary: dictionaryRef, itnEnabled: itnEnabledRef });
 
     // Per-dictation metrics (audio length + stop instant), captured when audio
     // is handed to the engine and consumed when the result is pasted.
