@@ -549,7 +549,7 @@ curl -X POST http://127.0.0.1:5111/v1/audio/transcriptions \
 | **Length** | No limit beyond the size cap. Long audio is split on Silero VAD speech boundaries and reassembled, the same pipeline a long dictation uses |
 | **Where it runs** | Entirely on this machine, on the same Parakeet/Whisper models as dictation. The audio never leaves the device and is never written to disk |
 | **Concurrency** | One file at a time, and it yields to live dictation — both cases answer `409` rather than queue |
-| **Speed** | Batch decode, roughly **74× real time** on a Windows GPU: a 45-minute call lands in well under a minute. (The 1000×+ figures above are the *streaming* path, which applies to live dictation only.) |
+| **Speed** | About **50× real time** on an RTX 3090: 45 minutes of speech in 52 s, 15 minutes in 18 s. Measured in a harness without the app's window — the app shares the GPU with its own UI and runs somewhat slower. Upload, decoding and sample transfer add about 0.5 s. (The 1000×+ figures above measure stop-to-text latency for live dictation, where the work happens while you talk; a file has no such head start.) |
 | **App state** | Scribe must be **running**, because it hosts the server and its window does the audio decoding. It does **not** need focus and can sit minimized in the tray |
 
 The transcript goes through the same cleanup a dictation does — filler-word
