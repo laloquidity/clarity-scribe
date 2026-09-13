@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v3.9.0 — File transcription & privacy hardening
 
 ### 🔒 Privacy
 
@@ -30,6 +30,7 @@
 
 ### 🧱 Internal
 
+- **Smaller Windows installer.** Every platform in `electron-builder.yml` carries the full `files` allow-list (`dist`, `dist-electron`, `package.json`, the window icon), so packaging includes only what the app runs and the GPU libraries ship once: 913 MB (v3.1.0) down to 536 MB.
 - **Leaner native build output.** The prebuilt Windows Whisper module's debug record holds only the PDB file name, rebuilds link with `/PDBALTPATH:%_PDB%`, node-gyp byproducts are excluded from packaging, and an `afterPack` check (`scripts/check-no-personal-paths.js`) inspects every packaged build.
 ---
 

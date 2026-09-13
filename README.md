@@ -8,7 +8,7 @@ Built with Electron and React, with CoreML (Apple Neural Engine) on macOS and ON
 
 | Platform | Install |
 |----------|---------|
-| **Windows** (x64) | [**Clarity Scribe Setup 3.1.0 (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v3.1.0/Clarity.Scribe.Setup.3.1.0.exe) (~913 MB — live streaming engine, GPU backends bundled) |
+| **Windows** (x64) | [**Clarity Scribe Setup 3.9.0 (Windows)**](https://github.com/laloquidity/clarity-scribe/releases/download/v3.9.0/Clarity.Scribe.Setup.3.9.0.exe) (~536 MB — live streaming engine, GPU backends bundled) |
 | **macOS** (Apple Silicon) | Clone and run from source — see [Getting Started](#getting-started) |
 
 > On first launch, the app downloads the Whisper AI model (~1.5 GB). Parakeet TDT (~890 MB) is downloaded on first use when engine is set to Auto or Parakeet. Fully offline after model downloads.

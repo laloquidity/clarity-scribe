@@ -3,12 +3,20 @@ appId: com.clarity-scribe.app
 productName: Clarity Scribe
 directories:
   output: release
+# WHY the list appears three times: a platform's own `files` list REPLACES this
+# one for the app's files (confirmed in release/builder-debug.yml), and a list
+# holding only exclusions makes electron-builder package the entire project
+# folder. So each platform repeats the full allow-list, never just its extras.
 files:
+  # Only what the packaged app loads.
   - dist/**/*
   - dist-electron/**/*
-  # Never package the prebuilt copy of the Whisper binary (postinstall puts it
-  # in node_modules) or native build byproducts.
-  - "!prebuilt/**"
+  - package.json
+  - resources/icon.png
+  # smart-whisper needs only build/Release/smart-whisper.node at runtime; the
+  # rest of its build/ folder is node-gyp scaffolding and compiler output.
+  - "!node_modules/smart-whisper/build/*.{sln,gypi,vcxproj,filters}"
+  - "!node_modules/smart-whisper/build/node_modules/**"
   - "!node_modules/smart-whisper/build/Release/obj/**"
   - "!node_modules/smart-whisper/build/Release/*.{lib,exp,iobj,ipdb,pdb}"
   # Strip koffi binaries for platforms we never target
@@ -59,6 +67,22 @@ mac:
     - from: "recipes/"
       to: "recipes/"
   files:
+    # Only what the packaged app loads.
+    - dist/**/*
+    - dist-electron/**/*
+    - package.json
+    - resources/icon.png
+    # smart-whisper needs only build/Release/smart-whisper.node at runtime; the
+    # rest of its build/ folder is node-gyp scaffolding and compiler output.
+    - "!node_modules/smart-whisper/build/*.{sln,gypi,vcxproj,filters}"
+    - "!node_modules/smart-whisper/build/node_modules/**"
+    - "!node_modules/smart-whisper/build/Release/obj/**"
+    - "!node_modules/smart-whisper/build/Release/*.{lib,exp,iobj,ipdb,pdb}"
+    # Strip koffi binaries for platforms we never target
+    - "!node_modules/koffi/build/koffi/linux_*"
+    - "!node_modules/koffi/build/koffi/musl_*"
+    - "!node_modules/koffi/build/koffi/freebsd_*"
+    - "!node_modules/koffi/build/koffi/openbsd_*"
     - "!node_modules/koffi/build/koffi/win32_*"
 win:
   target:
@@ -86,6 +110,22 @@ win:
     - from: "native/uia-probe/uia-probe.exe"
       to: "uia-probe.exe"
   files:
+    # Only what the packaged app loads.
+    - dist/**/*
+    - dist-electron/**/*
+    - package.json
+    - resources/icon.png
+    # smart-whisper needs only build/Release/smart-whisper.node at runtime; the
+    # rest of its build/ folder is node-gyp scaffolding and compiler output.
+    - "!node_modules/smart-whisper/build/*.{sln,gypi,vcxproj,filters}"
+    - "!node_modules/smart-whisper/build/node_modules/**"
+    - "!node_modules/smart-whisper/build/Release/obj/**"
+    - "!node_modules/smart-whisper/build/Release/*.{lib,exp,iobj,ipdb,pdb}"
+    # Strip koffi binaries for platforms we never target
+    - "!node_modules/koffi/build/koffi/linux_*"
+    - "!node_modules/koffi/build/koffi/musl_*"
+    - "!node_modules/koffi/build/koffi/freebsd_*"
+    - "!node_modules/koffi/build/koffi/openbsd_*"
     - "!node_modules/koffi/build/koffi/darwin_*"
 nsis:
   oneClick: true
