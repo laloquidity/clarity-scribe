@@ -33,7 +33,7 @@ import * as core from './parakeetCore';
 import * as sidecar from './parakeetSidecar';
 import { joinSegments } from './segmentJoin';
 import { transcriptExcerpt } from './transcriptLog';
-import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt, QUIET_PEAK_RMS, quietestSplitPoint, voicedMsAbove } from './decodeHealth';
+import { assessDecode, preferBetterDecode, shouldRefreshSessions, peakWindowRms, nextRebuildAllowedAt, quietestSplitPoint, voicedMsAbove, holdsSpeech, SPEECH_PEAK_RMS, SPEECH_MIN_MS } from './decodeHealth';
 import { isSessionInProgress as isStreamingSessionInProgress } from './streamingTranscriber';
 import { diag } from './diagnostics';
 
@@ -109,8 +109,19 @@ function currentBias(): core.BiasContext | null {
     return biasContext;
 }
 
-/** Decode context passed to the shared core TDT decoder. */
-function decodeCtx(): core.DecodeContext {
+/**
+ * Decode context passed to the shared core TDT decoder, for THIS audio.
+ *
+ * The custom-vocabulary bias is only attached when the audio unmistakably
+ * holds speech. The boost is a logit addend on every term-start token on
+ * every frame; blank wins while the model wants blank, but breath noise is
+ * not blank on every frame, and one stray token is enough to start a term
+ * that the continuation boost then pulls to completion. A near-silent 11s
+ * thinking pause decoded to "Lomba Lombazi" that way — a dictionary name,
+ * half-matched and then whole — in real dictation (2026-09-13). Audio too
+ * quiet to be speech decodes unbiased, exactly as with no dictionary at all.
+ */
+function decodeCtx(audio: Float32Array): core.DecodeContext {
     return {
         decoderSession: decoderSession!,
         joinerSession: joinerSession!,
@@ -118,13 +129,28 @@ function decodeCtx(): core.DecodeContext {
         blankId: BLANK_ID,
         predRnnLayers,
         predHidden,
-        bias: currentBias(),
+        bias: holdsSpeech(audio) ? currentBias() : null,
     };
 }
 
-// Decoder state dimensions (read from encoder metadata at init)
+// Decoder state dimensions. The placeholders are WRONG for this model and
+// exist only so the fields are typed; applyDecoderStateDims() must run
+// before any decode, on every path that loads the decoder.
 let predRnnLayers = 1;
 let predHidden = 320;
+
+/**
+ * Set the decoder's LSTM state shape. Verified from the runtime error the
+ * wrong shape produces: dim 0 expected 2 (layers), dim 2 expected 640.
+ * The ONNX init has always called this; the hybrid ANE-encoder path did not,
+ * so its very first biased decode threw exactly that error, the sidecar was
+ * abandoned for the whole session, and dictation ran on the CPU fallback
+ * (real dictation, 2026-09-13).
+ */
+function applyDecoderStateDims(): void {
+    predRnnLayers = 2;
+    predHidden = 640;
+}
 
 function getModelDir(): string {
     const dir = join(app.getPath('home'), '.smart-whisper', 'models', 'parakeet-tdt-0.6b-v3');
@@ -275,15 +301,9 @@ function setupGpuDllPath(): void {
 /**
  * Read model metadata to get decoder state dimensions
  */
-function readEncoderMetadata(session: ort.InferenceSession): void {
-    try {
-        // Verified from runtime error: dim 0 Expected: 2 (2 LSTM layers)
-        predRnnLayers = 2;
-        predHidden = 640;
-        console.log(`[Parakeet] Decoder state dims: layers=${predRnnLayers}, hidden=${predHidden}`);
-    } catch {
-        console.warn('[Parakeet] Could not read encoder metadata, using defaults');
-    }
+function readEncoderMetadata(_session: ort.InferenceSession): void {
+    applyDecoderStateDims();
+    console.log(`[Parakeet] Decoder state dims: layers=${predRnnLayers}, hidden=${predHidden}`);
 }
 
 /**
@@ -496,16 +516,6 @@ async function measureWarmDecode(alreadyWarm = false): Promise<void> {
 }
 /** Warm run slower than this means the encoder is NOT on the GPU. */
 const FIXED_SHAPE_WARM_LIMIT_MS = 700;
-
-/**
- * Peak window RMS that reads as unmistakable SPEECH (not a breath or a
- * throat-clear) — used to decide that audio ahead of a decode's first token
- * held words the decoder lost. Well above QUIET_PEAK_RMS (0.006, the floor
- * below which nothing is voiced); typical speech here peaks ~0.06–0.2.
- */
-const LEADING_SPEECH_PEAK_RMS = 0.02;
-/** ...and it must hold for this long in total — a word, not a click. */
-const LEADING_SPEECH_MIN_MS = 400;
 
 /** When the current inference sessions were created (for preventive refresh). */
 let sessionsBuiltAt = 0;
@@ -776,7 +786,7 @@ async function runSinglePass(audioData: Float32Array): Promise<{
     // Transducer greedy decode
     const decStart = Date.now();
     const { text, firstTokenFrame, lastTokenFrame, totalFrames, collapseRecoveries, blankRatio } =
-        await core.transducerGreedyDecode(encoderOut, encoderLen, decodeCtx());
+        await core.transducerGreedyDecode(encoderOut, encoderLen, decodeCtx(audioData));
     const decTime = Date.now() - decStart;
 
     return { text, melTime, encTime, decTime, firstTokenFrame, lastTokenFrame, totalFrames, collapseRecoveries, blankRatio };
@@ -846,6 +856,7 @@ async function ensureHybridDecode(): Promise<boolean> {
         joinerSession ||= await ort.InferenceSession.create(
             join(modelDir, 'joiner.int8.onnx'), core.smallModelSessionOptions());
         if (vocabulary.length === 0) vocabulary = core.loadTokens(join(modelDir, 'tokens.txt'));
+        applyDecoderStateDims(); // the ONNX decoder needs the real LSTM shape, sidecar or not
         biasDirty = true; // trie must be rebuilt against the vocabulary just loaded
         hybridDecodeReady = true;
         console.log('[Parakeet] Hybrid bias decode ready (ANE encoder + ONNX decode)');
@@ -869,12 +880,14 @@ async function tryHybridDecode(audioData: Float32Array): Promise<string | null> 
     if (audioData.length === 0 || audioData.length > sidecar.MAX_ENCODE_SAMPLES) return null;
     if (boostTerms.length === 0) return null;           // nothing to bias — keep the fast path
     if (!(await ensureHybridDecode())) return null;
-    const bias = currentBias();
-    if (!bias) return null;
+    // Quiet audio gets no bias (see decodeCtx), and an unbiased hybrid decode
+    // has nothing over the sidecar's own — so let the sidecar have it.
+    const ctx = decodeCtx(audioData);
+    if (!ctx.bias) return null;
 
     const enc = await sidecar.encode(audioData);
     const tensor = new ort.Tensor('float32', enc.data, [1, enc.hidden, enc.frames]);
-    const out = await core.transducerGreedyDecode(tensor, enc.frames, { ...decodeCtx(), bias });
+    const out = await core.transducerGreedyDecode(tensor, enc.frames, ctx);
     return out.text;
 }
 
@@ -896,7 +909,10 @@ async function transcribeForcedSplit(audio: Float32Array, depth: number): Promis
     const texts: string[] = [];
     for (const half of [audio.subarray(0, cut), audio.subarray(cut)]) {
         let text = (await transcribeSinglePass(half)).text.trim();
-        if (!text && peakWindowRms(half) >= QUIET_PEAK_RMS) {
+        // Recurse only into a half that unmistakably holds speech. A half that
+        // is merely above the silence floor is a pause, and cutting a pause
+        // ever smaller only hands the model fragments to invent words for.
+        if (!text && holdsSpeech(half)) {
             text = await transcribeForcedSplit(half, depth - 1);
         }
         if (text) texts.push(text);
@@ -983,8 +999,14 @@ async function runTranscription(
             // So retry through the VAD-segmented path below. Previews are
             // exempt: they redecode moments later anyway, and the retry's
             // ~0.5s would stall the live queue for display-only text.
+            //
+            // "Clearly holds speech" is sustained speech-level energy, not
+            // merely above the silence floor. An 11s thinking pause (peak RMS
+            // 0.0149, ~9x below the speaker's voice) used to qualify, and the
+            // rescue then chopped the pause into 1s slices until the model
+            // invented a dictionary name for one (real dictation, 2026-09-13).
             const ateSpeech = !options.preview && text.trim() === '' && durationSeconds >= 1
-                && peakWindowRms(audioData) >= QUIET_PEAK_RMS;
+                && holdsSpeech(audioData);
             // LEADING loss: the decoder blanked through clear speech before
             // its first token — "I said time." came back as "Time." with the
             // first token at 1.9s of a 2.3s clip (real dictation, 2026-09-01).
@@ -996,9 +1018,9 @@ async function runTranscription(
             const leadSec = firstTokenFrame > 0 ? firstTokenFrame * 0.08 : 0;
             const leadAudio = leadSec >= 1.2 ? audioData.subarray(0, Math.floor((leadSec - 0.3) * 16000)) : null;
             const leadPeak = leadAudio ? peakWindowRms(leadAudio) : 0;
-            const leadVoicedMs = leadAudio ? voicedMsAbove(leadAudio, LEADING_SPEECH_PEAK_RMS) : 0;
+            const leadVoicedMs = leadAudio ? voicedMsAbove(leadAudio, SPEECH_PEAK_RMS) : 0;
             const leadingLoss = !options.preview && text.trim() !== '' && leadSec >= 1.2
-                && leadVoicedMs >= LEADING_SPEECH_MIN_MS;
+                && leadVoicedMs >= SPEECH_MIN_MS;
             // The EMPTY case is checked before the truncation case on purpose:
             // a long clip that decoded to nothing satisfies both, and only the
             // empty path escalates to forced sub-windows when VAD hands back
@@ -1146,7 +1168,7 @@ async function runTranscription(
                     segData.set(encoderData.subarray(batchOffset, batchOffset + D * T_out));
 
                     const segEncoderOut = new ort.Tensor('float32', segData, [1, D, T_out]);
-                    return core.transducerGreedyDecode(segEncoderOut, segLen, decodeCtx())
+                    return core.transducerGreedyDecode(segEncoderOut, segLen, decodeCtx(batch[i]))
                         .then(r => r.text.trim());
                 })
             );

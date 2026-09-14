@@ -172,6 +172,32 @@ export function voicedMsAbove(audio: Float32Array, rms: number, windowSamples = 
 }
 
 /**
+ * Peak window RMS that reads as unmistakable SPEECH — not a breath, a
+ * throat-clear, or room noise. Well above QUIET_PEAK_RMS (0.006, the floor
+ * below which nothing is voiced); typical speech peaks ~0.06–0.2, the
+ * quietest supported macOS setups ~0.02. The thinking pauses that were NOT
+ * speech in a logged dictation (2026-09-13) peaked at 0.012–0.015: above the
+ * quiet floor, below this line.
+ */
+export const SPEECH_PEAK_RMS = 0.02;
+/** ...and it must hold for this long in total — a word, not a click. */
+export const SPEECH_MIN_MS = 400;
+
+/**
+ * Does this audio unmistakably hold speech? Sustained speech-level energy,
+ * not a single loud window. This is the line between "the decoder was right
+ * to emit nothing" and "the decoder lost words": only the second deserves a
+ * rescue retry, and only audio on this side of the line should carry the
+ * custom-vocabulary bias. Biasing a near-silent pause is how a dictionary
+ * name gets invented out of breath noise — the boost only needs one
+ * non-blank frame to start the term and then pulls it to completion
+ * ("Lomba Lombazi" from an 11s pause, real dictation 2026-09-13).
+ */
+export function holdsSpeech(audio: Float32Array): boolean {
+    return voicedMsAbove(audio, SPEECH_PEAK_RMS) >= SPEECH_MIN_MS;
+}
+
+/**
  * Sample index of the QUIETEST window in the middle half of the buffer — the
  * least-destructive place to cut audio that must be split (between words,
  * not through one). Searching only [25%, 75%] keeps the halves balanced, and

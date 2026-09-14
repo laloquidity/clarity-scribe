@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
     assessDecode, preferBetterDecode, shouldRefreshSessions, SESSION_MAX_AGE_MS, DecodeStats,
     peakWindowRms, nextRebuildAllowedAt, REBUILD_MIN_SPACING_MS, REBUILD_UNHELPFUL_BACKOFF_MS,
-    quietestSplitPoint, voicedMsAbove,
+    quietestSplitPoint, voicedMsAbove, holdsSpeech, QUIET_PEAK_RMS, SPEECH_PEAK_RMS,
 } from '../electron/decodeHealth';
 
 const stats = (o: Partial<DecodeStats>): DecodeStats =>
@@ -108,6 +108,43 @@ describe('voicedMsAbove', () => {
         const word = new Float32Array(16000 * 2);
         word.fill(0.2, 8000, 8000 + 9600);
         expect(voicedMsAbove(word, 0.02)).toBeGreaterThanOrEqual(550);
+    });
+});
+
+describe('holdsSpeech — the line between silence and lost words', () => {
+    // Deterministic noise at a chosen RMS: alternating ±amplitude has RMS
+    // exactly equal to the amplitude, whatever the window.
+    const noise = (seconds: number, rms: number): Float32Array => {
+        const a = new Float32Array(Math.round(seconds * 16000));
+        for (let i = 0; i < a.length; i++) a[i] = i % 2 === 0 ? rms : -rms;
+        return a;
+    };
+
+    it('rejects the logged 11s thinking pause (peak RMS 0.0149)', () => {
+        // Above QUIET_PEAK_RMS (0.006), so the old "voiced" test passed it
+        // and escalated to forced sub-windows that invented "Lomba Lombazi".
+        expect(peakWindowRms(noise(11, 0.0149))).toBeGreaterThan(QUIET_PEAK_RMS);
+        expect(holdsSpeech(noise(11, 0.0149))).toBe(false);
+    });
+
+    it('rejects a single speech-level click inside silence', () => {
+        const a = noise(3, 0.004);
+        a.fill(0.2, 24000, 24000 + 512); // one 32ms window
+        expect(holdsSpeech(a)).toBe(false);
+    });
+
+    it('accepts a word at normal speech level', () => {
+        const a = noise(3, 0.004);
+        a.fill(0.08, 24000, 24000 + 9600); // 600ms
+        expect(holdsSpeech(a)).toBe(true);
+    });
+
+    it('accepts speech on the quietest supported mic (peak ≈ 0.02)', () => {
+        const a = noise(3, 0.004);
+        // Just over the line — a float32 fill of exactly SPEECH_PEAK_RMS
+        // rounds a hair below it.
+        a.fill(SPEECH_PEAK_RMS * 1.1, 24000, 24000 + 16000); // 1s
+        expect(holdsSpeech(a)).toBe(true);
     });
 });
 
